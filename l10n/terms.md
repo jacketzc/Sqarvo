@@ -22,6 +22,10 @@
 | 事务 | Transaction | |
 | 回滚 | Rollback | 按钮用动词 Roll Back 时按条目文本，术语本身 Rollback |
 | 刷新 | Refresh | |
+| 导航 | Navigation | 窗口左侧资源区 |
+| 信息面板 | Inspector | 窗口右侧信息区 |
+| 专注模式 | Focus Mode | |
+| 重置布局 | Reset Layout | |
 | 清除选择 | Clear Selection | 导航逻辑选择命令 |
 | 连接 | Connect | 动词（建立会话）；名词（一条连接）用 Connection |
 | 查询 | Query | |

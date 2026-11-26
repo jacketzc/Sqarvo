@@ -51,14 +51,14 @@ style.metrics = ["tab_strip_height", "gap_sm", "gap_xxs", "min_target", "objects
 style.tokens = ["sqarvo_separator"]
 impl_notes = [
   "标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。",
-  "标签条常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。",
+  "标签条位于中央工作区，常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。",
   "固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。",
 ]
 
 [component.sync.linux]
 state = "done"
 spec_hash = "08a335ff11c2"
-evidence = "§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规则"
+evidence = "test_10_layout.py 840×600 下通过标签工作区运行 SQL，既有原生页签在工作区布局中保留。 tests/ui/linux/results/run.9ME2GefI/report.json"
 
 [[component]]
 id = "tabs.strip.tab"

@@ -127,19 +127,19 @@ style.metrics = ["sidebar_width", "inspector_width", "status_height", "tab_strip
 impl_notes = [
   "握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。",
   "侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。",
-  "面板宽度读窗口级记忆（与连接态共用同一个值），启动态拖一次会被带进连上后的工作区。",
+  "启动态与连接态共用 Shell；切换时继承首选宽度、显示偏好、自动折叠历史、临时优先和专注模式。",
   "标签条右侧的 ＋ 保留在启动态但置为不可用（tooltip「先连接数据库再新建查询标签」）；该按钮的登记权归标签条所属区，本区只在结果里提到它。",
   "主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区只保证启动态停在这一页、不换内容。",
   "这一页是 startup.rs 自己建的（不走 tabs::add_objects_page）：页签标题 / 图标 / pinned 与连接态同语义（startup.rs:188-192），关闭请求有兜底日志「[startup] Objects 页固定存在，不可关闭」（startup.rs:195-198），页内 open 回调换成日志「[startup] 尚未连接数据库，忽略打开表」（startup.rs:184-186，启动态不会有可打开的行）。页签结构仍归 objects_page 区，本区只记这一份构造。",
   "信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时那两行不出现，不编造，startup.rs:110-135）。",
   "启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。",
-  "启动态没有表标签：状态栏行 1 的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。",
+  "启动态没有表标签：中央操作行的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "握手成功（Event::Connected）"
-result = "外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板常驻且内容区留白、状态栏写「未连接」；连上数据库前不存在表标签"
+result = "外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板按布局状态显隐，未选中对象时内容区留白、状态栏写「未连接」；连上数据库前不存在表标签"
 source = "src/ui.rs:1570、src/ui.rs:1608、src/startup.rs:99"
 
 [[component.interaction]]
@@ -162,6 +162,6 @@ source = "src/startup.rs:298、src/ui.rs:1092"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "aa4bea3dac40"
+spec_hash = "ca02c5cd3043"
 commit = "7436cd5"
-evidence = "§1.1 应用启动（落地工作区）+ §7 状态栏行 2；show_startup_workspace 与 StartupWorkspace::new"
+evidence = "test_01_startup.py 握手与启动摘要；test_10_layout.py 启动态布局、连接后继承和 840×600 可达性。 tests/ui/linux/results/run.9ME2GefI/report.json"

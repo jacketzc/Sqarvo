@@ -3274,7 +3274,11 @@ impl TabSet {
             },
             (_, Some(data), _) => TabStatus::Table(Box::new(data.status_snapshot())),
             (_, _, Some(page)) => TabStatus::Query {
-                summary: tab.sql_summary.borrow().clone(),
+                summary: if page.is_disconnected() {
+                    Some(crate::l10n::t("status_bar.sql_disconnected").to_owned())
+                } else {
+                    tab.sql_summary.borrow().clone()
+                },
                 timing_ms: tab.query_timing.get(),
                 row_ops: page.row_ops(),
             },

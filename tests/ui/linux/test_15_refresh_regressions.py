@@ -489,3 +489,23 @@ def test_navigation_selection_survives_projection_without_requests(ui_instance):
             10, "同一资源恢复为可见选择")
         expect(_metadata_counts(inst) == before, "恢复逻辑选择不会请求元数据",
                (_metadata_counts(inst), before))
+
+    with step("focus_layout_preserves_selection_and_scope"):
+        rows = _objects_labels(frame)
+        title = A.nm(frame)
+        rpc_before = inst.log_text().count("[qa.rpc] dispatch")
+        expect(rpc_before > 0, "准备阶段已记录 RPC", rpc_before)
+        focus = A.find_one(frame, role_in=("toggle button",), name="专注模式")
+        A.click(focus)
+        A.wait_until(lambda: "pressed" in A.states(focus), 5, "专注模式已进入")
+        expect(_objects_labels(frame) == rows, "折叠两侧栏不变更 Objects 范围", _objects_labels(frame))
+        A.click(focus)
+        A.wait_until(lambda: "pressed" not in A.states(focus), 5, "专注模式已退出")
+        A.wait_until(lambda: "selected" in A.states(
+            ops.find_row(frame, "widgets", "表", timeout=5)),
+            10, "同一资源仍是逻辑选择")
+        expect(A.nm(frame) == title and _objects_labels(frame) == rows,
+               "工作区标题与 Objects 范围保持", (A.nm(frame), _objects_labels(frame)))
+        expect(inst.log_text().count("[qa.rpc] dispatch") == rpc_before,
+               "布局不重新浏览 Objects 或刷新 Inspector",
+               (rpc_before, inst.log_text().count("[qa.rpc] dispatch")))

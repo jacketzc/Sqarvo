@@ -78,26 +78,6 @@ pub struct PanelBounds {
     pub inspector_max: i32,
 }
 
-impl PanelBounds {
-    /// 把侧栏宽度钳制到可拖拽区间。
-    #[must_use]
-    pub fn clamp_sidebar(&self, width: i32) -> i32 {
-        width.clamp(self.sidebar_min, self.sidebar_max)
-    }
-
-    /// 把信息面板宽度钳制到可拖拽区间。
-    #[must_use]
-    pub fn clamp_inspector(&self, width: i32) -> i32 {
-        width.clamp(self.inspector_min, self.inspector_max)
-    }
-
-    /// 由 `GtkPaned` 的位置反推右侧面板宽度并钳制。
-    #[must_use]
-    pub fn inspector_width_from_position(&self, pane_width: i32, position: i32) -> i32 {
-        self.clamp_inspector(pane_width - position - 1)
-    }
-}
-
 /// [`relayout`] 的结果：窗口尺寸、最小尺寸、面板区间。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sizing {
@@ -150,8 +130,8 @@ pub fn relayout(work: Rect, scale: f64, tier: Tier) -> Sizing {
 
 /// 基准推荐尺寸（§5.2 四档 × 档位），再按下限收敛到工作区内。
 ///
-/// 下限是 `min(960·T, W-32) × min(640·T, H-48)`（`metrics.toml` 的
-/// `min_window_*` 已是写死的 960/1200/1440）：屏比最小窗口还小时，**宁可挤也不
+/// 下限是 `min(该档基准宽, W-32) × min(该档基准高, H-48)`（`metrics.toml` 的
+/// `min_window_*` 已是写死的 840/1050/1260）：屏比最小窗口还小时，**宁可挤也不
 /// 超出屏幕**（ADR 0026 取舍）。上限同样是 `(W-32, H-48)`，所以结果**永远**满足
 /// `w ≤ W-32`、`h ≤ H-48`（`--qa-report-monitor` 的验收条目）。
 #[must_use]
@@ -198,9 +178,9 @@ pub fn recommended(work: Rect, tier: Tier) -> (i32, i32) {
     )
 }
 
-/// 最小窗口尺寸（§5.4）：`min(960·T, W-32) × min(640·T, H-48)`。
+/// 最小窗口尺寸（§5.4）：`min(该档基准宽, W-32) × min(该档基准高, H-48)`。
 ///
-/// 960 / 1200 / 1440 直接取 `metrics.toml` 的 `min_window_width`——不再用倍率算。
+/// 840 / 1050 / 1260 直接取 `metrics.toml` 的 `min_window_width`——不再用倍率算。
 #[must_use]
 pub fn min_window(work: Rect, tier: Tier) -> (i32, i32) {
     let metrics = layout::Metrics::for_tier(tier);
@@ -679,14 +659,6 @@ fn bind_persist(window: &adw::ApplicationWindow, state: &Rc<WatchState>) {
             }
         });
     }
-    // 首帧的尺寸是程序化落位的，不是用户选择：稳定 600ms 后才开始采样。
-    let state = Rc::clone(state);
-    let weak = window.downgrade();
-    glib::timeout_add_local_once(Duration::from_millis(600), move || {
-        if weak.upgrade().is_some() {
-            state.persist.borrow_mut().take();
-        }
-    });
 }
 
 fn persist_later(window: &adw::ApplicationWindow, state: &Rc<WatchState>) {
@@ -761,8 +733,8 @@ mod tests {
     fn recommendation_matches_the_spec_table() {
         // §5.2 的六行参考值（100% 档）：三个设计约束的算术来源。
         for (area, expected) in [
-            (work(1366, 736), (1310, 640)),
-            (work(1280, 698), (1224, 640)),
+            (work(1366, 736), (1310, 618)),
+            (work(1280, 698), (1224, 600)),
             (work(1536, 838), (1480, 704)),
             (work(1920, 1048), (1400, 838)),
             (work(2048, 1120), (1400, 896)),
@@ -792,13 +764,13 @@ mod tests {
 
     #[test]
     fn minimum_window_collapses_on_a_short_screen() {
-        // 1080p@200%：逻辑工作区 960×508 → 最小窗口比 960×640 矮，也窄（W-32）。
+        // 1080p@200%：逻辑工作区 960×508 → 高度按 H-48 收敛。
         let area = work(960, 508);
-        assert_eq!(min_window(area, Tier::Compact), (928, 460));
-        // 1366×768@125%：逻辑工作区 1092×582 → 高度收敛，宽度仍是 960。
-        assert_eq!(min_window(work(1092, 582), Tier::Compact), (960, 534));
-        // 正常屏上就是 960×640。
-        assert_eq!(min_window(work(1920, 1048), Tier::Compact), (960, 640));
+        assert_eq!(min_window(area, Tier::Compact), (840, 460));
+        // 1366×768@125%：逻辑工作区 1092×582 → 高度收敛，宽度仍是 840。
+        assert_eq!(min_window(work(1092, 582), Tier::Compact), (840, 534));
+        // 正常屏上就是 840×600。
+        assert_eq!(min_window(work(1920, 1048), Tier::Compact), (840, 600));
     }
 
     #[test]
@@ -850,15 +822,15 @@ mod tests {
             (2100, 1250)
         );
         assert_eq!(recommended(work(2560, 1408), Tier::Large), (2520, 1360));
-        // 最小窗口直接取 `metrics.toml` 的 960 / 1200 / 1440，不再用倍率算。
-        assert_eq!(min_window(area, Tier::Comfortable), (1200, 800));
-        assert_eq!(min_window(area, Tier::Large), (1440, 960));
+        // 最小窗口直接取 `metrics.toml` 的 840 / 1050 / 1260，不再用倍率算。
+        assert_eq!(min_window(area, Tier::Comfortable), (1050, 750));
+        assert_eq!(min_window(area, Tier::Large), (1260, 900));
         let panels = panel_bounds(Tier::Comfortable);
         assert_eq!(panels.sidebar_min, 225);
-        assert_eq!(panels.inspector_max, 650);
+        assert_eq!(panels.inspector_max, 750);
         let large = panel_bounds(Tier::Large);
-        assert_eq!((large.sidebar_min, large.sidebar_max), (270, 630));
-        assert_eq!((large.inspector_min, large.inspector_max), (360, 780));
+        assert_eq!((large.sidebar_min, large.sidebar_max), (270, 750));
+        assert_eq!((large.inspector_min, large.inspector_max), (330, 900));
     }
 
     #[test]

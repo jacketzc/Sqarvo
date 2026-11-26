@@ -184,3 +184,15 @@ linux = "view-sort-descending-symbolic"
 id = "tab.objects"
 linux = "view-grid-symbolic"
 note = "`Objects` 固定页页签的图标"
+
+[[icon]]
+id = "layout.navigation"
+linux = "sidebar-show-symbolic"
+
+[[icon]]
+id = "layout.focus"
+linux = "view-fullscreen-symbolic"
+
+[[icon]]
+id = "layout.inspector"
+linux = "sidebar-show-right-symbolic"

@@ -65,8 +65,7 @@
 
 ## 7. 状态栏
 
-已迁入组件注册表 → [`components/status_bar.toml`](components/status_bar.toml)（22 个组件：左边沟、
-行 1 行操作与分页器、行 2 摘要）。
+已迁入组件注册表 → [`components/status_bar.toml`](components/status_bar.toml)（全局状态行与中央行操作、分页器）。
 
 ## 8. 全局规则
 
@@ -83,7 +82,7 @@
 | 上一个标签 | `Ctrl+Shift+Tab` | 与上一行反向：第一个再往前回绕到最后一个 | `src/ui.rs:306`、`src/ui.rs:4544`、`src/tabs.rs:2004` |
 | 直选第 N 个标签 | `Alt+1`…`Alt+9` | 选中第 N 个标签（1 起，`Objects` 算第 1 个）；超出当前标签数时**什么都不做**（不弹框、不崩），只记一行 `[tabs] Alt+3：只有 2 个标签，忽略` | `src/ui.rs:307-309`、`src/ui.rs:4554-4566`、`src/tabs.rs:2024` |
 | 刷新当前表 / 对象树 | `F5` | 当前标签是表数据页 → 刷当前表（保持排序 / 筛选、回到第 1 页；脏行守卫照旧）；否则刷整棵对象树。**菜单里已不列「视图 → 刷新」**，只保留这条快捷键 | `src/ui.rs:296`、`src/ui.rs:2422-2457`、`src/ui.rs:4582` |
-| 聚焦对象搜索 | `Ctrl+F` | 焦点交给窗口左下角（状态栏左边沟）的对象树搜索框 | `src/ui.rs:298` |
+| 聚焦对象搜索 | `Ctrl+F` | 工作区外壳中请求展开导航并聚焦对象树搜索框 | `src/ui.rs:298` |
 | 导出当前标签 | `Ctrl+Shift+E` | CSV（表标签先选范围） | `src/ui.rs:329`、`src/ui.rs:4702` |
 | 执行 SQL | `Ctrl+Enter` | 有选区执行选区，无选区执行全文。快捷键、查询页按钮和编辑器上下文菜单遵循同一状态限制。见 `tabs.query.actions`、`tabs.query.editor`。 | `src/sql_page.rs`、`src/ui.rs`（`win.execute`） |
 | 取消查询 | `Esc` | 编辑器内生效；幂等（重复点不报错、不发 RPC）。**菜单「查询」整项不挂**，只保留快捷键与查询页按钮 | `src/sql_page.rs:239-245`、`src/sql_page.rs:308-325`、`src/ui.rs:4616`（`win.cancel`） |
@@ -151,7 +150,7 @@
 
 | 边界 | 现状 | 正文 |
 |---|---|---|
-| Wayland 下的最小窗口尺寸 | 用 `set_size_request` 声明；X11 实测被抬到 960×640，Wayland 依赖合成器遵守 `xdg_toplevel.set_min_size`，未逐一手测 | §1.1 |
+| S2 多显示器、高 DPI、Wayland | BLOCKED。S2 隔离 runner 为单显示器 X11，真实桌面验证交接 S8。标题栏拖动交接 S7。 | 窗口尺寸与布局 |
 | 快捷键验收方式 | 通过 GApplication 的 accel 表 + 同一 action 的 QA 驱动取证；测试环境没有物理按键注入 | §8.1 |
 | 事务失败态 | 与其它三态共用 `TransactionBadge::label()`，未单独截图 | §5.2 |
 | 960×640 下状态簇 | 动作行分配约 417px；两段常驻文字收成 24×24 的状态圆点后，整行需求 409 ≤ 分配 417、状态簇自身需求 38（`--qa-layout-audit` 实测，17 项 0 超限）；过程消息仍按省略号收缩，完整文案留在圆点 tooltip 与状态栏；删除 / 放弃的操作结果也只写在 tooltip 末段「最近一次操作：…」，可见过程消息为空（`--qa-expect-status-dot` + 「状态簇」需求 42px 实测，1400 宽） | §5.1 |

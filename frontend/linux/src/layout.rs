@@ -6,19 +6,9 @@
 //! 写死的整数，**不做「基准 × 缩放」**——三端取整规则不同，算出来的 1px 偏差肉眼
 //! 发现不了（规范 §3.1）。
 //!
-//! ```text
-//! contentHeight = windowHeight - headerHeight - toolbarHeight - statusHeight
-//! contentWidth  = windowWidth  - sidebarWidth
-//! gridWidth     = contentWidth - gridPaddingStart - gridPaddingEnd
-//!                 - [inspectorGap + inspectorWidth]   # 面板折叠时两项一起收回
-//! gridHeight    = contentHeight - tabStripHeight - tableActionsHeight
-//! ```
-//!
-//! 100% 档、1200×800 基准下 `gridWidth`：折叠 942、面板 280 时 652、面板 320 时 612
-//! （与规范表格逐字一致，见本模块的测试）。
-//!
-//! 纯算术放在这里是为了能在没有 GTK 显示服务器的环境里单测；运行期切换档位时对
-//! 已建成控件重新落数字的逻辑在 [`crate::density`]。
+//! PanelLayout reserves the central target and charges space only for visible
+//! panels and their dividers. Density changes remap persistent user widths
+//! without changing the saved Compact units.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -29,45 +19,32 @@ use serde::Deserialize;
 /// `metrics.toml` 原文（唯一真值，编进二进制；路径相对本文件）。
 const METRICS_TOML: &str = include_str!("../../../docs/ui-specification/metrics.toml");
 
-/// 窗口外壳（区域 01）高度：`AdwHeaderBar` 40 + 菜单行 24（100% 档）。
-///
-/// Linux 不设菜单行（ADR 0023），但外壳高度按规范保持 64，工具条与状态栏的位置
-/// 才不会因平台而异——菜单行走 headerbar 主菜单。
+/// 紧凑档标题栏目标高度。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const HEADER_HEIGHT: i32 = 64;
+pub const HEADER_HEIGHT: i32 = 44;
 
 /// 主工具条（区域 02）高度（100% 档）。
 ///
 /// v0.2.3.3：76 → 44。工具条只放一行 24 高的按钮，44 = 24 + 上下各 10 的呼吸；
 /// 省下的 32 px 全部还给数据区（用户要求「让目光更聚焦在数据区」）。
+#[cfg(test)]
 pub const TOOLBAR_HEIGHT: i32 = 44;
 
-/// 状态栏（区域 05）高度（100% 档）：两行各 24（24 × 2 = 48），不再另加上下留白。
-///
-/// v0.2.4：56 → 48。搜索框搬到左边沟后沟里只放一个 24 高的入口，原来多出来的
-/// 8px 留白没有内容可撑，全部还给内容区（1200×800 下 +8）。
+/// 紧凑档全局状态栏目标高度。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const STATUS_HEIGHT: i32 = 48;
+pub const STATUS_HEIGHT: i32 = 24;
 
-/// 窗口最小宽度（100% 档，workspace-model §1）。
-///
-/// 960×640 是 100% 档的**强制下限**：`window_size::min_window` 按档位取
-/// `min(960·T, 工作区宽-32)` 后交给 `GtkWidget::set_size_request`，GTK 会把它转成
-/// toplevel 的最小尺寸（Wayland 走 `xdg_toplevel.set_min_size`、X11 走 WM normal
-/// hints），窗口管理器不允许再缩小。布局算术在这一档以下没有保证。
+/// 紧凑档最小窗口宽度基准。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const MIN_WINDOW_WIDTH: i32 = 960;
+pub const MIN_WINDOW_WIDTH: i32 = 840;
 
 /// 窗口最小高度（100% 档），与 [`MIN_WINDOW_WIDTH`] 同一条强制路径。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const MIN_WINDOW_HEIGHT: i32 = 640;
-
-/// 外壳 + 工具条的合计高度（100% 档）。
-pub const CHROME_HEIGHT: i32 = HEADER_HEIGHT + TOOLBAR_HEIGHT;
+pub const MIN_WINDOW_HEIGHT: i32 = 600;
 
 /// 侧栏（区域 03）默认宽度（100% 档）。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const SIDEBAR_WIDTH: i32 = 237;
+pub const SIDEBAR_WIDTH: i32 = 260;
 
 /// 侧栏可拖拽下限（100% 档）。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
@@ -75,7 +52,7 @@ pub const SIDEBAR_MIN: i32 = 180;
 
 /// 侧栏可拖拽上限（100% 档）。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const SIDEBAR_MAX: i32 = 420;
+pub const SIDEBAR_MAX: i32 = 500;
 
 /// 信息面板（区域 06）默认宽度（100% 档）。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
@@ -83,14 +60,14 @@ pub const INSPECTOR_WIDTH: i32 = 280;
 
 /// 信息面板可拖拽下限（100% 档）。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const INSPECTOR_MIN: i32 = 240;
+pub const INSPECTOR_MIN: i32 = 220;
 
 /// 信息面板可拖拽上限（100% 档）。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
-pub const INSPECTOR_MAX: i32 = 520;
+pub const INSPECTOR_MAX: i32 = 600;
 
 /// 标签条（区域 04 顶部）高度（100% 档，workspace-model §2.1 的 `tabStrip`）。
-pub const TAB_STRIP_HEIGHT: i32 = 24;
+pub const TAB_STRIP_HEIGHT: i32 = 40;
 
 /// 表格工具条（区域 04 中部）高度（100% 档）。
 #[allow(dead_code)] // 100% 档的规范锚点：非测试代码全部门面化后只剩测试引用
@@ -356,6 +333,7 @@ impl Gap {
 pub struct Metrics {
     // ---- metrics.toml 的同名项 ----
     pub header_height: i32,
+    pub transaction_popover_top_margin: i32,
     pub toolbar_height: i32,
     pub status_height: i32,
     pub min_window_width: i32,
@@ -370,6 +348,10 @@ pub struct Metrics {
     pub table_actions_height: i32,
     pub grid_padding_start: i32,
     pub grid_padding_end: i32,
+    pub workspace_target_width: i32,
+    pub workspace_target_height: i32,
+    pub panel_handle: i32,
+    pub panel_recovery: i32,
     pub inspector_gap: i32,
     pub row_height_tree: i32,
     pub row_height_data: i32,
@@ -474,47 +456,6 @@ impl Metrics {
         }
     }
 
-    /// 内容区高度：两侧在状态栏之上、工具条之下。
-    #[must_use]
-    pub fn content_height(&self, window_height: i32) -> i32 {
-        window_height - self.header_height - self.toolbar_height - self.status_height
-    }
-
-    /// 内容区宽度：右侧工作区（不含侧栏）。
-    #[must_use]
-    pub fn content_width(&self, window_width: i32, sidebar_width: i32) -> i32 {
-        window_width - sidebar_width
-    }
-
-    /// 数据网格宽度；`inspector_width` 为 `None` 表示信息面板折叠。
-    #[must_use]
-    pub fn grid_width(
-        &self,
-        window_width: i32,
-        sidebar_width: i32,
-        inspector_width: Option<i32>,
-    ) -> i32 {
-        let base = self.content_width(window_width, sidebar_width)
-            - self.grid_padding_start
-            - self.grid_padding_end;
-        match inspector_width {
-            Some(width) => base - self.inspector_gap - width,
-            None => base,
-        }
-    }
-
-    /// 数据网格高度：标签条与表格工具条之下。
-    #[must_use]
-    pub fn grid_height(&self, window_height: i32) -> i32 {
-        self.content_height(window_height) - self.tab_strip_height - self.table_actions_height
-    }
-
-    /// 状态栏顶边 y 坐标（用于检查表格不压在状态栏上）。
-    #[must_use]
-    pub fn status_y(&self, window_height: i32) -> i32 {
-        window_height - self.status_height
-    }
-
     /// 把侧栏宽度钳制到可拖拽区间。
     #[must_use]
     pub fn clamp_sidebar(&self, width: i32) -> i32 {
@@ -585,6 +526,7 @@ struct RawTier {
     #[allow(dead_code)]
     scale: f64,
     header_height: i32,
+    transaction_popover_top_margin: i32,
     toolbar_height: i32,
     status_height: i32,
     min_window_width: i32,
@@ -599,6 +541,10 @@ struct RawTier {
     table_actions_height: i32,
     grid_padding_start: i32,
     grid_padding_end: i32,
+    workspace_target_width: i32,
+    workspace_target_height: i32,
+    panel_handle: i32,
+    panel_recovery: i32,
     inspector_gap: i32,
     row_height_tree: i32,
     row_height_data: i32,
@@ -696,6 +642,7 @@ impl Metrics {
     fn from_raw(raw: &RawTier) -> Self {
         Self {
             header_height: raw.header_height,
+            transaction_popover_top_margin: raw.transaction_popover_top_margin,
             toolbar_height: raw.toolbar_height,
             status_height: raw.status_height,
             min_window_width: raw.min_window_width,
@@ -710,6 +657,10 @@ impl Metrics {
             table_actions_height: raw.table_actions_height,
             grid_padding_start: raw.grid_padding_start,
             grid_padding_end: raw.grid_padding_end,
+            workspace_target_width: raw.workspace_target_width,
+            workspace_target_height: raw.workspace_target_height,
+            panel_handle: raw.panel_handle,
+            panel_recovery: raw.panel_recovery,
             inspector_gap: raw.inspector_gap,
             row_height_tree: raw.row_height_tree,
             row_height_data: raw.row_height_data,
@@ -777,144 +728,101 @@ impl Metrics {
 // 当前档位下的布局算术（自由函数：调用点不必先取 Metrics）
 // ---------------------------------------------------------------------------
 
-/// 内容区高度：两侧在状态栏之上、工具条之下。
-#[must_use]
-pub fn content_height(window_height: i32) -> i32 {
-    metrics().content_height(window_height)
-}
-
-/// 内容区宽度：右侧工作区（不含侧栏）。
-#[must_use]
-pub fn content_width(window_width: i32, sidebar_width: i32) -> i32 {
-    metrics().content_width(window_width, sidebar_width)
-}
-
-/// 数据网格宽度；`inspector_width` 为 `None` 表示信息面板折叠。
-#[must_use]
-pub fn grid_width(window_width: i32, sidebar_width: i32, inspector_width: Option<i32>) -> i32 {
-    metrics().grid_width(window_width, sidebar_width, inspector_width)
-}
-
-/// 数据网格高度：标签条与表格工具条之下。
-#[must_use]
-pub fn grid_height(window_height: i32) -> i32 {
-    metrics().grid_height(window_height)
-}
-
-/// 状态栏顶边 y 坐标（用于检查表格不压在状态栏上）。
-#[must_use]
-pub fn status_y(window_height: i32) -> i32 {
-    metrics().status_y(window_height)
-}
-
-/// 把侧栏宽度钳制到当前档位的可拖拽区间。
-#[must_use]
-pub fn clamp_sidebar(width: i32) -> i32 {
-    metrics().clamp_sidebar(width)
-}
-
 /// 把信息面板宽度钳制到当前档位的可拖拽区间。
 #[must_use]
 pub fn clamp_inspector(width: i32) -> i32 {
     metrics().clamp_inspector(width)
 }
 
-/// 由 `GtkPaned` 的位置反推右侧面板宽度并钳制（当前档位）。
-///
-/// 运行期走 [`crate::window_size::PanelBounds::inspector_width_from_position`]（同一算式
-/// 按档位缩放）；这份实现留给布局算术的单测与对照。
-#[allow(dead_code)]
-#[must_use]
-pub fn inspector_width_from_position(pane_width: i32, position: i32) -> i32 {
-    clamp_inspector(pane_width - position - 1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const WINDOW_1200: (i32, i32) = (1200, 800);
-    const WINDOW_960: (i32, i32) = (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
-
     #[test]
-    fn minimum_window_is_960x640() {
-        // 规范 §1 的 100% 档最小窗口：`ui::activate` 用它强制首帧下限，单测在这里
-        // 钉死数值，防止有人只改一边（窗口与布局算术读同一份常量）。
-        assert_eq!((MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT), (960, 640));
-    }
-
-    #[test]
-    fn content_height_matches_the_spec_for_both_target_sizes() {
-        assert_eq!(content_height(WINDOW_1200.1), 644);
-        assert_eq!(content_height(WINDOW_960.1), 484);
-    }
-
-    #[test]
-    fn header_toolbar_and_status_bar_add_up_to_the_chrome() {
-        assert_eq!(HEADER_HEIGHT + TOOLBAR_HEIGHT, 108);
-        assert_eq!(CHROME_HEIGHT + STATUS_HEIGHT, 156);
-    }
-
-    #[test]
-    fn grid_width_matches_the_spec_table_at_1200x800() {
-        // 折叠 942 / 280 时 652 / 320 时 612 —— 规范 §2.1 的表格。
-        assert_eq!(grid_width(1200, 237, None), 942);
-        assert_eq!(grid_width(1200, 237, Some(280)), 652);
-        assert_eq!(grid_width(1200, 237, Some(320)), 612);
-    }
-
-    #[test]
-    fn collapsing_the_inspector_reclaims_the_gap_too() {
-        assert_eq!(
-            grid_width(1200, 237, None),
-            grid_width(1200, 237, Some(280)) + 280 + INSPECTOR_GAP
-        );
-    }
-
-    #[test]
-    fn grid_stays_positive_at_960x640_even_with_the_widest_inspector() {
-        assert_eq!(grid_width(960, 237, Some(280)), 412);
-        // 侧栏拖到最窄、面板拖到最宽：仍然必须给表格留出正宽度，
-        // 否则列会被静默裁掉而不是横向滚动。
-        assert_eq!(grid_width(960, SIDEBAR_MIN, Some(INSPECTOR_MAX)), 229);
-        assert!(grid_width(960, 237, Some(INSPECTOR_MAX)) > 0);
-    }
-
-    #[test]
-    fn grid_height_and_status_position_do_not_overlap() {
-        for window in [WINDOW_1200, WINDOW_960] {
-            let grid = grid_height(window.1);
-            let end_of_grid = HEADER_HEIGHT + TOOLBAR_HEIGHT + grid;
-            assert!(
-                end_of_grid <= status_y(window.1),
-                "表格底边 {end_of_grid} 压在状态栏顶部 {} 上",
-                status_y(window.1)
+    fn compact_layout_thresholds_and_hysteresis() {
+        let mut state = PanelLayout::default();
+        for (width, left, right, center) in [
+            (1440, 260, 280, 888),
+            (1152, 260, 280, 600),
+            (1092, 260, 220, 600),
+            (1091, 260, 0, 825),
+            (1115, 260, 0, 849),
+            (1116, 260, 244, 600),
+            (840, 234, 0, 600),
+            (786, 180, 0, 600),
+            (785, 0, 0, 785),
+            (809, 0, 0, 809),
+            (810, 204, 0, 600),
+            (1, 0, 0, 1),
+        ] {
+            assert_eq!(
+                state.solve(width, Tier::Compact),
+                Allocation {
+                    panels: [left, right],
+                    workspace: center
+                },
+                "{width}"
             );
-            assert_eq!(status_y(window.1), window.1 - 48);
         }
-        // 644 − 24（标签条） − 46（一行工具条 + 上下留白）= 574；960 档 484 − 24 − 46 = 414。
-        assert_eq!(grid_height(800), 574);
-        assert_eq!(grid_height(640), 414);
+        assert_eq!(state.preferences, PanelPreferences::default());
     }
 
     #[test]
-    fn sidebar_and_inspector_clamp_to_their_drag_ranges() {
-        assert_eq!(clamp_sidebar(100), 180);
-        assert_eq!(clamp_sidebar(237), 237);
-        assert_eq!(clamp_sidebar(600), 420);
-        assert_eq!(clamp_inspector(100), 240);
-        assert_eq!(clamp_inspector(280), 280);
-        assert_eq!(clamp_inspector(900), 520);
+    fn temporary_priority_focus_and_drag_preserve_other_preferences() {
+        let mut state = PanelLayout::default();
+        let before = state.preferences;
+        assert_eq!(state.solve(840, Tier::Compact).panels, [234, 0]);
+        state.request(Panel::Inspector);
+        assert_eq!(state.solve(840, Tier::Compact).panels, [0, 234]);
+        state.focus = true;
+        assert_eq!(state.solve(840, Tier::Compact).panels, [0, 0]);
+        state.focus = false;
+        assert_eq!(state.solve(840, Tier::Compact).panels, [0, 234]);
+        let full = state.solve(1116, Tier::Compact);
+        assert_eq!(state.priority, None);
+        assert_eq!(state.preferences, before);
+        let drag = state.drag(Panel::Inspector, 600, 1116, Tier::Compact, full);
+        assert_eq!(drag.panels, [180, 324]);
+        assert_eq!(drag.workspace, 600);
+        assert_eq!(state.preferences.preferred, [260, 324]);
     }
 
     #[test]
-    fn inspector_width_from_position_round_trips() {
-        // 1200 宽的工作区、面板 280：分隔条位置 = 1200 - 280 - 1。
-        assert_eq!(inspector_width_from_position(1200, 919), 280);
-        // 拖到上限外：钳到 520。
-        assert_eq!(inspector_width_from_position(1200, 400), 520);
-        // 拖到下限外：钳到 240。
-        assert_eq!(inspector_width_from_position(1200, 1100), 240);
+    fn density_and_single_panel_thresholds_follow_explicit_metrics() {
+        for tier in Tier::ALL {
+            let m = Metrics::for_tier(tier);
+            let mut state = PanelLayout::default();
+            assert_eq!(state.preferred(tier), [m.sidebar_width, m.inspector_width]);
+            state.preferences.shown = [false, true];
+            let threshold = m.workspace_target_width + m.inspector_min + m.panel_handle;
+            assert_eq!(state.solve(threshold, tier).panels, [0, m.inspector_min]);
+            assert_eq!(state.solve(threshold - 1, tier).panels, [0, 0]);
+            assert_eq!(
+                state.solve(threshold + m.panel_recovery - 1, tier).panels,
+                [0, 0]
+            );
+            assert!(state.solve(threshold + m.panel_recovery, tier).panels[1] > 0);
+        }
+    }
+
+    #[test]
+    fn drag_clamps_both_panels_at_their_limits() {
+        let tier = Tier::Compact;
+        let m = Metrics::for_tier(tier);
+        for (panel, min, max) in [
+            (Panel::Navigation, m.sidebar_min, m.sidebar_max),
+            (Panel::Inspector, m.inspector_min, m.inspector_max),
+        ] {
+            let mut state = PanelLayout::default();
+            let actual = state.solve(2000, tier);
+            let other = 1 - panel.index();
+            for (requested, bound) in [(0, min), (2000, max)] {
+                let resized = state.drag(panel, requested, 2000, tier, actual);
+                assert_eq!(resized.panels[panel.index()], bound);
+                assert_eq!(resized.panels[other], actual.panels[other]);
+                assert_eq!(state.preferences.preferred[other], actual.panels[other]);
+            }
+        }
     }
 
     /// `metrics.toml` 的 compact 档必须与 `layout.rs` 的 100% 常量逐一相同：
@@ -1059,7 +967,7 @@ mod tests {
         assert_eq!((c.icon_box, m.icon_box, l.icon_box), (16, 20, 24));
         assert_eq!(
             (c.sidebar_width, m.sidebar_width, l.sidebar_width),
-            (237, 296, 356)
+            (260, 325, 390)
         );
         assert_eq!(
             (c.inspector_width, m.inspector_width, l.inspector_width),
@@ -1067,7 +975,7 @@ mod tests {
         );
         assert_eq!(
             (c.min_window_width, m.min_window_width, l.min_window_width),
-            (960, 1200, 1440)
+            (840, 1050, 1260)
         );
         assert_eq!(
             (
@@ -1075,7 +983,7 @@ mod tests {
                 m.min_window_height,
                 l.min_window_height
             ),
-            (640, 800, 960)
+            (600, 750, 900)
         );
         // 间距阶梯随档位放大，但语义（哪一档用在哪）不变：100% 档 18 → 125% 档 23。
         assert_eq!(
@@ -1161,5 +1069,176 @@ mod tests {
         // 状态栏 24 高的行里装得下按钮高度。
         const { assert!(ICON_BUTTON_HEIGHT == MIN_TARGET) };
         const { assert!(ICON_BUTTON_HEIGHT <= ROW_HEIGHT_TREE) };
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panel {
+    Navigation = 0,
+    Inspector = 1,
+}
+
+impl Panel {
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanelPreferences {
+    // Widths are stored in Compact units, even while operating at another density.
+    pub preferred: [i32; 2],
+    pub shown: [bool; 2],
+}
+
+impl Default for PanelPreferences {
+    fn default() -> Self {
+        let m = Metrics::for_tier(Tier::Compact);
+        Self {
+            preferred: [m.sidebar_width, m.inspector_width],
+            shown: [true; 2],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PanelLayout {
+    pub preferences: PanelPreferences,
+    pub focus: bool,
+    pub priority: Option<Panel>,
+    pub folded: [bool; 2],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Allocation {
+    pub panels: [i32; 2],
+    pub workspace: i32,
+}
+
+impl PanelLayout {
+    pub fn preferred(self, tier: Tier) -> [i32; 2] {
+        let m = Metrics::for_tier(tier);
+        let defaults = PanelPreferences::default().preferred;
+        let explicit = [m.sidebar_width, m.inspector_width];
+        let [left, right] = std::array::from_fn(|i| {
+            let preferred = self.preferences.preferred[i];
+            if preferred == defaults[i] {
+                explicit[i]
+            } else {
+                crate::window_state::rescale(preferred, Tier::Compact, tier)
+            }
+        });
+        [m.clamp_sidebar(left), m.clamp_inspector(right)]
+    }
+
+    pub fn request(&mut self, panel: Panel) {
+        self.focus = false;
+        let i = panel.index();
+        self.preferences.shown[i] = true;
+        self.folded[i] = false;
+        self.priority = Some(panel);
+    }
+
+    pub fn toggle(&mut self, panel: Panel, actual: Allocation) {
+        let i = panel.index();
+        if !self.focus && actual.panels[i] > 0 {
+            self.preferences.shown[i] = false;
+            self.folded[i] = false;
+            if self.priority == Some(panel) {
+                self.priority = None;
+            }
+        } else {
+            self.request(panel);
+        }
+    }
+
+    pub fn set_preferred(&mut self, panel: Panel, width: i32, tier: Tier) {
+        self.preferences.preferred[panel.index()] =
+            crate::window_state::rescale(width, tier, Tier::Compact);
+    }
+
+    pub fn drag(
+        &mut self,
+        panel: Panel,
+        requested: i32,
+        width: i32,
+        tier: Tier,
+        actual: Allocation,
+    ) -> Allocation {
+        let m = Metrics::for_tier(tier);
+        let i = panel.index();
+        let other = 1 - i;
+        let min = [m.sidebar_min, m.inspector_min];
+        let max = [m.sidebar_max, m.inspector_max];
+        let reserved = if actual.panels[other] > 0 {
+            min[other] + m.panel_handle
+        } else {
+            0
+        };
+        let limit =
+            (width - m.workspace_target_width - m.panel_handle - reserved).clamp(min[i], max[i]);
+        let requested = requested.clamp(min[i], limit);
+        self.set_preferred(panel, requested, tier);
+        let mut panels = actual.panels;
+        panels[i] = requested;
+        if panels[other] > 0 {
+            panels[other] = self.preferred(tier)[other]
+                .min(width - m.workspace_target_width - 2 * m.panel_handle - requested)
+                .max(min[other]);
+        }
+        let workspace = (width
+            - panels
+                .iter()
+                .filter(|&&p| p > 0)
+                .map(|p| p + m.panel_handle)
+                .sum::<i32>())
+        .max(0);
+        Allocation { panels, workspace }
+    }
+
+    pub fn solve(&mut self, width: i32, tier: Tier) -> Allocation {
+        let width = width.max(0);
+        if self.focus {
+            return Allocation {
+                workspace: width,
+                ..Allocation::default()
+            };
+        }
+        let m = Metrics::for_tier(tier);
+        let preferred = self.preferred(tier);
+        let min = [m.sidebar_min, m.inspector_min];
+        if self.preferences.shown == [true; 2]
+            && width
+                >= m.workspace_target_width
+                    + preferred[0]
+                    + min[1]
+                    + 2 * m.panel_handle
+                    + m.panel_recovery
+        {
+            self.priority = None;
+        }
+        let order = if self.priority == Some(Panel::Inspector) {
+            [1, 0]
+        } else {
+            [0, 1]
+        };
+        let mut panels = [0; 2];
+        let mut remaining = width;
+        for i in order {
+            if !self.preferences.shown[i] {
+                continue;
+            }
+            let available = remaining - m.workspace_target_width - m.panel_handle;
+            let restoring = self.folded[i] && self.priority.map(Panel::index) != Some(i);
+            if available >= min[i] + if restoring { m.panel_recovery } else { 0 } {
+                panels[i] = available.min(preferred[i]);
+                remaining -= panels[i] + m.panel_handle;
+            }
+            self.folded[i] = panels[i] == 0;
+        }
+        Allocation {
+            panels,
+            workspace: remaining,
+        }
     }
 }

@@ -7,7 +7,7 @@
 
 前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：Linux Active、Windows Rewriting、macOS Planned。同步列仅显示 Active 平台。
 
-共 214 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 217 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。
@@ -996,7 +996,7 @@ kind `control` · status `active` · parent `dialogs.about`
 
 ## 信息面板（`inspector`）
 
-右侧常驻面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容按当前标签钉住：表数据标签钉这张表、查询标签钉它选择的库（没有选择库 → 空态）、Objects 固定页跟随对象树选中；树选中、Objects 行单击与数据网格列头点击仍即时驱动预览。鼠标经过不改面板。
+右侧信息面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容按当前标签钉住：表数据标签钉这张表、查询标签钉它选择的库（没有选择库 → 空态）、Objects 固定页跟随对象树选中；树选中、Objects 行单击与数据网格列头点击仍即时驱动预览。鼠标经过不改面板。
 
 | 组件 | 名称 | kind | 状态 | Linux |
 |---|---|---|---|---|
@@ -1027,12 +1027,12 @@ kind `area` · status `active`
 
 - 样式：槽位 `inspector`；尺寸 `inspector_width`、`inspector_min`、`inspector_max`、`inspector_gap`
 - 无障碍：可访问名「信息面板」
-- 同步：Linux done（test_14_inspector_no_cache.py 按 MetadataHub 提交计数核对按需查询；test_15_refresh_regressions.py 核对真实 GTK 标签切换、行数与连接归属）
-- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。按当前展示目标的会话处理断连。所属会话断开时清理展示及在途请求，其它连接断开时保留当前展示。
+- 同步：Linux done（test_10_layout.py 信息面板自动折叠、手动展开、相反侧首选宽度保留、把手拖动及双击。 tests/ui/linux/results/run.9ME2GefI/report.json）
+- 实现备注：区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，显隐由 shell.layout 控制，保留原控件与已显示内容。分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。面板内容按当前标签钉住（#196）：切到表数据标签钉该标签的表、切到查询标签钉它当前选择的库（没有选择库 → 空态）、切到 Objects 固定页跟随树当前选中；旧的「切换标签只换表页记忆（Inspector::retarget）」已删除。钉住渲染链路：tabs.rs::TabSet::pin_target 产出 TabPin → ui.rs::apply_pin 按身份键（ui.rs::pin_identity = 标签|目标）去重 → inspector.rs::show_table_pinned / render_table 渲染；Objects 页的钉住走 ui.rs::render_selection。临时预览语义保留：树选中、Objects 行单击、数据网格列头点击仍立即驱动面板，预览不改钉住键；切走再回到某标签恢复该标签钉住的内容。鼠标经过不改面板。Inspector 不缓存跨访问的元数据：每次主动选中、切换子页、重新进入或 F5 刷新都按目标重新查库；已展示数据只服务本次渲染，面板不保证与数据库实时同步。按当前展示目标的会话处理断连。所属会话断开时清理展示及在途请求，其它连接断开时保留当前展示。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| drag | 面板常驻 | 拖动分栏线改宽度：按像素跟随，松手后写入窗口级记忆；宽度钳在 inspector_min 与 inspector_max 之间，越界就地回弹 | `src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235` |
+| drag | 面板可见 | 拖动调整该侧首选宽度并在松手时持久化；双击还原该侧默认首选宽度 | `src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235` |
 | load | 对象树的选中发生变化 | 按选中种类换页：连接 → 连接视图；库 / schema → 库视图；表 / 视图 / 物化视图 → 表视图；列 → 列视图；索引 / 触发器 → 状态页；序列 / 函数 / 过程 / 类型 → 只有 DDL；分组行或没有选中对象 → 空态 | `src/ui.rs:2224、src/inspector.rs:723` |
 | load | 切换到表数据标签 | 面板钉住该标签的表：进表视图；首进默认子页「表信息」，手动切过 [DDL] / [表信息] 之后按标签记住（树预览默认仍是 DDL）；每次进入按目标子页重新查库 | `src/inspector.rs:857、src/inspector.rs:878` |
 | load | 切换到查询标签且它已选择库 | 面板钉住它当前选择的库（服务端真值优先、其次选择器请求值）：进库视图；计数口径与树选中一致，按库名取自已展开分组（tree.group_counts_by_catalog），没展开过的不显示行 | `src/tabs.rs:1863、src/ui.rs:2335、src/tree.rs:1905` |
@@ -1294,7 +1294,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 | `object_tree.tree.row.object` | 　　　表 / 视图行 | row | active | done |
 | `object_tree.tree.row.field` | 　　　列 / 索引 / 触发器行 | row | active | done |
 | `object_tree.tree.row.placeholder` | 　　　占位行（读取中 / 加载更多 / 读取失败 / 空说明 / 未实现） | row | active | done |
-| `object_tree.search` | 　对象树搜索区（状态栏左边沟） | container | active | done |
+| `object_tree.search` | 　对象树搜索区 | container | active | done |
 | `object_tree.search.box` | 　　搜索输入框 | control | active | done |
 | `object_tree.search.status` | 　　搜索状态行 | control | active | done |
 | `object_tree.search.results` | 　　搜索结果列表 | container | active | done |
@@ -1317,7 +1317,7 @@ kind `area` · status `active`
 
 - 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`sidebar_min`、`sidebar_max`、`row_height_tree`
 - 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证 F5 后旧资源行移出导航，旧菜单被拒绝；test_15_refresh_regressions.py::test_objects_list_refreshes_on_reentry_and_f5 验证 Objects 原作用域重列。）
-- 实现备注：侧栏只有对象树：没有页脚按钮、没有刷新按钮、没有平铺列表、没有分页统计。搜索框与搜索状态行不画在侧栏里，放在状态栏左边沟（见 object_tree.search），宽度跟随分栏线。
+- 实现备注：导航侧栏容纳搜索和对象树。搜索框与搜索状态行在导航顶部（见 object_tree.search）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1455,20 +1455,20 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 | load | 层在飞 / 请求失败 | 占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分 | `src/tree.rs:3032、src/tree.rs:3221` |
 | right_click | 占位行 | 直接返回，不弹菜单 | `src/tree.rs:3266` |
 
-### `object_tree.search` 对象树搜索区（状态栏左边沟）
+### `object_tree.search` 对象树搜索区
 
 kind `container` · status `active` · parent `object_tree`
 
-- 样式：槽位 `status_bar.left_gutter`；尺寸 `status_height`、`sidebar_width`
-- 同步：Linux done（§7 状态栏左边沟 + §2.4 搜索）
-- 实现备注：v0.2.4 从树顶部搬到状态栏左边沟：宽度跟随分栏线，搜索框不把它撑宽，竖线延伸到底。
+- 样式：槽位 `sidebar`；尺寸 `sidebar_width`
+- 同步：Linux done（test_10_layout.py Ctrl+F 在两种外壳下聚焦导航语义容器内的搜索入口。 tests/ui/linux/results/run.9ME2GefI/report.json）
+- 实现备注：搜索框和反馈随导航侧栏显隐。
 
 ### `object_tree.search.box` 搜索输入框
 
 kind `control` · status `active` · parent `object_tree.search`
 
-- 样式：槽位 `status_bar.left_gutter`；尺寸 `font_ui`、`secondary_min_height`
-- 无障碍：可访问名「搜索连接、库、表」；Tab Ctrl+F 聚焦；Esc 清空并回到树页
+- 样式：槽位 `sidebar`；尺寸 `font_ui`、`secondary_min_height`
+- 无障碍：可访问名「搜索连接、库、表」；Tab Ctrl+F 请求显示导航并聚焦；Esc 清空并回到树页
 - 同步：Linux done（§2.4 搜索；Ctrl+F / Enter / Esc 三键）
 - 实现备注：placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。连接名对注册表里全部连接在客户端做大小写不敏感 contains；库 / 表 / 视图只查已打开（已连接、有浏览会话）的连接，逐库发 ListNodes 名称包含，服务端下推 LIKE，前端不拼通配符。
 
@@ -1476,14 +1476,14 @@ kind `control` · status `active` · parent `object_tree.search`
 |---|---|---|---|
 | key 任意输入 | 搜索框有输入 | 防抖 250 ms 后搜索；空白串不搜索并回到树页 | `src/tree.rs:2198、src/tree.rs:2233` |
 | key Enter | 搜索框内有文本 | 无条件重新派发一次搜索：取消待触发的定时器、代次 +1，重新清结果并发请求（同一关键词再按也真的再查一遍）；空文本按「停止搜索」处理 | `src/tree.rs:2083、src/tree.rs:2181` |
-| key Ctrl+F | 工作区存在 | 把焦点交给搜索框（状态栏左边沟） | `src/ui.rs:3884、src/tree.rs:1450` |
+| key Ctrl+F | 启动态或连接态工作区外壳存在 | 请求展开导航，空间足够时把焦点交给搜索框 | `src/ui.rs:3884、src/tree.rs:1450` |
 | key Esc | 搜索框有焦点 | 清空输入、回到树页；结果行随列表销毁，结果页里收起过的层级一并忘掉 | `src/tree.rs:2488` |
 
 ### `object_tree.search.status` 搜索状态行
 
 kind `control` · status `active` · parent `object_tree.search`
 
-- 样式：槽位 `status_bar.left_gutter`；尺寸 `font_status`
+- 样式：槽位 `sidebar`；尺寸 `font_status`
 - 无障碍：可访问名「搜索状态」
 - 同步：Linux done（§2.4 状态行与三种失败文案）
 - 实现备注：单行省略，全文进 tooltip。
@@ -1496,7 +1496,7 @@ kind `control` · status `active` · parent `object_tree.search`
 
 kind `container` · status `active` · parent `object_tree.search`
 
-- 样式：槽位 `status_bar.left_gutter`
+- 样式：槽位 `sidebar`
 - 同步：Linux done（§2.4 结果行点击语义）
 - 实现备注：搜索按捕获的档案和浏览会话校验异步结果。定位成功才更新逻辑选择，定位不会发起 Objects 浏览或 Inspector 预览。结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。只出现「连接名命中」或「其中有命中」的连接；命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 Tables 下；祖先行箭头可收起 / 再展开，收起状态按路径记、重新搜索仍生效。
 
@@ -1859,14 +1859,17 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.error.retry` | 　　「重试」/「重新连接」 | control | active | done |
 | `shell.backend_failure` | 　后端失效恢复（「重启 Sqarvo」对话框与重启流程） | container | active | done |
 | `shell.menu.mcp` | 　　MCP | item | active | done |
+| `shell.layout` | 　窗口三栏布局 | container | active | done |
+| `shell.toolbar.layout` | 　　导航、专注模式、信息面板 | control | active | done |
+| `shell.menu.reset_layout` | 　　视图 → 重置布局 | control | active | done |
 
 ### `shell` 窗口外壳
 
 kind `area` · status `active`
 
 - 样式：尺寸 `header_height`、`toolbar_height`、`status_height`、`min_window_width`、`min_window_height`
-- 同步：Linux done（§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序）
-- 实现备注：自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 同样没有独立菜单行——菜单收进自绘标题行右侧的汉堡按钮（v0.2.5 起）。页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。
+- 同步：Linux done（test_01_startup.py 启动及主菜单，test_10_layout.py 两种外壳布局入口。 tests/ui/linux/results/run.9ME2GefI/report.json）
+- 实现备注：自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 同样没有独立菜单行——菜单收进自绘标题行右侧的汉堡按钮（v0.2.5 起）。页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页。两种工作区外壳共用 shell.layout。
 
 ### `shell.window` 主窗口（最小尺寸 · 几何恢复 · 关闭守卫入口）
 
@@ -1874,12 +1877,12 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：尺寸 `min_window_width`、`min_window_height`
 - 无障碍：可访问名「Sqarvo 主窗口」
-- 同步：Linux done（§1.1 最小尺寸 / 几何恢复 / 关闭窗口；window_size.rs relayout + apply，ui.rs connect_close_request）
+- 同步：Linux done（test_10_layout.py 实际三档最小窗口、原生最大化、关闭、重启及恢复；window_size / window_state 单测。 tests/ui/linux/results/run.9ME2GefI/report.json）
 - 实现备注：最小尺寸由 window_size::relayout 算出后交给 set_size_request，GTK 转成 toplevel 的最小尺寸（Wayland 走 xdg_toplevel.set_min_size，X11 走 WM normal hints）。位置不恢复是平台事实：GTK4 没有读写 toplevel 位置的 API，window_x / window_y 照常写入与校验但不拿来挪窗口（blocked 的替代口径见 README「同步」一节）。关闭是一次性的：确认过一次（`close_confirmed`）后再关不二次弹窗，已进入关闭流程（`closing == true`）时的重复关闭请求直接放行，不重复跑清理。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 窗口创建 / 每次重排 | 最小窗口按显示器逻辑工作区收敛：min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)（T = 密度档，取值来自 metrics.toml）；`--window-size` 给更小的值时被抬到当次下限并记 `[monitor] 目标窗口 … 低于最小窗口 …` | `src/window_size.rs:205、src/window_size.rs:136、src/ui.rs:171` |
+| load | 窗口创建 / 每次重排 | 最小窗口按显示器逻辑工作区收敛：min(该档最小宽, 工作区宽-32) × min(该档最小高, 工作区高-48)（该档基准取值来自 metrics.toml）；`--window-size` 给更小的值时被抬到当次下限并记 `[monitor] 目标窗口 … 低于最小窗口 …` | `src/window_size.rs:205、src/window_size.rs:136、src/ui.rs:171` |
 | load | window.json 里有记忆的尺寸 / 最大化 | 尺寸与最大化恢复、**位置不恢复**；记忆矩形不落在任何当前显示器几何内（±32 容差）时丢弃几何、改用分档推荐并记 `[monitor] 几何越界已丢弃：…` | `src/window_size.rs:365、src/window_state.rs:209` |
 | load | window.json 记的几何属于旧档（记忆尺寸的档位 ≠ 当前档） | 按当前档重算窗口并记 `[monitor] 档位导致窗口放大：1200x800 → 1888x1000（记忆尺寸属于 compact，当前 large）`；记忆矩形越界的校验规则不变（±32 容差内才恢复，否则丢弃改推荐尺寸） | `src/window_size.rs:365、src/window_size.rs:429` |
 | click | 点标题栏的关闭按钮 | 先过脏行守卫：任一个表数据标签有未提交的更改（脏行 / 标记删除 / 未提交的新增行）时**不关窗**，弹「有未提交的更改」确认框（逐表列出；本体不在这里登记），选「取消」什么都不做、「放弃更改并退出」才继续。确认过一次后再关不再二次弹窗；继续后显示「正在停止后端并清理端点文件…」，等 worker 回报 `ShutdownComplete` 才销毁窗口 | `src/ui.rs:414、src/ui.rs:985、src/ui.rs:972` |
@@ -2272,6 +2275,41 @@ kind `item` · status `active` · parent `shell.menu`
 |---|---|---|---|
 | click | 主菜单可用 | 打开 MCP 管理页 | `frontend/linux/src/ui.rs、frontend/linux/src/mcp_management.rs` |
 
+### `shell.layout` 窗口三栏布局
+
+kind `container` · status `active` · parent `shell`
+
+- 样式：尺寸 `workspace_target_width`、`workspace_target_height`、`panel_handle`、`panel_recovery`、`sidebar_width`、`sidebar_min`、`sidebar_max`、`inspector_width`、`inspector_min`、`inspector_max`
+- 原生控件：gtk:GtkPaned
+- 同步：Linux done（test_10_layout.py 自动折叠恢复、两侧拖拽及双击、偏好持久化，活动事务与未保存编辑下 gRPC 派发计数零增加；layout 单测覆盖精确阈值。test_15_refresh_regressions.py 复验同一导航选择、Objects 范围、标题和业务 RPC 计数，证据 tests/ui/linux/results/run.zZWok5oY/report.json。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例覆盖隐藏侧栏后的焦点转移、主动隐藏后扩宽、事务与 Objects 的业务 RPC 计数。 tests/ui/linux/results/run.FlRhTuGR/report.json）
+- 实现备注：首选宽度和主动显示偏好持久化。实际分配和运行期专注、优先请求及折叠历史不落盘。优先留出中央目标宽度。先缩右再隐藏右，再缩左再隐藏左。仅可见侧栏占用把手，自动恢复须满足恢复余量。主动展开自动折叠栏时给予临时优先，必要时隐藏另一侧；重新容纳两侧时恢复正常优先级。显隐即时生效，保留导航选择、Objects 范围、会话、编辑与事务。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| drag | 该侧栏及其分隔把手可见 | 调整该侧首选宽度；必要时压缩另一栏到下限，保持另一栏可见及其首选宽度。 | `src/layout.rs PanelLayout::drag` |
+| double_click | 该侧栏及其分隔把手可见 | 恢复该侧默认首选宽度，按当前可用宽度重新求解。 | `src/shell.rs Shell::install_handle_gestures` |
+
+### `shell.toolbar.layout` 导航、专注模式、信息面板
+
+kind `control` · status `active` · parent `shell.toolbar`
+
+- 无障碍：可访问名「导航 / 专注模式 / 信息面板」
+- 图标：`layout.navigation`、`layout.focus`、`layout.inspector`
+- 原生控件：gtk:GtkToggleButton
+- 同步：Linux done（test_10_layout.py 启动态和连接态的布局按钮、pressed 状态、临时优先、专注及退出。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例确认隐藏导航后键盘焦点移至「导航」。 tests/ui/linux/results/run.FlRhTuGR/report.json）
+- 实现备注：三个布局按钮位于主工具栏最右，按导航、专注模式、信息面板排序。启动态及连接态都可操作。按下状态来自实际可见侧栏或当前专注状态。专注期间点击某侧栏按钮会退出专注并请求显示该栏。纯布局命令，沿用 shell.layout 计算和状态。
+
+### `shell.menu.reset_layout` 视图 → 重置布局
+
+kind `control` · status `active` · parent `shell.menu`
+
+- 无障碍：可访问名「重置布局」
+- 同步：Linux done（test_10_layout.py 通过菜单绑定的 win.reset-layout 恢复偏好和运行状态，保留窗口、密度、主题和语言。 tests/ui/linux/results/run.9ME2GefI/report.json）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 工作区外壳存在 | 恢复两侧栏默认首选宽度和主动显示，清除专注、临时优先和自动折叠历史，以现有窗口宽度重新求解。 | `src/ui.rs win.reset-layout` |
+
 ## 启动态外壳（`startup`）
 
 握手期间的 Loading 页，以及握手成功后、还没有连接数据库时的六区域外壳：侧栏是与连接态同一个对象树（全部「未连接」）、主区域是固定 Objects 页的空态、信息面板常驻留白、状态栏写「未连接」。这里登记的是「启动态」这一档表面，不重复登记表结构。
@@ -2334,24 +2372,24 @@ kind `control` · status `active` · parent `startup.loading`
 kind `container` · status `active` · parent `startup`
 
 - 样式：槽位 `startup`；尺寸 `sidebar_width`、`inspector_width`、`status_height`、`tab_strip_height`
-- 同步：Linux done（§1.1 应用启动（落地工作区）+ §7 状态栏行 2；show_startup_workspace 与 StartupWorkspace::new）
-- 实现备注：握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。面板宽度读窗口级记忆（与连接态共用同一个值），启动态拖一次会被带进连上后的工作区。标签条右侧的 ＋ 保留在启动态但置为不可用（tooltip「先连接数据库再新建查询标签」）；该按钮的登记权归标签条所属区，本区只在结果里提到它。主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区只保证启动态停在这一页、不换内容。这一页是 startup.rs 自己建的（不走 tabs::add_objects_page）：页签标题 / 图标 / pinned 与连接态同语义（startup.rs:188-192），关闭请求有兜底日志「[startup] Objects 页固定存在，不可关闭」（startup.rs:195-198），页内 open 回调换成日志「[startup] 尚未连接数据库，忽略打开表」（startup.rs:184-186，启动态不会有可打开的行）。页签结构仍归 objects_page 区，本区只记这一份构造。信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时那两行不出现，不编造，startup.rs:110-135）。启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。启动态没有表标签：状态栏行 1 的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。
+- 同步：Linux done（test_01_startup.py 握手与启动摘要；test_10_layout.py 启动态布局、连接后继承和 840×600 可达性。 tests/ui/linux/results/run.9ME2GefI/report.json）
+- 实现备注：握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。启动态与连接态共用 Shell；切换时继承首选宽度、显示偏好、自动折叠历史、临时优先和专注模式。标签条右侧的 ＋ 保留在启动态但置为不可用（tooltip「先连接数据库再新建查询标签」）；该按钮的登记权归标签条所属区，本区只在结果里提到它。主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区只保证启动态停在这一页、不换内容。这一页是 startup.rs 自己建的（不走 tabs::add_objects_page）：页签标题 / 图标 / pinned 与连接态同语义（startup.rs:188-192），关闭请求有兜底日志「[startup] Objects 页固定存在，不可关闭」（startup.rs:195-198），页内 open 回调换成日志「[startup] 尚未连接数据库，忽略打开表」（startup.rs:184-186，启动态不会有可打开的行）。页签结构仍归 objects_page 区，本区只记这一份构造。信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时那两行不出现，不编造，startup.rs:110-135）。启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。启动态没有表标签：中央操作行的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 握手成功（Event::Connected） | 外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板常驻且内容区留白、状态栏写「未连接」；连上数据库前不存在表标签 | `src/ui.rs:1570、src/ui.rs:1608、src/startup.rs:99` |
+| load | 握手成功（Event::Connected） | 外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板按布局状态显隐，未选中对象时内容区留白、状态栏写「未连接」；连上数据库前不存在表标签 | `src/ui.rs:1570、src/ui.rs:1608、src/startup.rs:99` |
 | load | 主工具条是窗口级控件（不随外壳重建） | 握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时「新建查询」仍禁用、其余五个可用（5/6，tooltip「尚未连接数据库：先连接再新建查询标签」） | `src/startup.rs:237、src/shell.rs:862、src/shell.rs:912` |
 | load | 连接注册表为空（没有已保存的连接） | 侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么 | `src/tree.rs:1520、src/tree.rs:3179` |
 | click | 点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接 | 把固定 Objects 页摆到最前并**保持空态**：说明行仍是「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」，不列库 / 表、不换成「未实现」说明（不编造内容）；日志「[startup] 种类入口「<名称>」：尚未连接数据库，Objects 页保持空态」 | `src/startup.rs:298、src/ui.rs:1092` |
 
 ## 状态栏（`status_bar`）
 
-窗口底部两行：左边沟（对象树搜索区）、行 1 的行操作与分页器、行 2 的 SQL 摘要与 Last Refresh。它是同一个动作的第二个入口——可用性与读数全部来自当前标签，不在这里另存一份状态。
+窗口底部为全宽状态栏，中央操作行承载行操作和分页。读数与可用性跟随当前标签。
 
 | 组件 | 名称 | kind | 状态 | Linux |
 |---|---|---|---|---|
 | `status_bar` | 状态栏 | area | active | done |
-| `status_bar.gutter` | 　左边沟（分栏线左侧整块） | container | active | done |
+| `status_bar.gutter` | 　左边沟（分栏线左侧整块） | container | removed | 已清 |
 | `status_bar.row1` | 　行 1（行操作 · 选中数 · 展示形式 · 分页器） | container | active | done |
 | `status_bar.row1.ops` | 　　行操作按钮组（新增 / 删除 / 应用 / 撤销 / 刷新 / 取消） | container | active | done |
 | `status_bar.row1.ops.add` | 　　　「新增」图标按钮 | control | active | done |
@@ -2368,7 +2406,7 @@ kind `container` · status `active` · parent `startup`
 | `status_bar.row1.pager.next` | 　　　「下一页」按钮 | control | active | done |
 | `status_bar.row1.pager.last` | 　　　「末页」按钮 | control | active | done |
 | `status_bar.row1.pager.summary` | 　　　只读页码摘要（第 N 页 / 共 M 页 · 总数） | control | active | done |
-| `status_bar.row2` | 　行 2（SQL 摘要 · Last Refresh / 空态摘要） | container | active | done |
+| `status_bar.row2` | 　全局状态行（SQL 摘要 · Last Refresh / 空态摘要 / MCP） | container | active | done |
 | `status_bar.row2.sql` | 　　SQL 摘要（左段） | control | active | done |
 | `status_bar.row2.last_refresh` | 　　Last Refresh（右段） | control | active | done |
 | `status_bar.row2.session` | 　　空态摘要（连接名 / 未连接 · 驱动 N · 浏览会话 M） | control | active | done |
@@ -2378,28 +2416,22 @@ kind `container` · status `active` · parent `startup`
 kind `area` · status `active`
 
 - 样式：尺寸 `status_height`、`row_height_tree`；颜色 `sqarvo_separator`、`sqarvo_status_fg`、`window_fg_color`
-- 同步：Linux done（v0.2.5 Linux 客户端；§7 两行结构逐条对照 shell.rs（StatusBar::new / apply_snapshot））
-- 实现备注：两行各 24（row_height_tree），总高 status_height = 48（v0.2.4 从 56 收到 48）；两行的高度不单独进 metrics，48 = 2 × 24 由这两个 key 共同表达。整条贴窗口底部（valign = End），上边界一条 1px 分隔线（@sqarvo_separator）：1px 描边不进 metrics。只有两种前景色：可用按钮与输入值一个色（@window_fg_color），说明文字与禁用按钮同一个灰（@sqarvo_status_fg）；状态栏里不允许出现第三档灰。行 1 与行 2 之外没有第三行：记录位置、连接名、库名、事务状态、耗时都不在状态栏（v0.2.3.3 删除），右下角也没有第二个刷新按钮。左边沟在构造时按侧栏宽度给初值，之后跟着分栏线走；搜索框垂直居中、不撑高状态栏。
+- 同步：Linux done（test_10_layout.py 验证全局状态和中央工作区语义容器及原有读数；test_01_startup.py 验证启动摘要。 tests/ui/linux/results/run.9ME2GefI/report.json）
+- 实现备注：全宽贴窗口底部，展示 SQL 摘要、最后刷新、启动态连接摘要及 MCP 状态。行操作和分页属于中央工作区，保留原有控件与命令。导航搜索及反馈归 object_tree.search。
 
 ### `status_bar.gutter` 左边沟（分栏线左侧整块）
 
-kind `container` · status `active` · parent `status_bar`
+kind `container` · status `removed` · parent `status_bar`
 
-- 样式：槽位 `status_bar.left_gutter`；尺寸 `sidebar_width`、`status_height`；颜色 `sqarvo_separator`
-- 同步：Linux done（§7 左边沟（宽度跟分栏、竖线到底）；set_gutter_width 与 mount_search）
-- 实现备注：宽度 = 侧栏当前宽度（set_gutter_width），右侧一条竖分割线一直延伸到底，与上面的分栏线同一根轴。沟里只放对象树搜索框与它下方一行搜索状态（归属对象树功能区，见 object_tree.search / .box / .status）；搜索框本体不在这里重复登记。沟本身不加内边距：搜索框的左右 8（gap_md）记在搜索框自己的 margin 上，改宽度不会把它撑开。
-
-| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
-|---|---|---|---|
-| drag | 拖动侧栏与工作区之间的分栏线 | 左边沟宽度跟随分栏位置同步，竖分割线与分栏线始终同一根轴；搜索框不把沟撑宽，也不撑高状态栏 | `src/shell.rs:1301、src/shell.rs:1250` |
+- 同步：Linux removed（Shell::mount_search 将原搜索控件挂到导航顶部。）
 
 ### `status_bar.row1` 行 1（行操作 · 选中数 · 展示形式 · 分页器）
 
 kind `container` · status `active` · parent `status_bar`
 
-- 样式：槽位 `status_bar.row1`；尺寸 `row_height_tree`、`gap_md`
-- 同步：Linux done（§7 行 1；shell.rs 行 1 三组的组装与 audit_groups 自检）
-- 实现备注：左起就是行操作：左边沟已经整块留给对象树，行 1 里没有「连接过滤」也没有第二个刷新按钮。中间一个可扩展空白把右组（选中数 · 展示形式 · 分页器）推到窗口右端；间距 8（gap_md）。行 1 自己没有交互与读数：可用性来自 status_bar.row1.ops 的六个按钮、分页器来自 status_bar.row1.pager，本组件只记布局。
+- 样式：槽位 `workspace.content`；尺寸 `row_height_tree`、`gap_md`
+- 同步：Linux done（test_10_layout.py 活动事务时按钮及分页器仍归中央工作区。 tests/ui/linux/results/run.9ME2GefI/report.json）
+- 实现备注：左起为行操作，操作行位于中央工作区底部。中间一个可扩展空白把右组（选中数 · 展示形式 · 分页器）推到中央工作区右端；间距 8（gap_md）。行 1 自己没有交互与读数：可用性来自 status_bar.row1.ops 的六个按钮、分页器来自 status_bar.row1.pager，本组件只记布局。
 
 ### `status_bar.row1.ops` 行操作按钮组（新增 / 删除 / 应用 / 撤销 / 刷新 / 取消）
 
@@ -2411,8 +2443,8 @@ kind `container` · status `active` · parent `status_bar.row1`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 当前标签是表标签 | 六个按钮的可用性与页内按钮同一条判定（直接读页内按钮的 sensitive，或用数据页的显式谓词，不重复判定）；「刷新」单独判定（已打开表、无 RPC 在途、无脏行、无未提交新行）；「取消」只在提交批次在途时可点（查询页是另一档，见下一条）；全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」，原因取数据页当前状态（如「正在读取数据」「连接已断开」「没有可提交的更改」） | `src/shell.rs:1468、src/shell.rs:1478、src/data_page.rs:5043、src/data_page.rs:5076、src/data_page.rs:5134` |
-| load | 当前标签不是表标签（Objects 页 / 查询标签 / 启动态未连接） | 六个按钮全部禁用并给原因：Objects 页「Objects 页：在对象树里打开表或新建查询标签」；未连接「未连接：从左侧选择一个连接开始」；查询标签按结果可编辑性给原因（例如「结果只读：执行单表查询后才能编辑」）。唯一例外是「取消」（改动确认单 #7，两用）：查询标签上按**查询是否在途**给值——在途可点（点它取消查询），空闲置灰并写「当前没有执行中的查询」。同时分页摘要、选中数、Last Refresh 整格隐藏 | `src/shell.rs:1511、src/ui.rs:1878、src/startup.rs:251、src/sql_page.rs:923` |
+| load | 当前标签是表标签 | 六个按钮的可用性与页内按钮同一条判定（直接读页内按钮的 sensitive，或用数据页的显式谓词，不重复判定）；「刷新」单独判定（已打开表、无 RPC 在途、无脏行、无未提交新行）；「取消」只在提交批次在途时可点（查询页是另一档，见下一条）；全部禁用时每个 tooltip 追加「（当前不可用：<原因>）」，原因取数据页当前状态（如「正在读取数据」「连接已断开」「没有可提交的更改」） | `src/shell.rs:1123、src/shell.rs:1133、src/data_page.rs:5043、src/data_page.rs:5076、src/data_page.rs:5134` |
+| load | 当前标签不是表标签（Objects 页 / 查询标签 / 启动态未连接） | 六个按钮全部禁用并给原因：Objects 页「Objects 页：在对象树里打开表或新建查询标签」；未连接「未连接：从左侧选择一个连接开始」；查询标签按结果可编辑性给原因（例如「结果只读：执行单表查询后才能编辑」）。唯一例外是「取消」（改动确认单 #7，两用）：查询标签上按**查询是否在途**给值——在途可点（点它取消查询），空闲置灰并写「当前没有执行中的查询」。同时分页摘要、选中数、Last Refresh 整格隐藏 | `src/shell.rs:1166、src/ui.rs:1878、src/startup.rs:251、src/sql_page.rs:923` |
 
 ### `status_bar.row1.ops.add` 「新增」图标按钮
 
@@ -2426,7 +2458,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 可编辑的表标签，且没有在途请求、没有未提交的新行草稿 | 在当前表末尾插入一行草稿（与页内新增同一条路径，不落库）：新行可逐格填值，填完要按「应用」才提交 | `src/shell.rs:1066、src/data_page.rs:5156` |
+| click | 可编辑的表标签，且没有在途请求、没有未提交的新行草稿 | 在当前表末尾插入一行草稿（与页内新增同一条路径，不落库）：新行可逐格填值，填完要按「应用」才提交 | `src/shell.rs:789、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.delete` 「删除」图标按钮
 
@@ -2440,7 +2472,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 可编辑的表标签且有选中行，无在途请求 | 把选中行标记为待删除（提交前可「撤销」回来），不立即发请求 | `src/shell.rs:1066、src/data_page.rs:5156` |
+| click | 可编辑的表标签且有选中行，无在途请求 | 把选中行标记为待删除（提交前可「撤销」回来），不立即发请求 | `src/shell.rs:789、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.apply` 「应用」图标按钮
 
@@ -2449,12 +2481,12 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「应用：提交所有脏行的变更」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.apply`
-- 同步：Linux done（§7 行 1；唯一提交入口；RowOp::Apply → on_commit_clicked，可用性来自 data_page.rs 的 commit_available()；在途文案由 submit_batch::commit_button_label 计算（--qa-expect-submit button= 观测量，不依赖可见按钮））
+- 同步：Linux done（test_08_data_page_commit_entry.py 初始禁用与入口唯一；test_10_layout.py 布局变更后保留草稿与应用入口。 tests/ui/linux/results/run.9ME2GefI/report.json）
 - 实现备注：这是表数据页 / 单表查询结果**唯一**的提交入口：工具条「提交更改」已移除（data_page.toolbar.commit，removed_in v0.2.3.4），在途取消由同组「取消」承担。可用性由数据页显式谓词 `commit_available()` 给出（在途提交时点它即取消、取消中禁用，其余按可编辑 + 有待提交变更 + 不忙，只读 / 失败 / 断连最后覆盖），状态栏不重复判定，也不再读页内按钮的 sensitive。危险操作判定不在这里另写一套：本地判定（>100 行或含任何删除）与服务端 acknowledge_risk 都走数据页的同一条路径。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有脏行且没有在途提交（提交在途时点它就取消本批，取消中禁用） | 提交本批变更（全部成功后再 Commit）；变更 >100 行或含任何删除时先弹「确认提交变更？」（正文给更新 / 删除行数与删除警告，破坏性默认取消；取消 →「已取消提交（未发送任何变更）」），服务端要求 acknowledge_risk 时再走同一个对话框 | `src/shell.rs:1107、src/data_page.rs:5198（RowOp::Apply → on_commit_clicked）、src/data_page.rs:commit_available、src/table_data.rs:535` |
+| click | 有脏行且没有在途提交（提交在途时点它就取消本批，取消中禁用） | 提交本批变更（全部成功后再 Commit）；变更 >100 行或含任何删除时先弹「确认提交变更？」（正文给更新 / 删除行数与删除警告，破坏性默认取消；取消 →「已取消提交（未发送任何变更）」），服务端要求 acknowledge_risk 时再走同一个对话框 | `src/shell.rs:830、src/data_page.rs:5198（RowOp::Apply → on_commit_clicked）、src/data_page.rs:commit_available、src/table_data.rs:535` |
 
 ### `status_bar.row1.ops.discard` 「撤销」图标按钮
 
@@ -2468,7 +2500,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有未提交的编辑、删除标记或新行草稿，无在途请求 | 放弃全部未提交的改动（含新行草稿与删除标记），已打开的空事务一并回滚；数据回到最后一次读取的状态 | `src/shell.rs:1066、src/data_page.rs:5156` |
+| click | 有未提交的编辑、删除标记或新行草稿，无在途请求 | 放弃全部未提交的改动（含新行草稿与删除标记），已打开的空事务一并回滚；数据回到最后一次读取的状态 | `src/shell.rs:789、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.refresh` 「刷新」图标按钮
 
@@ -2482,7 +2514,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 已打开表、无 RPC 在途、无脏行与未提交新行 | 重新读取当前表的第一页（保持当前排序与筛选，回到第 1 页）；有未提交更改时被守卫拦下并说明原因 | `src/shell.rs:1066、src/data_page.rs:5076、src/data_page.rs:5156` |
+| click | 已打开表、无 RPC 在途、无脏行与未提交新行 | 重新读取当前表的第一页（保持当前排序与筛选，回到第 1 页）；有未提交更改时被守卫拦下并说明原因 | `src/shell.rs:789、src/data_page.rs:5076、src/data_page.rs:5156` |
 
 ### `status_bar.row1.ops.cancel` 「取消」图标按钮（两用：取消查询 / 中止提交批次）
 
@@ -2496,9 +2528,9 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 当前页是查询标签，且查询在途（Loading / Streaming） | 取消这条查询（与 Esc、QA 脚本同一个方法）：发 Cancel 并立即进入「已取消 · 已保留 N 行」；重复点幂等（第二次起只记日志、不发 RPC）。查询结束（含取消）后按钮自行置灰 | `src/sql_page.rs:1055、src/sql_page.rs:1100、src/sql_page.rs:521、src/shell.rs:1500、src/shell.rs:1566` |
-| click | 提交批次在途（Submitting） | 中止本批并整批回滚已执行的行；重复点幂等（只写日志），提交结束后按钮自行置灰 | `src/shell.rs:1500、src/data_page.rs:5050、src/data_page.rs:5156` |
-| load | 当前页切换到查询标签 / 表数据标签 / Objects 页 | 按钮的语义、tooltip 与可访问名跟着换：查询页「取消当前查询（Esc）」、数据页「取消在途的提交批次」、Objects 页两者都不成立（置灰 + 原因）；可用性各自按自己的在途状态给值 | `src/shell.rs:1069、src/shell.rs:1548、src/ui.rs:1931` |
+| click | 当前页是查询标签，且查询在途（Loading / Streaming） | 取消这条查询（与 Esc、QA 脚本同一个方法）：发 Cancel 并立即进入「已取消 · 已保留 N 行」；重复点幂等（第二次起只记日志、不发 RPC）。查询结束（含取消）后按钮自行置灰 | `src/sql_page.rs:1055、src/sql_page.rs:1100、src/sql_page.rs:521、src/shell.rs:1155、src/shell.rs:1221` |
+| click | 提交批次在途（Submitting） | 中止本批并整批回滚已执行的行；重复点幂等（只写日志），提交结束后按钮自行置灰 | `src/shell.rs:1155、src/data_page.rs:5050、src/data_page.rs:5156` |
+| load | 当前页切换到查询标签 / 表数据标签 / Objects 页 | 按钮的语义、tooltip 与可访问名跟着换：查询页「取消当前查询（Esc）」、数据页「取消在途的提交批次」、Objects 页两者都不成立（置灰 + 原因）；可用性各自按自己的在途状态给值 | `src/shell.rs:792、src/shell.rs:1203、src/ui.rs:1931` |
 
 ### `status_bar.row1.selected` 选中行数（N selected）
 
@@ -2511,7 +2543,7 @@ kind `control` · status `active` · parent `status_bar.row1`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 表标签且选中行数大于 0 | 显示「N selected」（选中 1 行也出现，不只多选）；tooltip「已选中 N 行：Ctrl/Shift 可多选，删除按批量语义提交」；选中集清空时整格隐藏 | `src/shell.rs:1429、src/data_page.rs:5043` |
+| load | 表标签且选中行数大于 0 | 显示「N selected」（选中 1 行也出现，不只多选）；tooltip「已选中 N 行：Ctrl/Shift 可多选，删除按批量语义提交」；选中集清空时整格隐藏 | `src/shell.rs:1084、src/data_page.rs:5043` |
 
 ### `status_bar.row1.detail_toggle` 展示形式切换（按行浏览 / 字段 · 值）
 
@@ -2520,25 +2552,25 @@ kind `control` · status `active` · parent `status_bar.row1`
 - 样式：尺寸 `icon_button_width`、`icon_button_height`、`gap_md`
 - 无障碍：可访问名「字段 / 值：只看选中行的每个字段与它的值」；Tab 在行操作组之后、分页器之前
 - 图标：`view.detail_toggle`
-- 同步：Linux done（§7 行 1 展示形式切换；v0.2.5 RowOp::ToggleDetail 与快照回推）
+- 同步：Linux done（§7 行 1 展示形式切换；v0.2.5 RowOp::ToggleDetail 与快照回推 收尾用例选择数据行并打开详情，切换 Objects / 查询后检查详情按下态复位。 tests/ui/linux/results/run.FlRhTuGR/report.json）
 - 实现备注：位置在分页器**前方**（§7 / workspace-model §7 的同一处摆放）：选中数 → 展示形式 → 分页器。它是 toggle，自己不记状态：按下只把「用户按了这一下」交给数据页，选中态由数据页快照推回，否则切标签 / 换表后按钮和屏幕会各说一套。按下态沿用 Adwaita 的 flat toggle 外观（未单独写主题 token，P1 定色）。只读连接也允许（它只是换一种看法，不写库）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 有表标签且选中了一行（不要求可编辑） | 数据网格在按行浏览与「字段 | 值」两列之间切换：按下后只讲选中的那一行（字段名 + 当前值，与网格同一份显示文本），再按一次切回按行浏览；不可用时置灰，tooltip 按场景给「字段 / 值：只看选中行的每个字段与它的值（先选中一行）」「…（当前不可用：<原因>）」「…（再点一次切回按行浏览）」 | `src/shell.rs:1168、src/data_page.rs:2074、src/shell.rs:1486` |
-| load | 数据页推来新快照（切标签 / 换表 / 选中集被清空） | 选中态由快照的展示形式推回；选中集清空或换表时自动复位到按行浏览，不复位成「上次按下的样子」 | `src/shell.rs:1426、src/data_page.rs:2094` |
+| click | 有表标签且选中了一行（不要求可编辑） | 数据网格在按行浏览与「字段 | 值」两列之间切换：按下后只讲选中的那一行（字段名 + 当前值，与网格同一份显示文本），再按一次切回按行浏览；不可用时置灰，tooltip 按场景给「字段 / 值：只看选中行的每个字段与它的值（先选中一行）」「…（当前不可用：<原因>）」「…（再点一次切回按行浏览）」 | `src/shell.rs:891、src/data_page.rs:2074、src/shell.rs:1141` |
+| load | 数据页推来新快照（切标签 / 换表 / 选中集被清空） | 选中态由快照的展示形式推回；选中集清空或换表时自动复位到按行浏览，不复位成「上次按下的样子」 | `src/shell.rs:1081、src/data_page.rs:2094` |
 
 ### `status_bar.row1.pager` 分页器（首页 / 上页 / 下页 / 末页 + 只读页码摘要）
 
 kind `container` · status `active` · parent `status_bar.row1`
 
 - 样式：尺寸 `pager_button_min_width`、`min_target`、`gap_sm`、`pager_font`
-- 同步：Linux done（§7 行 1 分页器；PAGER_NOTE + apply_snapshot 的可见性与可用性）
+- 同步：Linux done（test_10_layout.py 查看中央工作区内四个分页动作，未变更分页逻辑。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例切换两个独立表、Objects 和 SQL 后检查分页状态，并验证失连后分页禁用。 tests/ui/linux/results/run.FlRhTuGR/report.json）
 - 实现备注：四个翻页按钮连成一组（组内间距 0）+ 只读摘要，两者间距 6（gap_sm）；整组共用一条 tooltip。整组 tooltip：「offset 分页（#118）：首页 / 上页 / 下页 / 末页；页码只读，跳转到远处页码不在本版提供」。首页 / 末页用自有图标（`|<` / `>|`）：主题的双尖括号与相邻的单箭头只差一条线，压到小字号后读不出是两档不同动作。没有表标签时摘要整格隐藏、四个按钮置灰但不隐藏（保持行 1 右组宽度不跳，避免切标签时整行抖动）。旧契约 §7 写「按钮整格隐藏」，2026-11-12 按实现定稿为置灰不隐藏（契约 §9.1 已收口）。按钮动作只交给当前数据页，由数据页决定目标 offset 并在有未提交更改时拒绝——状态栏不自己算页码。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 当前标签不是表标签 | 摘要整格隐藏（不留「未打开表」占位），四个翻页按钮一律置灰，不出现「看起来能点」的按钮 | `src/shell.rs:1394、src/shell.rs:1422、src/shell.rs:1511` |
+| load | 当前标签不是表标签 | 摘要整格隐藏（不留「未打开表」占位），四个翻页按钮一律置灰，不出现「看起来能点」的按钮 | `src/shell.rs:1059、src/shell.rs:1077、src/shell.rs:1166` |
 
 ### `status_bar.row1.pager.first` 「首页」按钮
 
@@ -2552,7 +2584,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签，且不在第一页（无未提交更改） | 跳到第一页（offset 归零），排序 / 筛选保持；有未提交更改时由数据页拒绝并说明原因 | `src/shell.rs:1142、src/data_page.rs:331` |
+| click | 表标签，且不在第一页（无未提交更改） | 跳到第一页（offset 归零），排序 / 筛选保持；有未提交更改时由数据页拒绝并说明原因 | `src/shell.rs:865、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.previous` 「上一页」按钮
 
@@ -2566,7 +2598,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签且不在第一页（无未提交更改） | 退回上一页（offset 减一页），排序 / 筛选保持 | `src/shell.rs:1142、src/data_page.rs:331` |
+| click | 表标签且不在第一页（无未提交更改） | 退回上一页（offset 减一页），排序 / 筛选保持 | `src/shell.rs:865、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.next` 「下一页」按钮
 
@@ -2580,7 +2612,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签且还有下一页（无未提交更改） | 前进一页（offset 加一页），排序 / 筛选保持 | `src/shell.rs:1142、src/data_page.rs:331` |
+| click | 表标签且还有下一页（无未提交更改） | 前进一页（offset 加一页），排序 / 筛选保持 | `src/shell.rs:865、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.last` 「末页」按钮
 
@@ -2594,7 +2626,7 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表标签且已知总页数、不在末页（无未提交更改） | 跳到最后一页；总数未知时按钮置灰（不发请求、不编造页数） | `src/shell.rs:1142、src/data_page.rs:331` |
+| click | 表标签且已知总页数、不在末页（无未提交更改） | 跳到最后一页；总数未知时按钮置灰（不发请求、不编造页数） | `src/shell.rs:865、src/data_page.rs:331` |
 
 ### `status_bar.row1.pager.summary` 只读页码摘要（第 N 页 / 共 M 页 · 总数）
 
@@ -2607,15 +2639,15 @@ kind `control` · status `active` · parent `status_bar.row1.pager`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 表标签 | 写「第 P 页」，已知页数时写「第 P / M 页」，有总数时追加「 · 共 N 行」式总数；读取中写「读取中…」、读取失败写「读取失败」、断连写「已断开」；没有表标签时整格隐藏 | `src/shell.rs:1394、src/data_page.rs:1944` |
+| load | 表标签 | 写「第 P 页」，已知页数时写「第 P / M 页」，有总数时追加「 · 共 N 行」式总数；读取中写「读取中…」、读取失败写「读取失败」、断连写「已断开」；没有表标签时整格隐藏 | `src/shell.rs:1059、src/data_page.rs:1944` |
 
-### `status_bar.row2` 行 2（SQL 摘要 · Last Refresh / 空态摘要）
+### `status_bar.row2` 全局状态行（SQL 摘要 · Last Refresh / 空态摘要 / MCP）
 
 kind `container` · status `active` · parent `status_bar`
 
 - 样式：槽位 `status_bar.row2`；尺寸 `row_height_tree`、`gap_xl`、`gap_md`
-- 同步：Linux done（§7 行 2；workspace-model §7 的两段排版与 ASCII 冒号约束）
-- 实现备注：只有两段：左段 SQL 摘要（可省略），右段 Last Refresh，空态时右段换成一行启动摘要（连接名，或「未连接 · 驱动 N · 浏览会话 M」）。左段紧贴行操作正下方（同一左边界），不跨到窗口最左。文案一律用 ASCII 冒号（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线（实测偏高 2px）。行号区间、连接名、库名、事务状态、上次耗时都不在这里：表名 / 库在标签名里，事务在表格工具条里。
+- 同步：Linux done（test_10_layout.py 全局状态语义容器内同时读到 SQL、Last Refresh 及 MCP 文案。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例确认切到 Objects 或 SQL 后不显示前一个表的最后刷新。 tests/ui/linux/results/run.FlRhTuGR/report.json）
+- 实现备注：只有两段：左段 SQL 摘要（可省略），右段 Last Refresh，空态时右段换成一行启动摘要（连接名，或「未连接 · 驱动 N · 浏览会话 M」）。全局状态行横跨窗口，独立于中央操作区。文案一律用 ASCII 冒号（`SQL:` / `Last Refresh:`）：全角冒号会把中文行盒高度带进来，两段不在同一基线（实测偏高 2px）。行号区间、连接名、库名、事务状态、上次耗时都不在这里：表名 / 库在标签名里，事务在表格工具条里。
 
 ### `status_bar.row2.sql` SQL 摘要（左段）
 
@@ -2623,14 +2655,14 @@ kind `control` · status `active` · parent `status_bar.row2`
 
 - 样式：尺寸 `font_status`
 - 无障碍：可访问名「当前 SQL 摘要」
-- 同步：Linux done（§7 行 2 左段三种来源 + 断连 / 未执行文案）
+- 同步：Linux done（§7 行 2 左段三种来源 + 断连 / 未执行文案 收尾用例检查两个表独立摘要、空白 SQL 回退、执行后摘要及失连后跨页保留断开提示。 tests/ui/linux/results/run.FlRhTuGR/report.json）
 - 实现备注：单行省略：长语句截断成一行，全文进 tooltip。冒号是 ASCII 的 `SQL:`，不是全角「：」。当前标签是「字段 | 值」视图或正在编辑时也照旧显示这一页的摘要——摘要讲的是取数语句，不是展示形式。连接刚建立、还没有标签状态推送时，这一格会短暂显示「SQL: 已连接 · <服务端版本>」，首个标签状态到达后被覆盖。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 当前标签是表标签 | 写「SQL: <摘要>」：当前筛选 / 排序拼出的只读 `SELECT … LIMIT {offset}, {page_size}`（只展示、不执行，值以字面量呈现）；筛选或排序变化后跟着更新 | `src/shell.rs:1537、src/shell.rs:1450、src/data_page.rs:1944、src/browse_view.rs:821` |
+| load | 当前标签是表标签 | 写「SQL: <摘要>」：当前筛选 / 排序拼出的只读 `SELECT … LIMIT {offset}, {page_size}`（只展示、不执行，值以字面量呈现）；筛选或排序变化后跟着更新 | `src/shell.rs:1192、src/shell.rs:1105、src/data_page.rs:1944、src/browse_view.rs:821` |
 | load | 当前标签是查询标签 | 写「SQL: <最近一次查询摘要>」：沿用查询页自己的摘要（单行），没执行过时由查询页给文案 | `src/ui.rs:1865、src/ui.rs:1866` |
-| load | 当前标签是 Objects 页 | 重置为「SQL: 尚未执行」——Objects 页没有取数语句，不用上一张表的摘要蒙着 | `src/ui.rs:1879、src/shell.rs:1202` |
+| load | 当前标签是 Objects 页 | 重置为「SQL: 尚未执行」——Objects 页没有取数语句，不用上一张表的摘要蒙着 | `src/ui.rs:1879、src/shell.rs:925` |
 | load | 连接断开 / 启动态未连接 | 断连写「SQL: 连接已断开」；启动态写「SQL: 尚未连接」 | `src/ui.rs:600、src/startup.rs:248` |
 
 ### `status_bar.row2.last_refresh` Last Refresh（右段）
@@ -2639,13 +2671,13 @@ kind `control` · status `active` · parent `status_bar.row2`
 
 - 样式：尺寸 `font_status`、`gap_md`
 - 无障碍：可访问名「上次读取时间」
-- 同步：Linux done（§7 行 2 右段；apply_snapshot / tick_relative_time / clock_time）
+- 同步：Linux done（test_10_layout.py 有事务的数据页在全局状态容器内读取 Last Refresh；Shell::apply_snapshot 与 tick_relative_time 处理不变。 tests/ui/linux/results/run.9ME2GefI/report.json）
 - 实现备注：相对时间只到分钟：`<1m` / `Nm` / `Nh` / `Nd`，与文件列表同一套格式化函数。没有刷新过（从未读到数据）时整格隐藏，不写 `Last Refresh: —`。tooltip 给墙上时间 `HH:MM:SS` 并提示「offset 分页不保证跨页稳定」——相对时间只是一句提示，精确时刻在 tooltip 里。墙上时间由「现在减去已经过去的时长」反推（Instant 没有日历语义），转换失败时退回相对时间，不显示错误时间戳。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 读到过数据（有上次刷新时刻） | 写「Last Refresh: <相对时间>」；每 30 秒重算一次，数据页推送新快照时也重算 | `src/shell.rs:1439、src/shell.rs:1457、src/shell.rs:137、src/browse_view.rs:918` |
-| hover | 该格可见 | tooltip 给墙上时间与分页提示：「上次读取时间：HH:MM:SS（offset 分页不保证跨页稳定，必要时点旁边的刷新）」 | `src/shell.rs:1444、src/shell.rs:1587` |
+| load | 读到过数据（有上次刷新时刻） | 写「Last Refresh: <相对时间>」；每 30 秒重算一次，数据页推送新快照时也重算 | `src/shell.rs:1094、src/shell.rs:1112、src/shell.rs:62、src/browse_view.rs:918` |
+| hover | 该格可见 | tooltip 给墙上时间与分页提示：「上次读取时间：HH:MM:SS（offset 分页不保证跨页稳定，必要时点旁边的刷新）」 | `src/shell.rs:1099、src/shell.rs:1242` |
 
 ### `status_bar.row2.session` 空态摘要（连接名 / 未连接 · 驱动 N · 浏览会话 M）
 
@@ -2653,12 +2685,12 @@ kind `control` · status `active` · parent `status_bar.row2`
 
 - 样式：尺寸 `font_status`、`gap_sm`
 - 无障碍：可访问名「连接与会话摘要」
-- 同步：Linux done（§7 行 2 空态摘要；refresh_session + session_row_visible + idle_status_text）
+- 同步：Linux done（test_01_startup.py 读取握手摘要；test_02_connection.py 连接后未连接摘要消失。 tests/ui/linux/results/run.9ME2GefI/report.json）
 - 实现备注：只在**没有表标签**时出现：有表标签时这一行只留 SQL 摘要与 Last Refresh（表名 / 库 / 事务在别处已经有了）。启动态把连接名「未连接」与「驱动 N · 浏览会话 M」用「 · 」拼成一行，读作「未连接 · 驱动 0 · 浏览会话 0」。连接后显示连接名；断连后连接名被清空，只剩驱动与浏览会话计数。单行省略、最多 48 个字符宽，窗口变窄时这一格最先被压（右侧留 6 的边距，最后一个字不贴窗口边）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 没有表标签 | 显示连接名，或「未连接 · 驱动 N · 浏览会话 M」（N / M 来自启动态与连接注册表的真实计数）；有表标签时整格隐藏 | `src/shell.rs:1558、src/shell.rs:1578、src/startup.rs:66、src/startup.rs:243` |
+| load | 没有表标签 | 显示连接名，或「未连接 · 驱动 N · 浏览会话 M」（N / M 来自启动态与连接注册表的真实计数）；有表标签时整格隐藏 | `src/shell.rs:1213、src/shell.rs:1233、src/startup.rs:66、src/startup.rs:243` |
 
 ## 标签条与查询标签（`tabs`）
 
@@ -2710,8 +2742,8 @@ kind `container` · status `active` · parent `tabs`
 
 - 样式：槽位 `workspace.tabstrip`；尺寸 `tab_strip_height`、`gap_sm`、`gap_xxs`、`min_target`、`objects_min_width`；颜色 `sqarvo_separator`
 - 原生控件：gtk:AdwTabBar + AdwTabView
-- 同步：Linux done（§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规则）
-- 实现备注：标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。标签条常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。
+- 同步：Linux done（test_10_layout.py 840×600 下通过标签工作区运行 SQL，既有原生页签在工作区布局中保留。 tests/ui/linux/results/run.9ME2GefI/report.json）
+- 实现备注：标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。标签条位于中央工作区，常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。
 
 ### `tabs.strip.tab` 标签项（标题 · 关闭 ×）
 
@@ -3216,4 +3248,5 @@ kind `item` · status `active` · parent `workspace.mcp_management`
 |---|---|---|---|---|---|
 | v0.2.3.4 | `data_page.toolbar.commit` | 「提交」按钮（已移除；提交由状态栏「应用」承担） | removed | 已清 | 提交入口收敛到状态栏行 1「应用（✓）」（status_bar.row1.ops.apply，与 Ctrl+S 同一路径），工具条不再放第二个提交按钮；在途取消也由状态栏「取消」承担。条目保留到三端清理完成。 |
 | v0.2.3.4 | `tabs.query.results.statements` | 语句切换控件（多语句脚本） | removed | 已清 | 整体并入消息页：逐条语句的完整 SQL + 结论行 + 耗时行写在「消息」页，结果集切换改由结果页内的下拉承担，独立控件行随之删除，避免额外一行与横向撑宽风险（维护者范围修订「确认 #2」，Issue #231） |
+| v0.2.4 | `status_bar.gutter` | 左边沟（分栏线左侧整块） | removed | 已清 | 导航搜索已移入导航侧栏，状态栏全宽。 |
 | v0.2.5 | `shell.menu.export_csv` | 表 → 导出 CSV | removed | 已清 | 主菜单暂时隐藏（改动确认单 #1 / #198）：导出入口收敛到表工具条「导出 ▾」与 Ctrl+Shift+E；条目保留，恢复时翻回 active |

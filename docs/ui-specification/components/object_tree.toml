@@ -22,8 +22,8 @@ status = "active"
 style.slot = "sidebar"
 style.metrics = ["sidebar_width", "sidebar_min", "sidebar_max", "row_height_tree"]
 impl_notes = [
-  "侧栏只有对象树：没有页脚按钮、没有刷新按钮、没有平铺列表、没有分页统计。",
-  "搜索框与搜索状态行不画在侧栏里，放在状态栏左边沟（见 object_tree.search），宽度跟随分栏线。",
+  "导航侧栏容纳搜索和对象树。",
+  "搜索框与搜索状态行在导航顶部（见 object_tree.search）。",
 ]
 
 [[component.interaction]]
@@ -343,18 +343,18 @@ evidence = "§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不�
 [[component]]
 id = "object_tree.search"
 parent = "object_tree"
-display_name = "对象树搜索区（状态栏左边沟）"
+display_name = "对象树搜索区"
 kind = "container"
 status = "active"
-style.slot = "status_bar.left_gutter"
-style.metrics = ["status_height", "sidebar_width"]
-impl_notes = ["v0.2.4 从树顶部搬到状态栏左边沟：宽度跟随分栏线，搜索框不把它撑宽，竖线延伸到底。"]
+style.slot = "sidebar"
+style.metrics = ["sidebar_width"]
+impl_notes = ["搜索框和反馈随导航侧栏显隐。"]
 
 [component.sync.linux]
 state = "done"
-spec_hash = "1bea41512340"
+spec_hash = "432fb27a981f"
 commit = "7436cd5"
-evidence = "§7 状态栏左边沟 + §2.4 搜索"
+evidence = "test_10_layout.py Ctrl+F 在两种外壳下聚焦导航语义容器内的搜索入口。 tests/ui/linux/results/run.9ME2GefI/report.json"
 
 [[component]]
 id = "object_tree.search.box"
@@ -363,9 +363,9 @@ display_name = "搜索输入框"
 kind = "control"
 status = "active"
 style.metrics = ["font_ui", "secondary_min_height"]
-style.slot = "status_bar.left_gutter"
+style.slot = "sidebar"
 a11y.name = "搜索连接、库、表"
-a11y.tab = "Ctrl+F 聚焦；Esc 清空并回到树页"
+a11y.tab = "Ctrl+F 请求显示导航并聚焦；Esc 清空并回到树页"
 impl_notes = [
   "placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。",
   "连接名对注册表里全部连接在客户端做大小写不敏感 contains；库 / 表 / 视图只查已打开（已连接、有浏览会话）的连接，逐库发 ListNodes 名称包含，服务端下推 LIKE，前端不拼通配符。",
@@ -388,8 +388,8 @@ source = "src/tree.rs:2083、src/tree.rs:2181"
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+F"]
-precondition = "工作区存在"
-result = "把焦点交给搜索框（状态栏左边沟）"
+precondition = "启动态或连接态工作区外壳存在"
+result = "请求展开导航，空间足够时把焦点交给搜索框"
 source = "src/ui.rs:3884、src/tree.rs:1450"
 
 [[component.interaction]]
@@ -412,7 +412,7 @@ display_name = "搜索状态行"
 kind = "control"
 status = "active"
 a11y.name = "搜索状态"
-style.slot = "status_bar.left_gutter"
+style.slot = "sidebar"
 style.metrics = ["font_status"]
 impl_notes = ["单行省略，全文进 tooltip。"]
 
@@ -434,7 +434,7 @@ parent = "object_tree.search"
 display_name = "搜索结果列表"
 kind = "container"
 status = "active"
-style.slot = "status_bar.left_gutter"
+style.slot = "sidebar"
 impl_notes = [
   "搜索按捕获的档案和浏览会话校验异步结果。定位成功才更新逻辑选择，定位不会发起 Objects 浏览或 Inspector 预览。",
   "结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。",

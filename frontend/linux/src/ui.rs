@@ -222,6 +222,7 @@ pub fn activate(app: &adw::Application) {
 
     // ---- 区域 01：窗口外壳（AdwHeaderBar + 标题 + 主菜单） --------------------
     let header = adw::HeaderBar::new();
+    header.add_css_class("sqarvo-main-header");
     let window_title = adw::WindowTitle::new("Sqarvo", l10n::t("shell.title_connecting"));
     header.set_title_widget(Some(&window_title));
 
@@ -1920,19 +1921,19 @@ fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
 /// 标签、会话与页面都在 [`crate::tabs::TabSet`] 里；本函数只负责把它接上外壳、
 /// 对象树与 DDL 面板，并把「当前标签」的状态转成状态栏与 `win.*` 动作的可用性。
 fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome, profile_id: Option<&str>) {
-    // 启动态刚拖过面板就立刻点连接时，400ms 的落盘防抖还没触发：先取当前外壳
-    // 的真实宽度带进新工作区，避免重读 window.json 拿到旧值（#155 复核）。
-    let startup_width = state
+    let panel_layout = state
         .startup
         .borrow()
         .as_ref()
-        .map(|startup| startup.inspector_state().0);
-    // 侧栏同理（#158）：启动态拖过就带着当前宽度进新工作区，不等 400ms 落盘。
-    let startup_sidebar = state
-        .startup
-        .borrow()
-        .as_ref()
-        .map(|startup| startup.sidebar_state());
+        .map(|startup| startup.shell().layout_state())
+        .or_else(|| {
+            state
+                .workspace
+                .borrow()
+                .as_ref()
+                .map(|workspace| workspace.shell.layout_state())
+        })
+        .unwrap_or_else(crate::window_state::load_panels);
     state.startup.borrow_mut().take();
 
     let connection_name = profile_id
@@ -1949,8 +1950,7 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome, profile_id: Opt
         profile_id,
         &connection_name,
         &outcome.server_version,
-        startup_width,
-        startup_sidebar,
+        panel_layout,
     );
     state
         .mcp_access
@@ -2035,9 +2035,11 @@ fn apply_tab_status(
             row_ops,
         } => {
             shell.status().show_query_ops(row_ops);
-            if let Some(summary) = summary {
-                shell.status().set_sql_summary(summary);
-            }
+            shell.status().set_sql_summary(
+                summary
+                    .as_deref()
+                    .unwrap_or_else(|| l10n::t("status_bar.sql_not_executed")),
+            );
             let _ = timing_ms;
             shell.toolbar().set_active(None);
             if let Some(actions) = actions {
@@ -2156,8 +2158,7 @@ impl Workspace {
         profile_id: Option<&str>,
         connection_name: &str,
         version: &str,
-        startup_width: Option<i32>,
-        startup_sidebar: Option<i32>,
+        panel_layout: layout::PanelLayout,
     ) -> Rc<Self> {
         let worker = state
             .worker
@@ -2467,7 +2468,10 @@ impl Workspace {
 
         // 侧栏就是对象树本体：页脚刷新按钮与它上下的分割线已删除，刷新走
         // 连接 / 库节点的右键菜单（`tree.rs`「刷新连接 / 刷新库」）。
-        let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        let sidebar_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
         sidebar_box.set_size_request(layout::metrics().sidebar_min, -1);
         sidebar_box.append(tree.widget());
 
@@ -2731,32 +2735,11 @@ impl Workspace {
         work_box.set_hexpand(true);
         work_box.append(tabs.widget());
 
-        // 面板宽度是**窗口级**记忆（#155）：启动态、连接态、切换连接读同一个值，
-        // 拖一次就全局生效；启动态刚拖过就连接时用它的当前宽度（startup_width）。
-        let remembered_width = startup_width
-            .or_else(crate::window_state::last_inspector_width)
-            .unwrap_or(layout::metrics().inspector_width);
-        eprintln!("[shell] 信息面板宽度读取：{remembered_width}（窗口级）");
-
         let shell = Shell::new(ShellHandlers {
-            sidebar: sidebar_box.upcast(),
+            sidebar: sidebar_box,
             work_area: work_box.upcast(),
             inspector: inspector.widget().clone().upcast(),
-            inspector_width: remembered_width,
-            sidebar_width: startup_sidebar
-                .or_else(crate::window_state::last_sidebar_width)
-                .unwrap_or(layout::metrics().sidebar_width),
-            panel_bounds: crate::window_size::panel_bounds(crate::layout::current_tier()),
-            on_sidebar_width: Rc::new(|width: i32| {
-                if let Err(error) = crate::window_state::remember_sidebar_width(width) {
-                    eprintln!("[shell] 侧栏宽度未能记住：{error}");
-                }
-            }),
-            on_inspector_width: Rc::new(|width: i32| {
-                if let Err(error) = crate::window_state::remember_inspector_width(width) {
-                    eprintln!("[shell] 信息面板宽度未能记住：{error}");
-                }
-            }),
+            layout: panel_layout,
             row_op: {
                 let tabs = Rc::clone(&tabs);
                 Rc::new(move |op| {
@@ -2783,11 +2766,7 @@ impl Workspace {
             toolbar: state.toolbar(),
         });
         shell_slot.replace(Some(Rc::clone(&shell)));
-        // 搜索框搬到窗口左下角：挂进状态栏左边沟，宽度跟着侧栏分栏走，与树同一列宽。
-        // `Shell::new` 在树之后（它接管侧栏容器），所以接线只能放在这里。
-        shell
-            .status()
-            .mount_search(&tree.search_widget(), Some(&tree.search_status_widget()));
+        shell.mount_search(&tree.search_widget(), &tree.search_status_widget());
         // 工作区已建立：工具条「新建查询」恢复可点（后端就绪时再打一行 6/6 的实测日志）。
         shell.toolbar().set_new_query_enabled(true);
         shell.status().set_connection(Some(connection_name));
@@ -2845,7 +2824,7 @@ impl Workspace {
             "主工具条 种类入口(Tables·Views·Functions·Queries)",
             self.shell.toolbar().kinds_group().clone().upcast(),
         ));
-        targets.push(Target::row("侧栏", self.shell.sidebar().clone()));
+        targets.push(Target::row("侧栏", self.shell.sidebar().clone().upcast()));
         for (name, widget) in self.shell.status().audit_groups() {
             targets.push(Target::row(name, widget));
         }
@@ -5260,6 +5239,10 @@ fn build_main_menu() -> MainMenu {
     }
     view.append_submenu(Some(l10n::t("shell.menu.view_language")), &lang_section);
 
+    view.append(
+        Some(l10n::t("shell.reset_layout")),
+        Some("win.reset-layout"),
+    );
     menu.append_submenu(Some(l10n::t("shell.menu.view")), &view);
 
     menu.append(
@@ -5307,7 +5290,6 @@ struct WindowActions {
     /// 新建查询标签（#116）。
     new_tab: gio::SimpleAction,
     close_tab: gio::SimpleAction,
-    toggle_sidebar: gio::SimpleAction,
     refresh: gio::SimpleAction,
     execute: gio::SimpleAction,
     cancel: gio::SimpleAction,
@@ -5354,7 +5336,6 @@ impl WindowActions {
             for action in [
                 &self.new_tab,
                 &self.close_tab,
-                &self.toggle_sidebar,
                 &self.refresh,
                 &self.execute,
                 &self.cancel,
@@ -5399,7 +5380,6 @@ impl WindowActions {
     fn set_workspace_ready(&self, ready: bool) {
         let ready = ready && self.backend_ready.get();
         for action in [
-            &self.toggle_sidebar,
             &self.refresh,
             &self.execute,
             &self.cancel,
@@ -5497,19 +5477,22 @@ fn install_window_actions(
         window.add_action(&action);
     }
 
-    let toggle_sidebar = gio::SimpleAction::new("toggle-sidebar", None);
-    {
+    let with_shell = |name, command: fn(&Shell)| {
+        let action = gio::SimpleAction::new(name, None);
         let state = Rc::clone(state);
-        toggle_sidebar.connect_activate(move |_, _| {
-            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
-                let visible = workspace.shell.toggle_sidebar();
-                eprintln!(
-                    "[shell] 对象树侧栏：{}",
-                    if visible { "显示" } else { "隐藏" }
-                );
+        action.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref() {
+                command(&workspace.shell);
+            } else if let Some(startup) = state.startup.borrow().as_ref() {
+                command(startup.shell());
             }
         });
-    }
+        action
+    };
+    let toggle_sidebar = with_shell("toggle-sidebar", |shell| {
+        shell.toggle_panel(layout::Panel::Navigation)
+    });
+    window.add_action(&with_shell("reset-layout", Shell::reset_layout));
 
     let refresh = gio::SimpleAction::new("refresh", None);
     {
@@ -5527,8 +5510,11 @@ fn install_window_actions(
         let state = Rc::clone(state);
         focus_search.connect_activate(move |_, _| {
             if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
-                let note = workspace.tree.focus_search();
-                eprintln!("[tree] 搜索框获得焦点（placeholder「{note}」）");
+                if workspace.shell.reveal_navigation() {
+                    workspace.tree.focus_search();
+                }
+            } else if let Some(startup) = state.startup.borrow().as_ref() {
+                startup.focus_search();
             }
         });
     }
@@ -5761,7 +5747,6 @@ fn install_window_actions(
         new_connection,
         new_tab,
         close_tab,
-        toggle_sidebar,
         refresh,
         execute,
         cancel,
@@ -6478,7 +6463,7 @@ mod tests {
         let view = submenu_model(&model, "视图").expect("视图子菜单");
         assert_eq!(
             menu_labels(&view),
-            ["清除选择", "深色模式", "界面密度", "语言"].map(str::to_owned)
+            ["清除选择", "深色模式", "界面密度", "语言", "重置布局"].map(str::to_owned)
         );
         assert!(menu_actions(&view).contains(&"win.clear-selection".to_owned()));
         assert_eq!(

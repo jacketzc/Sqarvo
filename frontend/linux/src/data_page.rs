@@ -1589,7 +1589,7 @@ impl DataPage {
         txn_card.set_halign(gtk::Align::Center);
         txn_card.set_valign(gtk::Align::Start);
         // 让开窗口外壳（64）：事务卡片留在数据区中部，不钻到工具条下面。
-        txn_card.set_margin_top(metrics().header_height);
+        txn_card.set_margin_top(metrics().transaction_popover_top_margin);
         txn_card.set_visible(false);
         txn_card.append(&txn_header);
         txn_card.append(&txn_note);

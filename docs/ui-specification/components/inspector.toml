@@ -10,7 +10,7 @@
 [area]
 id = "inspector"
 display_name = "信息面板"
-summary = "右侧常驻面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容按当前标签钉住：表数据标签钉这张表、查询标签钉它选择的库（没有选择库 → 空态）、Objects 固定页跟随对象树选中；树选中、Objects 行单击与数据网格列头点击仍即时驱动预览。鼠标经过不改面板。"
+summary = "右侧信息面板：面板外壳与固定宽度、空态留白、连接 / 库 / 表 / 列四种视图、[DDL] 与 [表信息] 两页，以及状态页与跨标签事务提示。内容按当前标签钉住：表数据标签钉这张表、查询标签钉它选择的库（没有选择库 → 空态）、Objects 固定页跟随对象树选中；树选中、Objects 行单击与数据网格列头点击仍即时驱动预览。鼠标经过不改面板。"
 legacy_ref = "ui-behavior-contract.md §6；workspace-model.md §5（原章节已退役为指针，行为见本文件）"
 
 [[component]]
@@ -23,7 +23,7 @@ a11y.name = "信息面板"
 style.slot = "inspector"
 style.metrics = ["inspector_width", "inspector_min", "inspector_max", "inspector_gap"]
 impl_notes = [
-  "区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，常驻显示（v0.2.3.2 起没有折叠按钮、没有 Ctrl+I，也没有 Ctrl+I 的菜单项）。",
+  "区域 06：工作区与面板共用一条 GtkPaned，面板是 end child，显隐由 shell.layout 控制，保留原控件与已显示内容。",
   "分隔只由 Paned 自己的分栏线提供，面板不再画 border-left；面板只留内边距（inspector_gap）。",
   "宽度默认 inspector_width，钳在 inspector_min 与 inspector_max 之间；启动态、连接态、切换连接读同一个值。",
   "宽度落盘是窗口级记忆（独立窗口状态文件），不写进 connections.json。",
@@ -36,8 +36,8 @@ impl_notes = [
 
 [[component.interaction]]
 trigger = "drag"
-precondition = "面板常驻"
-result = "拖动分栏线改宽度：按像素跟随，松手后写入窗口级记忆；宽度钳在 inspector_min 与 inspector_max 之间，越界就地回弹"
+precondition = "面板可见"
+result = "拖动调整该侧首选宽度并在松手时持久化；双击还原该侧默认首选宽度"
 source = "src/shell.rs:249、src/shell.rs:230、src/window_state.rs:235"
 
 [[component.interaction]]
@@ -90,8 +90,8 @@ source = "src/inspector.rs:958、src/ui.rs:4180"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6c8452924d4a"
-evidence = "test_14_inspector_no_cache.py 按 MetadataHub 提交计数核对按需查询；test_15_refresh_regressions.py 核对真实 GTK 标签切换、行数与连接归属"
+spec_hash = "49c0f3787c8e"
+evidence = "test_10_layout.py 信息面板自动折叠、手动展开、相反侧首选宽度保留、把手拖动及双击。 tests/ui/linux/results/run.9ME2GefI/report.json"
 
 [[component]]
 id = "inspector.header"

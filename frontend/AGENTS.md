@@ -32,7 +32,7 @@
 - **不硬编码第二份尺寸。** Active 前端从 `docs/ui-specification/metrics.toml` 取值，Linux 在运行期解析。禁止代码计算 `base × scale`。
 - 密度只有三档：`compact` 100%（默认）、`comfortable` 125%、`large` 150%。加档位必须扩 `metrics.toml` 与不变量测试；低于 100% 按设计拒绝（破坏 24px 最小目标与 CJK 13px 字距下限）。
 - 系统 DPI/缩放系数绝不乘进应用 metrics。GTK 使用逻辑像素，与平台 API 交互需要时才换算物理像素。
-- 窗口尺寸取自**逻辑工作区**，绝非屏幕分辨率；最小窗口 `min(960·T, 工作区−32) × min(640·T, 工作区−48)`；窗口不得超出工作区（含 1080p@200%，逻辑 960×540）。
+- 窗口尺寸取自**逻辑工作区**，绝非屏幕分辨率；最小窗口 `min(该档基准宽, 工作区宽−32) × min(该档基准高, 工作区高−48)`，基准取自 `metrics.toml`；窗口不得超出工作区（含 1080p@200%，逻辑 960×540）。
 - 颜色只用主题 token。唯一例外是品牌色板，Linux 位于 `frontend/linux/src/theme.rs` 的 `LIGHT_PALETTE` / `DARK_PALETTE`。品牌面用品牌中调，平台自绘的焦点框、菜单与对话框使用系统强调色，高对比度使用系统颜色。Linux 在关键处按 `AdwStyleManager::is_high_contrast()` 分支。
 - 深色模式默认跟随系统。用户在「视图 → 深色模式」选择跟随系统、浅色或深色，持久化为 `window.json` 的 `theme`。Linux 用 `AdwStyleManager::set_color_scheme`。不实现私有 light-only 回退。
 - 新的用户可见字符串一律进 `l10n/` 共享文案目录（schema 见 `l10n/README.md`，构建期由 `tools/l10n_gen.py` 生成 Rust catalog，ADR 0031），即便当前只发中文也不写内联字面量；区名对齐 UI 注册表，不发明第二套命名。新交互控件必须有可访问性名称与确定的 Tab 顺序。

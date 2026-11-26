@@ -123,15 +123,9 @@ pub fn switch(
     crate::ddl::reload_css();
 
     // 3. 窗口按 §5.3 重算（同时写「档位导致窗口放大」日志）。
-    let report = window_size::apply_for_tier(window);
-    // 4. 面板宽度 / 钳制区间与已开标签的列宽。
-    //    用**新窗口**的推荐宽度判断表格是否还留得下 600px：此刻布局还没重算，
-    //    `root.width()` 仍是旧档的分配宽度（用它会把面板误收到下限）。
+    window_size::apply_for_tier(window);
     if let Some(shell) = shell {
-        let width = report
-            .as_ref()
-            .map_or_else(|| window.width(), |report| report.window.0);
-        shell.reapply_tier(old, target, window_size::panel_bounds(target), width);
+        shell.reapply_tier();
     }
     if let Some(tabs) = tabs {
         tabs.reapply_tier(old, target);
@@ -140,7 +134,7 @@ pub fn switch(
     // 5. 已建控件的 margin / spacing / 图标按钮尺寸。
     remap_widgets(window.upcast_ref(), &old_metrics, &new_metrics);
 
-    // 6. 落盘（档位；宽度由 Shell 的回调按新档归一化写入）。
+    // 6. 只持久化档位，首选宽度已归一化。
     if let Err(error) = crate::window_state::remember_tier(target) {
         eprintln!("[tier] 档位未能记入 window.json：{error}");
     }

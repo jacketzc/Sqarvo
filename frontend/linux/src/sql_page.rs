@@ -2191,6 +2191,12 @@ impl SqlPage {
         Ok(())
     }
 
+    /// 当前查询页是否已进入失连态。
+    #[must_use]
+    pub fn is_disconnected(&self) -> bool {
+        self.state.get() == PageState::Disconnected
+    }
+
     /// 状态栏行操作可用性（查询标签：只有可编辑结果才亮）。
     #[must_use]
     pub fn row_ops(&self) -> RowOpsState {

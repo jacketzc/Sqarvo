@@ -1090,8 +1090,6 @@ pub struct TreePanel {
 impl TreePanel {
     /// 构建面板（不含数据；[`TreePanel::attach`] 之后才开始读）。
     pub fn new(callbacks: TreeCallbacks) -> Rc<Self> {
-        // 搜索框**不挂在树自己的布局里**：外壳把它放进状态栏左边沟（窗口左下角，
-        // 与树同一列宽），见 [`StatusBar::mount_search`](crate::shell::StatusBar::mount_search)。
         // 内边距也由那边给——这里只管控件本身，树的顶边就是工具条下方的第一行。
         let search_entry = gtk::SearchEntry::new();
         search_entry.set_placeholder_text(Some(l10n::t("object_tree.search_placeholder")));
@@ -1460,17 +1458,13 @@ impl TreePanel {
         &self.root
     }
 
-    /// 搜索框控件（搬去窗口左下角用）。
-    ///
-    /// 搜索框**不属于树的布局**：外壳把它挂进状态栏左边沟（[`crate::shell::StatusBar::mount_search`]），
-    /// 宽度跟侧栏分栏同步。搜索逻辑、防抖、`focus_search()` 都还在这里，搬的只是位置。
+    /// Existing search entry and feedback for the navigation header.
     pub fn search_widget(&self) -> gtk::Widget {
         self.search_entry.clone().upcast()
     }
 
-    /// 搜索状态标签（跟搜索框同一处：左边沟里、搜索框正下方）。
-    pub fn search_status_widget(&self) -> gtk::Widget {
-        self.search_status.clone().upcast()
+    pub fn search_status_widget(&self) -> gtk::Label {
+        self.search_status.clone()
     }
 
     /// 接线到连接注册表并读取连接层。
@@ -1485,16 +1479,9 @@ impl TreePanel {
         self.refresh_connections();
     }
 
-    /// 把焦点放到搜索框（`workspace-model` §10 的 `Ctrl+F`）。
-    ///
-    /// 返回 placeholder 文案供日志使用；不读窗口焦点链——「是否真的拿到焦点」由
-    /// `qa::assert_tree_search_focused` 在验收链里断言，产品路径不为此多一次遍历。
-    pub fn focus_search(&self) -> String {
+    /// Focus the existing search entry.
+    pub fn focus_search(&self) {
         self.search_entry.grab_focus();
-        self.search_entry
-            .placeholder_text()
-            .map(|text| text.to_string())
-            .unwrap_or_default()
     }
 
     /// Schedule a tree rebuild so the GTK model drops the invalidated child stores.

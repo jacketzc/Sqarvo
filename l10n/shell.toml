@@ -358,3 +358,51 @@ key = "shell.title_server_version"
 zh = "服务端版本 {version}"
 en = "Server version {version}"
 status = "done"
+
+[[entry]]
+key = "shell.layout_navigation"
+zh = "导航"
+en = "Navigation"
+status = "done"
+
+[[entry]]
+key = "shell.layout_focus"
+zh = "专注模式"
+en = "Focus Mode"
+status = "done"
+
+[[entry]]
+key = "shell.layout_inspector"
+zh = "信息面板"
+en = "Inspector"
+status = "done"
+
+[[entry]]
+key = "shell.layout_space"
+zh = "侧栏已折叠；可请求优先展开。空间不足时保持折叠。"
+en = "Panel collapsed. Request priority to open it when space permits."
+status = "done"
+
+[[entry]]
+key = "shell.reset_layout"
+zh = "重置布局"
+en = "Reset Layout"
+status = "done"
+
+[[entry]]
+key = "shell.layout_workspace"
+zh = "工作区"
+en = "Workspace"
+status = "done"
+
+[[entry]]
+key = "shell.layout_operations"
+zh = "工作区操作"
+en = "Workspace Operations"
+status = "done"
+
+[[entry]]
+key = "shell.layout_status"
+zh = "全局状态栏"
+en = "Global Status Bar"
+status = "done"

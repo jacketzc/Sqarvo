@@ -30,14 +30,14 @@ style.metrics = ["header_height", "toolbar_height", "status_height", "min_window
 impl_notes = [
   "自外向内 = 标题栏（区域 01）+ 主工具条（区域 02）+ 页面槽位；工具条挂在标题栏之下、不随工作区重建。",
   "Linux 没有独立菜单行：菜单收进标题栏右侧的主菜单按钮（workspace-model 附录 A 第 2 条）；Windows 同样没有独立菜单行——菜单收进自绘标题行右侧的汉堡按钮（v0.2.5 起）。",
-  "页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。",
+  "页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页。两种工作区外壳共用 shell.layout。",
 ]
 
 
 [component.sync.linux]
 state = "done"
 spec_hash = "f398d9283e00"
-evidence = "§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序"
+evidence = "test_01_startup.py 启动及主菜单，test_10_layout.py 两种外壳布局入口。 tests/ui/linux/results/run.9ME2GefI/report.json"
 
 [[component]]
 id = "shell.window"
@@ -56,7 +56,7 @@ impl_notes = [
 [[component.interaction]]
 trigger = "load"
 precondition = "窗口创建 / 每次重排"
-result = "最小窗口按显示器逻辑工作区收敛：min(960·T, 工作区宽-32) × min(640·T, 工作区高-48)（T = 密度档，取值来自 metrics.toml）；`--window-size` 给更小的值时被抬到当次下限并记 `[monitor] 目标窗口 … 低于最小窗口 …`"
+result = "最小窗口按显示器逻辑工作区收敛：min(该档最小宽, 工作区宽-32) × min(该档最小高, 工作区高-48)（该档基准取值来自 metrics.toml）；`--window-size` 给更小的值时被抬到当次下限并记 `[monitor] 目标窗口 … 低于最小窗口 …`"
 source = "src/window_size.rs:205、src/window_size.rs:136、src/ui.rs:171"
 
 [[component.interaction]]
@@ -88,8 +88,8 @@ platform_notes.windows = "位置可恢复（Linux 不可）：记忆矩形先钳
 
 [component.sync.linux]
 state = "done"
-spec_hash = "5e266c21d40d"
-evidence = "§1.1 最小尺寸 / 几何恢复 / 关闭窗口；window_size.rs relayout + apply，ui.rs connect_close_request"
+spec_hash = "46d6233e87e8"
+evidence = "test_10_layout.py 实际三档最小窗口、原生最大化、关闭、重启及恢复；window_size / window_state 单测。 tests/ui/linux/results/run.9ME2GefI/report.json"
 
 [[component]]
 id = "shell.header"
@@ -916,3 +916,74 @@ source = "frontend/linux/src/ui.rs、frontend/linux/src/mcp_management.rs"
 state = "done"
 spec_hash = "3484efb6342d"
 evidence = "GTK 单测 mcp_management_has_a_top_level_menu_item 核对一级菜单模型；AT-SPI test_06_mcp_access.py 打开 MCP 管理页。"
+
+[[component]]
+id = "shell.layout"
+parent = "shell"
+display_name = "窗口三栏布局"
+kind = "container"
+status = "active"
+native_control = "gtk:GtkPaned"
+style.metrics = ["workspace_target_width", "workspace_target_height", "panel_handle", "panel_recovery", "sidebar_width", "sidebar_min", "sidebar_max", "inspector_width", "inspector_min", "inspector_max"]
+impl_notes = [
+  "首选宽度和主动显示偏好持久化。实际分配和运行期专注、优先请求及折叠历史不落盘。",
+  "优先留出中央目标宽度。先缩右再隐藏右，再缩左再隐藏左。仅可见侧栏占用把手，自动恢复须满足恢复余量。",
+  "主动展开自动折叠栏时给予临时优先，必要时隐藏另一侧；重新容纳两侧时恢复正常优先级。",
+  "显隐即时生效，保留导航选择、Objects 范围、会话、编辑与事务。",
+]
+
+[[component.interaction]]
+trigger = "drag"
+precondition = "该侧栏及其分隔把手可见"
+result = "调整该侧首选宽度；必要时压缩另一栏到下限，保持另一栏可见及其首选宽度。"
+source = "src/layout.rs PanelLayout::drag"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "该侧栏及其分隔把手可见"
+result = "恢复该侧默认首选宽度，按当前可用宽度重新求解。"
+source = "src/shell.rs Shell::install_handle_gestures"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "28c3401cde9b"
+evidence = "test_10_layout.py 自动折叠恢复、两侧拖拽及双击、偏好持久化，活动事务与未保存编辑下 gRPC 派发计数零增加；layout 单测覆盖精确阈值。test_15_refresh_regressions.py 复验同一导航选择、Objects 范围、标题和业务 RPC 计数，证据 tests/ui/linux/results/run.zZWok5oY/report.json。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例覆盖隐藏侧栏后的焦点转移、主动隐藏后扩宽、事务与 Objects 的业务 RPC 计数。 tests/ui/linux/results/run.FlRhTuGR/report.json"
+
+[[component]]
+id = "shell.toolbar.layout"
+parent = "shell.toolbar"
+display_name = "导航、专注模式、信息面板"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkToggleButton"
+style.icon = ["layout.navigation", "layout.focus", "layout.inspector"]
+a11y.name = "导航 / 专注模式 / 信息面板"
+impl_notes = [
+  "三个布局按钮位于主工具栏最右，按导航、专注模式、信息面板排序。启动态及连接态都可操作。",
+  "按下状态来自实际可见侧栏或当前专注状态。专注期间点击某侧栏按钮会退出专注并请求显示该栏。",
+  "纯布局命令，沿用 shell.layout 计算和状态。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "b74f3a883ff3"
+evidence = "test_10_layout.py 启动态和连接态的布局按钮、pressed 状态、临时优先、专注及退出。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例确认隐藏导航后键盘焦点移至「导航」。 tests/ui/linux/results/run.FlRhTuGR/report.json"
+
+[[component]]
+id = "shell.menu.reset_layout"
+parent = "shell.menu"
+display_name = "视图 → 重置布局"
+kind = "control"
+status = "active"
+a11y.name = "重置布局"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "工作区外壳存在"
+result = "恢复两侧栏默认首选宽度和主动显示，清除专注、临时优先和自动折叠历史，以现有窗口宽度重新求解。"
+source = "src/ui.rs win.reset-layout"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "9f18b316dcd6"
+evidence = "test_10_layout.py 通过菜单绑定的 win.reset-layout 恢复偏好和运行状态，保留窗口、密度、主题和语言。 tests/ui/linux/results/run.9ME2GefI/report.json"

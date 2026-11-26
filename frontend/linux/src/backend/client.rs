@@ -139,6 +139,20 @@ impl Interceptor for TokenInterceptor {
         request
             .metadata_mut()
             .insert(TOKEN_METADATA_KEY, self.value.clone());
+        if crate::qa::enabled() {
+            // Record only the generated RPC method. The existing system health
+            // poll is independent of workspace actions and has its own counter.
+            let method = request
+                .extensions()
+                .get::<tonic::GrpcMethod<'static>>()
+                .map_or("unknown", tonic::GrpcMethod::method);
+            let category = if method == "GetHealth" {
+                "health"
+            } else {
+                "dispatch"
+            };
+            eprintln!("[qa.rpc] {category} {method}");
+        }
         Ok(request)
     }
 }

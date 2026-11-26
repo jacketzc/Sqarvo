@@ -18,10 +18,15 @@
 //! 宽度类字段一律存 **compact 档的归一化值**（实际 ÷ 档位 scale，四舍五入），读的时候
 //! 乘回当前档位：不归一化会在切档时来回钳制。本轮只有 1.0 档，除法仍然是真写出来的。
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use gio::prelude::ApplicationExtManual;
+use gtk::{gio, glib};
 
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +94,10 @@ struct Document {
     /// 窗口级侧栏宽度（归一化值，#158）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_sidebar_width: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sidebar_shown: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inspector_shown: Option<bool>,
     /// 窗口尺寸 / 位置（归一化宽度、逻辑像素；位置在 GTK4 上只读不写）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window_width: Option<i32>,
@@ -114,20 +123,46 @@ impl Document {
             .unwrap_or(Tier::Compact)
     }
 
+    fn panel_preferences(&self) -> layout::PanelPreferences {
+        let metrics = layout::Metrics::for_tier(Tier::Compact);
+        let mut prefs = layout::PanelPreferences::default();
+        if let Some(width) = self.last_sidebar_width {
+            prefs.preferred[0] = metrics.clamp_sidebar(width);
+        }
+        if let Some(width) = self
+            .last_inspector_width
+            .or_else(|| self.legacy_inspector_width())
+        {
+            prefs.preferred[1] = metrics.clamp_inspector(width);
+        }
+        prefs.shown = [
+            self.sidebar_shown.unwrap_or(true),
+            self.inspector_shown.unwrap_or(true),
+        ];
+        prefs
+    }
+
     /// 生效的面板宽度：优先窗口级值；没有则从旧版按连接记录迁移。
     ///
     /// 存储值是**写入时档位**的实际像素；`target_scale` 是读回的目标档位倍率。
+    #[cfg(test)]
     fn effective_inspector_width(&self, target_scale: f64) -> Option<i32> {
         if let Some(width) = self.last_inspector_width {
             // 落盘值一律是 compact 档的归一化值（§7 第 1 条）：读回只乘目标档位。
             let actual = denormalized(width, target_scale);
             return Some(layout::Metrics::for_tier(layout::current_tier()).clamp_inspector(actual));
         }
+        self.legacy_inspector_width()
+    }
+
+    fn legacy_inspector_width(&self) -> Option<i32> {
         // 旧版每条连接一个宽度。取出现次数最多的值（并列时取较小的宽度），
         // 升级后的第一次启动尽量接近用户最常用的宽度。
         let mut counts: BTreeMap<i32, usize> = BTreeMap::new();
         for width in self.inspector_width.values() {
-            *counts.entry(layout::clamp_inspector(*width)).or_default() += 1;
+            *counts
+                .entry(layout::Metrics::for_tier(Tier::Compact).clamp_inspector(*width))
+                .or_default() += 1;
         }
         counts
             .into_iter()
@@ -136,6 +171,7 @@ impl Document {
     }
 
     /// 生效的侧栏宽度（窗口级，已按目标档位换算并钳制）。
+    #[cfg(test)]
     fn effective_sidebar_width(&self, target_scale: f64) -> Option<i32> {
         self.last_sidebar_width.map(|width| {
             let actual = denormalized(width, target_scale);
@@ -167,16 +203,21 @@ impl WindowGeometry {
     /// 没有位置记录时按「贴着该显示器左上角」校验，只检查尺寸放不放得下。
     #[must_use]
     pub fn fits_in(&self, monitors: &[crate::window_size::Rect]) -> bool {
-        let tolerance = crate::window_size::GEOMETRY_TOLERANCE;
+        let tolerance = i64::from(crate::window_size::GEOMETRY_TOLERANCE);
+        if self.width <= 0 || self.height <= 0 {
+            return false;
+        }
         monitors.iter().any(|monitor| {
             let (x, y) = match (self.x, self.y) {
-                (Some(x), Some(y)) => (x, y),
-                _ => (monitor.x, monitor.y),
+                (Some(x), Some(y)) => (i64::from(x), i64::from(y)),
+                _ => (i64::from(monitor.x), i64::from(monitor.y)),
             };
-            x >= monitor.x - tolerance
-                && y >= monitor.y - tolerance
-                && x + self.width <= monitor.x + monitor.width + tolerance
-                && y + self.height <= monitor.y + monitor.height + tolerance
+            let mx = i64::from(monitor.x);
+            let my = i64::from(monitor.y);
+            x >= mx - tolerance
+                && y >= my - tolerance
+                && x + i64::from(self.width) <= mx + i64::from(monitor.width) + tolerance
+                && y + i64::from(self.height) <= my + i64::from(monitor.height) + tolerance
         })
     }
 
@@ -190,20 +231,60 @@ impl WindowGeometry {
     }
 }
 
-/// 窗口上次记住的信息面板宽度（已换算到当前档位并钳制；没有记录时为 `None`）。
-#[must_use]
-pub fn last_inspector_width() -> Option<i32> {
-    let dir = crate::config::config_dir().ok()?;
-    let document = load_from(&dir.join(FILE_NAME));
-    document.effective_inspector_width(layout::current_tier().scale())
+pub fn load_panels() -> layout::PanelLayout {
+    let document = crate::config::config_dir()
+        .map(|dir| load_from(&dir.join(FILE_NAME)))
+        .unwrap_or_default();
+    layout::PanelLayout {
+        preferences: document.panel_preferences(),
+        ..layout::PanelLayout::default()
+    }
 }
 
-/// 窗口上次记住的侧栏宽度（#158；没有记录时为 `None`）。
-#[must_use]
-pub fn last_sidebar_width() -> Option<i32> {
-    let dir = crate::config::config_dir().ok()?;
-    let document = load_from(&dir.join(FILE_NAME));
-    document.effective_sidebar_width(layout::current_tier().scale())
+// All writers use a single read-modify-write lock for window.json.
+static DOCUMENT_WRITE: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    static PENDING_PANELS: Cell<Option<layout::PanelPreferences>> = const { Cell::new(None) };
+    static SAVING_PANELS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Save only the newest pending panel preferences off the GTK thread.
+pub fn save_panels(prefs: layout::PanelPreferences) {
+    PENDING_PANELS.set(Some(prefs));
+    if SAVING_PANELS.replace(true) {
+        return;
+    }
+    let hold = gio::Application::default().map(|app| app.hold());
+    glib::spawn_future_local(async move {
+        let _hold = hold;
+        while let Some(prefs) = PENDING_PANELS.take() {
+            match gio::spawn_blocking(move || {
+                let _write = DOCUMENT_WRITE.lock().map_err(|error| error.to_string())?;
+                let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
+                remember_panels_in(&dir, prefs)
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("[shell] 布局偏好未能记住：{error}"),
+                Err(_) => eprintln!("[shell] 布局偏好写入任务异常结束"),
+            }
+        }
+        SAVING_PANELS.set(false);
+    });
+}
+
+fn remember_panels_in(dir: &Path, prefs: layout::PanelPreferences) -> Result<(), String> {
+    let path = dir.join(FILE_NAME);
+    let mut document = load_from(&path);
+    document.version = DOCUMENT_VERSION;
+    document.last_sidebar_width = Some(prefs.preferred[0]);
+    document.last_inspector_width = Some(prefs.preferred[1]);
+    document.sidebar_shown = Some(prefs.shown[0]);
+    document.inspector_shown = Some(prefs.shown[1]);
+    document.inspector_width.clear();
+    write_atomic(dir, &path, &document)
 }
 
 /// 上次保存的档位（`window.json` 的 `tier`；v1 / 缺字段按 `compact`）。
@@ -272,12 +353,7 @@ fn saved_geometry_from(path: &Path) -> Option<WindowGeometry> {
 ///
 /// 宽度先钳制到可拖拽区间：状态文件被人手改坏（例如 0 或 9999）时，
 /// 下一帧也不会把工作区挤成 0 宽。旧版按连接的记录在第一次写入时清空。
-pub fn remember_inspector_width(width: i32) -> Result<PathBuf, String> {
-    let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
-    remember_inspector_in(&dir, width)
-}
-
-/// [`remember_inspector_width`] 的目录参数版本（测试用，不影响生产路径）。
+#[cfg(test)]
 fn remember_inspector_in(dir: &Path, width: i32) -> Result<PathBuf, String> {
     let width = layout::clamp_inspector(width);
     let path = dir.join(FILE_NAME);
@@ -294,13 +370,9 @@ fn remember_inspector_in(dir: &Path, width: i32) -> Result<PathBuf, String> {
 }
 
 /// 记住窗口的侧栏宽度（与信息面板同一套机制、同一个文件），返回写入路径。
-pub fn remember_sidebar_width(width: i32) -> Result<PathBuf, String> {
-    let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
-    remember_sidebar_in(&dir, width)
-}
-
+#[cfg(test)]
 fn remember_sidebar_in(dir: &Path, width: i32) -> Result<PathBuf, String> {
-    let width = layout::clamp_sidebar(width);
+    let width = layout::metrics().clamp_sidebar(width);
     let path = dir.join(FILE_NAME);
     let mut document = load_from(&path);
     stamp(&mut document);
@@ -315,6 +387,7 @@ fn remember_sidebar_in(dir: &Path, width: i32) -> Result<PathBuf, String> {
 
 /// 记住窗口几何（尺寸 / 最大化），返回写入路径。
 pub fn remember_geometry(geometry: &WindowGeometry) -> Result<PathBuf, String> {
+    let _write = DOCUMENT_WRITE.lock().map_err(|error| error.to_string())?;
     let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
     remember_geometry_in(&dir, geometry)
 }
@@ -347,6 +420,7 @@ fn stamp(document: &mut Document) {
 /// 这里若顺带重写会让两次落盘之间的进程崩溃留下「档位已换、宽度还是旧档」的
 /// 半套状态。返回写入路径。
 pub fn remember_tier(tier: Tier) -> Result<PathBuf, String> {
+    let _write = DOCUMENT_WRITE.lock().map_err(|error| error.to_string())?;
     let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
     remember_tier_in(&dir, tier)
 }
@@ -366,6 +440,7 @@ fn remember_tier_in(dir: &Path, tier: Tier) -> Result<PathBuf, String> {
 /// 与 [`remember_tier`] 同样的取舍：只改 `theme`，不动宽度与几何字段，一次动作只
 /// 落一份「自己那一项」的状态。
 pub fn remember_theme(theme: &str) -> Result<PathBuf, String> {
+    let _write = DOCUMENT_WRITE.lock().map_err(|error| error.to_string())?;
     let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
     remember_theme_in(&dir, theme)
 }
@@ -385,6 +460,7 @@ fn remember_theme_in(dir: &Path, theme: &str) -> Result<PathBuf, String> {
 /// 与 [`remember_theme`] 同样的取舍：只改 `language`，不动其他字段，一次动作只
 /// 落一份「自己那一项」的状态。
 pub fn remember_language(language: &str) -> Result<PathBuf, String> {
+    let _write = DOCUMENT_WRITE.lock().map_err(|error| error.to_string())?;
     let dir = crate::config::config_dir().map_err(|error| error.to_string())?;
     remember_language_in(&dir, language)
 }
@@ -464,6 +540,43 @@ fn restrict(_path: &Path, _mode: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_reset_preserves_unrelated_window_preferences() {
+        let dir = tempfile::tempdir().expect("temporary config");
+        let path = store(
+            dir.path(),
+            &Document {
+                tier: Some("large".into()),
+                theme: Some("dark".into()),
+                language: Some("en".into()),
+                maximized: Some(true),
+                window_width: Some(1100),
+                ..Document::default()
+            },
+        );
+        let prefs = layout::PanelPreferences {
+            preferred: [320, 350],
+            shown: [false, true],
+        };
+        remember_panels_in(dir.path(), prefs).expect("save panels");
+        assert_eq!(load_from(&path).panel_preferences(), prefs);
+        remember_panels_in(dir.path(), layout::PanelPreferences::default()).expect("reset panels");
+        let reset = load_from(&path);
+        assert_eq!(
+            reset.panel_preferences(),
+            layout::PanelPreferences::default()
+        );
+        assert_eq!(reset.tier(), Tier::Large);
+        assert_eq!(reset.theme.as_deref(), Some("dark"));
+        assert_eq!(reset.language.as_deref(), Some("en"));
+        assert_eq!(reset.maximized, Some(true));
+        assert_eq!(reset.window_width, Some(1100));
+        let raw = fs::read_to_string(path).expect("read window state");
+        for runtime_only in ["focus", "priority", "folded"] {
+            assert!(!raw.contains(runtime_only));
+        }
+    }
 
     fn store(dir: &Path, document: &Document) -> PathBuf {
         let path = dir.join(FILE_NAME);

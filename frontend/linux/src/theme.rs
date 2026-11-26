@@ -436,6 +436,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
 
         window.{window_class} {{ font-size: {ui}px; }}
 
+        .sqarvo-main-header {{ min-height: {header}px; }}
         /* 区域 01：标题 13 semibold（标题控件在 headerbar 里） */
         .sqarvo-title {{ font-size: {title}px; font-weight: {fw_title}; }}
         /* 卡片 / 面板 / 对象树的连接与分组名：原来是 Adwaita 的 `.heading`（它只有
@@ -679,7 +680,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
            Adwaita 的 `row:hover` / `row:selected` 默认色（那是 accent 25%，会与
            对象树的选中态不是一个颜色）。 */
 
-        /* 区域 05：状态栏 48 高（两行各 24），字号 11 */
+        /* 全局状态栏和中央操作行共用文字及控件规则。 */
         .sqarvo-status-bar {{
             min-height: {status}px;
             font-size: {status_font}px;
@@ -722,14 +723,14 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             opacity: 0.45;
             filter: none;
         }}
-        /* v0.2.3.3：状态栏分成「对象树功能区的左边沟 | 竖分割线 | 右列」。
-           左边沟宽度由 shell 跟着侧栏分栏位置设（`set_gutter_width`），右列自己带
-           左右 12px 内距——这样分割线与上面的分栏线在同一根轴上。 */
-        .sqarvo-status-gutter {{ min-height: {status}px; }}
-        .sqarvo-status-divider {{
-            min-width: 1px;
-            background: @sqarvo_separator;
+        paned.sqarvo-layout-split > separator {{
+            min-width: {panel_handle}px;
+            background: linear-gradient(to right, @sqarvo_separator, @sqarvo_separator);
+            background-size: 1px 100%;
+            background-repeat: no-repeat;
+            background-position: center;
         }}
+        .sqarvo-workspace-ops {{ min-height: 0; }}
         .sqarvo-status-right {{ padding: 0 {gap_xl}px; }}
         .sqarvo-status-row {{ min-height: {tree_row}px; }}
         .sqarvo-status-bar button {{
@@ -948,6 +949,8 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         // 以及两处阴影的偏移 / 模糊值（不是间距，度量表里没有这一项）。
         ui = m.font_ui,
         title = m.font_title,
+        header = m.header_height,
+        panel_handle = m.panel_handle,
         status = m.status_height,
         status_font = m.font_status,
         data_font = m.font_data_cell,
@@ -1075,7 +1078,7 @@ mod tests {
             css.contains(&format!("min-height: {}px", layout::TOOLBAR_HEIGHT)),
             "工具条高度缺失：{css}"
         );
-        assert!(css.contains("min-height: 48px"), "状态栏高度缺失");
+        assert!(css.contains("min-height: 24px"), "状态栏高度缺失");
         assert!(css.contains("min-height: 24px"), "树行高缺失");
         assert!(css.contains("min-height: 32px"), "数据行高缺失");
         assert!(css.contains("font-size: 12px"), "界面字号缺失");
@@ -1420,9 +1423,9 @@ mod tests {
         // 三档的样式表必须真的不同，且数字来自 `metrics.toml`：行高 24/30/36、
         // 数据行 32/40/48、界面字号 12/15/18、标签条 24/30/36。
         for (tier, tree_row, data_row, font_ui, tab_strip) in [
-            (Tier::Compact, 24, 32, 12, 24),
-            (Tier::Comfortable, 30, 40, 15, 30),
-            (Tier::Large, 36, 48, 18, 36),
+            (Tier::Compact, 24, 32, 12, 40),
+            (Tier::Comfortable, 30, 40, 15, 50),
+            (Tier::Large, 36, 48, 18, 60),
         ] {
             let css = stylesheet_for(false, false, tier);
             assert!(

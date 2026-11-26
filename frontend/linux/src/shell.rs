@@ -1,48 +1,7 @@
-//! 六区域工作区外壳（`docs/ui-specification/workspace-model.md` §2，ADR 0023）。
-//!
-//! 本模块只负责**区域与槽位**：谁在哪里、多宽多高、怎么显隐。内容仍由各页面
-//! （对象树 [`crate::tree`]、SQL 工作区 [`crate::sql_page`]、数据页 [`crate::data_page`]、
-//! 信息面板 [`crate::inspector`]）自己负责。#114（多连接）、#116（标签工作区）与
-//! #119（信息面板）都已落在各自的槽位里。
-//!
-//! # 槽位一览
-//!
-//! ```text
-//! 01 窗口外壳   AdwHeaderBar + AdwWindowTitle（在 ui.rs 里，含标题规则与主菜单）
-//! ┌──────────────────────────────────────────────────────────────────────────┐
-//! 02 主工具条   窗口级（Shell::toolbar）  高 44：左组 连接 / 新建查询 │ 种类入口（表 / 视图 / 函数 / 查询）
-//!               后端未握手时全部禁用（`Toolbar::set_backend_ready`）
-//! ├────────────────┬────────────────────────────────────────────────────────┤
-//! 03 对象树       │ 04 工作区                                              │ 06 信息面板
-//!    side_pane     │    work_pane（起始子控件）                              │    inspector
-//!    左栏 237      │    标签条 24 → 标签页（表格工具条 → 数据网格）           │    Revealer
-//!    可拖 180–420  │                                                        │    280（240–520）
-//! ├────────────────┴────────────────────────────────────────────────────────┤
-//! 05 状态栏     Shell::status    高 48：左边沟(对象树搜索框·状态) │ 竖分割线 │ 行1 行操作·分页器 / 行2 SQL·记录
-//!                                行2 SQL 摘要 │ 记录位置 │ 最后刷新 · 连接·事务·耗时
-//! └──────────────────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! | 区域 | 字段 | 后续扩展 |
-//! |---|---|---|
-//! | 01 | 无（`ui.rs` 的 `AdwHeaderBar`） | 标题跟随当前连接（#114 已接连接注册表） |
-//! | 02 | `Shell::toolbar`（[`Toolbar`]，窗口级创建） | #116 已把「新建查询」接到标签；可用性由后端就绪状态统一控制 |
-//! | 03 | `Shell::sidebar_pane` 起始子控件 | #114 已实现：多连接树（仍是左栏） |
-//! | 04 | `Shell::work_pane` 起始子控件 | #116 标签条 + [`crate::tabs::TabSet`] |
-//! | 05 | `Shell::status`（[`StatusBar`]） | #118 分页器接真实页码 |
-//! | 06 | `Shell::inspector_box` | #119 已填入连接 / 库 / 表内容（常驻、宽度窗口级记忆） |
-//!
-//! # 不做什么
-//!
-//! - 不自绘窗口控制按钮，不设窗口内菜单行（ADR 0023：Linux 用 headerbar 主菜单）；
-//! - 不自绘标签条：#116 用 `AdwTabView` + `AdwTabBar`，外壳只给它位置；
-//! - 不实现信息面板内容（#119）：外壳只给位置与显隐，内容在 [`crate::inspector`]；
-//! - 状态栏不放「对象树 / 平铺」切换：该切换随平铺列表一起删除（侧栏只有对象树），
-//!   960×640 下放两处也会把右组顶出窗口；
-//! - 工具条与菜单里没有实现支撑的按钮/项**禁用并说明原因**，不摆占位动作。
+//! Native workspace regions and window-level layout commands.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Instant;
 
 use adw::prelude::*;
@@ -51,7 +10,7 @@ use gtk::glib;
 use crate::browse_view::relative_age;
 use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapshot};
 use crate::l10n;
-use crate::layout::{self, Gap, gap};
+use crate::layout::{self, Allocation, Gap, Panel, PanelLayout, gap};
 
 // 区域 02 的按钮 tooltip：后端就绪与否两套文案（禁用时必须说明原因）都在
 // `l10n/shell.toml`（#199：文案进 catalog，`zh` 与迁移前逐字节相等）。
@@ -59,21 +18,12 @@ use crate::layout::{self, Gap, gap};
 /// 外壳需要的回调。
 pub struct ShellHandlers {
     /// 左栏内容（对象树）。
-    pub sidebar: gtk::Widget,
+    pub sidebar: gtk::Box,
     /// 工作区内容（SQL / 数据页栈）。
     pub work_area: gtk::Widget,
     /// 信息面板内容（#119：连接 / 库 / 表三态检查器）。
     pub inspector: gtk::Widget,
-    /// 信息面板的初始宽度（窗口级记忆，从窗口状态文件读回，已钳制）。
-    pub inspector_width: i32,
-    /// 侧栏的初始宽度（窗口级记忆，#158，已钳制）。
-    pub sidebar_width: i32,
-    /// 面板可拖拽区间（由当前档位算出，`window_size::panel_bounds`）。
-    pub panel_bounds: crate::window_size::PanelBounds,
-    /// 面板宽度变化（拖拽后）→ 调用方写入窗口状态文件（窗口级记忆）。
-    pub on_inspector_width: Rc<dyn Fn(i32)>,
-    /// 侧栏宽度变化（拖拽后）→ 同一个窗口状态文件（#158）。
-    pub on_sidebar_width: Rc<dyn Fn(i32)>,
+    pub layout: PanelLayout,
     /// 行操作（状态栏按钮组）。
     pub row_op: Rc<dyn Fn(RowOp)>,
     /// 分页器动作（首页 / 上页 / 下页 / 末页）。
@@ -88,597 +38,410 @@ pub struct Shell {
     root: gtk::Box,
     toolbar: Rc<Toolbar>,
     sidebar_pane: gtk::Paned,
-    sidebar: gtk::Widget,
+    sidebar: gtk::Box,
     work_pane: gtk::Paned,
-    work_area: gtk::Widget,
     status: Rc<StatusBar>,
-    inspector: gtk::Revealer,
-    inspector_box: gtk::Box,
-    /// 信息面板当前宽度（拖拽后记住，折叠再展开时恢复）。
-    inspector_width: Rc<Cell<i32>>,
-    /// 信息面板是否展开。
-    inspector_visible: Rc<Cell<bool>>,
-    /// 正在程序化分栏（展开 / 折叠 / 恢复宽度）：这期间的分栏位置变化不是用户拖拽，
-    /// 不能当成新的宽度记下来。
-    inspector_placing: Rc<Cell<bool>>,
-    /// 面板可拖拽区间（窗口尺寸同一个入口算出来的，`window_size::PanelBounds`）。
-    ///
-    /// 放在 `Cell` 里是因为切档会在运行期换区间：拖拽回调与落位方法都读同一个格，
-    /// 不会出现「窗口按新档变了、钳制区间还是旧档」。
-    panel_bounds: Rc<Cell<crate::window_size::PanelBounds>>,
-    /// 侧栏当前宽度（拖拽后记住；切档时按档位归一化）。
-    sidebar_width: Rc<Cell<i32>>,
-    /// 程序化落位期间不采样（切档改宽度不是用户拖拽）。
-    sidebar_placing: Rc<Cell<bool>>,
-    /// 用户把面板拖到新宽度 → 窗口级记住（写独立的窗口状态文件）。
-    on_inspector_width: Rc<dyn Fn(i32)>,
-    /// 侧栏宽度变化 → 同一个窗口状态文件。
-    on_sidebar_width: Rc<dyn Fn(i32)>,
+    inspector: gtk::Box,
+    layout: Cell<PanelLayout>,
+    actual: Cell<Allocation>,
+    last_width: Cell<i32>,
 }
 
 impl Shell {
-    /// 组装五个区域（区域 01 的 headerbar 与区域 02 的工具条由 `ui.rs` 提供，
-    /// 工具条在窗口构建时就已存在：后端未握手时按钮全部禁用，见 [`Toolbar::set_backend_ready`]）。
     pub fn new(handlers: ShellHandlers) -> Rc<Self> {
-        let toolbar = Rc::clone(&handlers.toolbar);
-        let status = StatusBar::new(Rc::clone(&handlers.row_op), Rc::clone(&handlers.page_op));
-        {
-            // 相对时间（<1m / Nm）不会自己变：每 30 秒重算一次标签文本。
-            let weak = Rc::downgrade(&status);
-            glib::timeout_add_seconds_local(30, move || {
-                if let Some(status) = weak.upgrade() {
-                    status.tick_relative_time();
-                }
-                glib::ControlFlow::Continue
-            });
-        }
+        let status = StatusBar::new(handlers.row_op, handlers.page_op);
+        let weak = Rc::downgrade(&status);
+        glib::timeout_add_seconds_local(30, move || {
+            let Some(status) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            status.tick_relative_time();
+            glib::ControlFlow::Continue
+        });
 
-        // ---- 区域 06：信息面板（#119 提供连接 / 库 / 表内容） -----------------
-        let inspector_box = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
-        inspector_box.add_css_class("sqarvo-inspector");
-        inspector_box.append(&handlers.inspector);
+        let inspector = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
+        inspector.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "shell.layout_inspector",
+        ))]);
+        inspector.add_css_class("sqarvo-inspector");
+        inspector.append(&handlers.inspector);
 
-        let inspector = gtk::Revealer::new();
-        inspector.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
-        // v0.2.3.2：信息面板常驻（不再有折叠入口），宽度仍可拖、窗口级记忆。
-        inspector.set_reveal_child(true);
-        inspector.set_child(Some(&inspector_box));
-
-        // ---- 区域 04 | 06：工作区与信息面板共用一个 GtkPaned --------------------
+        let center = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
+        center.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "shell.layout_workspace",
+        ))]);
+        handlers
+            .sidebar
+            .update_property(&[gtk::accessible::Property::Label(l10n::t(
+                "shell.layout_navigation",
+            ))]);
+        center.append(&handlers.work_area);
+        center.append(&status.row_one);
         let work_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
-        work_pane.set_start_child(Some(&handlers.work_area));
+        work_pane.set_start_child(Some(&center));
         work_pane.set_end_child(Some(&inspector));
-        work_pane.set_resize_start_child(true);
+        work_pane.set_resize_start_child(false);
+        work_pane.set_resize_end_child(true);
         work_pane.set_shrink_start_child(false);
-        work_pane.set_resize_end_child(false);
-        work_pane.set_shrink_end_child(false);
-        work_pane.set_wide_handle(false);
+        work_pane.add_css_class("sqarvo-layout-split");
 
-        // ---- 区域 03 | 04：侧栏与右侧工作区 ------------------------------------
-        // 面板钳制区间与窗口尺寸出自同一个入口（`window_size::relayout`）：
-        // 三档 180–420 / 225–525 / 270–630，切档时由 `reapply_tier` 整格替换。
-        let bounds = Rc::new(Cell::new(handlers.panel_bounds));
         let sidebar_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
         sidebar_pane.set_start_child(Some(&handlers.sidebar));
         sidebar_pane.set_end_child(Some(&work_pane));
-        sidebar_pane.set_position(bounds.get().clamp_sidebar(handlers.sidebar_width));
         sidebar_pane.set_resize_start_child(false);
-        sidebar_pane.set_shrink_start_child(false);
-        sidebar_pane.set_resize_end_child(true);
         sidebar_pane.set_shrink_end_child(false);
-        sidebar_pane.set_wide_handle(false);
-
-        // 拖拽钳制：把位置拉回可拖区间，避免拖成 0 宽或吃掉整个工作区。
-        // 同一处把状态栏的左边沟宽度对齐到分栏位置：竖分割线延伸到底部，左侧整块
-        // 属于对象树功能区（v0.2.3.3）。
-        // 首帧的落位不是用户拖的：`sidebar_placing` 在第一次映射后 600ms 才放开，
-        // 否则程序化的 237 会被当成用户选择写进 window.json。
-        let sidebar_placing = Rc::new(Cell::new(true));
-        let sidebar_width = Rc::new(Cell::new(
-            bounds.get().clamp_sidebar(handlers.sidebar_width),
-        ));
-        {
-            let guard = Cell::new(false);
-            let status_for_gutter = Rc::clone(&status);
-            let sidebar_width = Rc::clone(&sidebar_width);
-            let bounds_for_pane = Rc::clone(&bounds);
-            let placing = Rc::clone(&sidebar_placing);
-            // 拖拽是逐像素的：宽度先记在内存里，停手 400ms 后再落盘（与信息面板同一套）。
-            let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-            let pending_on_fire = Rc::clone(&pending);
-            let on_width = Rc::clone(&handlers.on_sidebar_width);
-            sidebar_pane.connect_notify_local(Some("position"), move |pane, _| {
-                if guard.get() {
-                    return;
-                }
-                let clamped = bounds_for_pane.get().clamp_sidebar(pane.position());
-                if clamped != pane.position() {
-                    guard.set(true);
-                    pane.set_position(clamped);
-                    guard.set(false);
-                }
-                status_for_gutter.set_gutter_width(clamped);
-                if placing.get() || clamped == sidebar_width.get() {
-                    return;
-                }
-                sidebar_width.set(clamped);
-                if let Some(source) = pending.borrow_mut().take() {
-                    source.remove();
-                }
-                let on_width = Rc::clone(&on_width);
-                let pending_for_timer = Rc::clone(&pending_on_fire);
-                *pending.borrow_mut() = Some(glib::timeout_add_local_once(
-                    std::time::Duration::from_millis(400),
-                    move || {
-                        pending_for_timer.borrow_mut().take();
-                        on_width(clamped);
-                    },
-                ));
-            });
-            status.set_gutter_width(bounds.get().clamp_sidebar(sidebar_pane.position()));
-        }
-
-        let inspector_width = Rc::new(Cell::new(
-            bounds.get().clamp_inspector(handlers.inspector_width),
-        ));
-        // 面板常驻：初始化即 true，`set_inspector_visible(false)` 不再有调用者。
-        let inspector_visible = Rc::new(Cell::new(true));
-        // 首帧的分栏不是用户拖的：从构造起就认作「正在放置」，直到第一次落位后
-        // 稳定一段时间。否则首帧的 240（分栏 clamp 下限）会被当成用户宽度记进
-        // window.json，默认 280 从此永远回不来。
-        let inspector_placing = Rc::new(Cell::new(true));
-        let bounds_for_inspector = Rc::clone(&bounds);
-        {
-            let guard = Cell::new(false);
-            let width_cell = Rc::clone(&inspector_width);
-            let visible = Rc::clone(&inspector_visible);
-            let placing = Rc::clone(&inspector_placing);
-            // 拖拽是逐像素的：宽度先记在内存里，停手 400ms 后再落盘（窗口级记忆）。
-            let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-            let pending_on_fire = Rc::clone(&pending);
-            let on_width = Rc::clone(&handlers.on_inspector_width);
-            work_pane.connect_notify_local(Some("position"), move |pane, _| {
-                if guard.get() || !visible.get() || placing.get() {
-                    return;
-                }
-                let pane_width = pane.width();
-                if pane_width <= 0 {
-                    return;
-                }
-                let clamped = bounds_for_inspector
-                    .get()
-                    .inspector_width_from_position(pane_width, pane.position());
-                if clamped != width_cell.get() {
-                    width_cell.set(clamped);
-                }
-                let position = pane_width - clamped - 1;
-                if position != pane.position() {
-                    guard.set(true);
-                    pane.set_position(position);
-                    guard.set(false);
-                }
-                if let Some(source) = pending.borrow_mut().take() {
-                    source.remove();
-                }
-                let on_width = Rc::clone(&on_width);
-                let width = clamped;
-                let pending_for_timer = Rc::clone(&pending_on_fire);
-                *pending.borrow_mut() = Some(glib::timeout_add_local_once(
-                    std::time::Duration::from_millis(400),
-                    move || {
-                        // 定时器已经触发：先把登记清掉，否则下一次 position 变化会对一个
-                        // 已经消耗掉的 SourceId 调 remove()，GLib 直接 abort（QA 链上实测）。
-                        pending_for_timer.borrow_mut().take();
-                        on_width(width);
-                    },
-                ));
-            });
-        }
+        sidebar_pane.add_css_class("sqarvo-layout-split");
+        sidebar_pane.set_vexpand(true);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.set_vexpand(true);
-        // 区域 02 的工具条由窗口（`ui.rs`）挂在 headerbar 之下：它在握手之前就存在，
-        // 外壳只占据自己的区域（03–06），不把工具条重新挂到别处。
         root.append(&sidebar_pane);
         root.append(status.widget());
 
         let shell = Rc::new(Self {
             root,
-            toolbar,
+            toolbar: handlers.toolbar,
             sidebar_pane,
             sidebar: handlers.sidebar,
             work_pane,
-            work_area: handlers.work_area,
             status,
             inspector,
-            inspector_box,
-            inspector_width,
-            inspector_visible,
-            inspector_placing,
-            panel_bounds: bounds,
-            sidebar_width,
-            sidebar_placing: Rc::clone(&sidebar_placing),
-            on_inspector_width: Rc::clone(&handlers.on_inspector_width),
-            on_sidebar_width: Rc::clone(&handlers.on_sidebar_width),
+            layout: Cell::new(handlers.layout),
+            actual: Cell::default(),
+            last_width: Cell::new(0),
         });
-        {
-            // 首次拿到尺寸时把布局算式的实际结果写进日志：截图之外还有可复核的数字。
-            // `map` 的时刻分配还没发生（宽高都是 0），所以推迟一拍再取尺寸。
-            let weak = Rc::downgrade(&shell);
-            let sidebar_placing = Rc::clone(&sidebar_placing);
-            shell.root.connect_map(move |_| {
-                let weak = weak.clone();
-                let sidebar_placing = Rc::clone(&sidebar_placing);
-                glib::timeout_add_local_once(std::time::Duration::from_millis(0), move || {
-                    let placing = Rc::clone(&sidebar_placing);
-                    glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(600),
-                        move || placing.set(false),
-                    );
-                    if let Some(shell) = weak.upgrade() {
-                        // 面板常驻：首次映射后按记忆宽度把分栏落位一次（宽度未就绪时
-                        // 短轮询，不能把 0 宽算成一次落位）。
-                        shell.place_inspector_when_ready(0);
-                        let weak = Rc::downgrade(&shell);
-                        glib::timeout_add_local_once(
-                            std::time::Duration::from_millis(400),
-                            move || {
-                                if let Some(shell) = weak.upgrade() {
-                                    shell.log_layout();
-                                }
-                            },
-                        );
-                    }
-                });
-            });
+
+        // The frame clock observes allocation after GTK has finished laying out both panes.
+        // Position changes are never interpreted as a user's preferred width.
+        let weak = Rc::downgrade(&shell);
+        shell.root.add_tick_callback(move |root, _| {
+            let Some(shell) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if root.width() > 0 && root.width() != shell.last_width.get() {
+                shell.relayout(root.width());
+            }
+            glib::ControlFlow::Continue
+        });
+        shell.install_handle_gestures();
+        shell.toolbar.layout_shell.replace(Rc::downgrade(&shell));
+        for button in &shell.toolbar.layout_buttons {
+            button.set_sensitive(true);
         }
+        shell.relayout(0);
         shell
     }
 
-    /// 布局算术自检（§2.1）：按**真实窗口尺寸**打印规范公式算出的结果。
-    ///
-    /// 取的是 `GtkRoot` 的宽高（含 headerbar），不是外壳根控件的分配高度——
-    /// 后者从 headerbar 之下开始，直接套公式会把外壳算少一次。
-    fn log_layout(&self) {
-        let window = self
-            .root
-            .root()
-            .and_then(|root| root.downcast::<gtk::Window>().ok());
-        let (width, window_height) = match window {
-            Some(window) if window.width() > 0 && window.height() > 0 => {
-                (window.width(), window.height())
-            }
-            _ => (
-                self.root.width(),
-                self.root.height() + layout::CHROME_HEIGHT,
-            ),
-        };
-        if width <= 0 || window_height <= 0 {
-            return;
-        }
-        let sidebar = self
-            .panel_bounds
-            .get()
-            .clamp_sidebar(self.sidebar_pane.position());
-        let inspector = if self.inspector_visible.get() {
-            Some(
-                self.panel_bounds
-                    .get()
-                    .clamp_inspector(self.inspector_width.get()),
-            )
-        } else {
-            None
-        };
-        let inspector_label =
-            inspector.map_or_else(|| "折叠".to_owned(), |value| value.to_string());
-        eprintln!("[shell] 工具条按钮几何：{}", self.toolbar.button_geometry());
-        eprintln!(
-            "[shell] 布局 {width}x{window_height}：工具条 {}，状态栏 {}（y={}），内容 {}x{}，表格 {}x{}，侧栏 {sidebar}，信息面板 {inspector_label}",
-            self.toolbar.root.height(),
-            self.status.root.height(),
-            layout::status_y(window_height),
-            layout::content_width(width, sidebar),
-            layout::content_height(window_height),
-            layout::grid_width(width, sidebar, inspector),
-            layout::grid_height(window_height),
-        );
-    }
-
-    /// 外壳根控件（区域 02–06 的容器）。
     pub fn widget(&self) -> &gtk::Box {
         &self.root
     }
 
-    /// 区域 02：主工具条。
     pub fn toolbar(&self) -> &Rc<Toolbar> {
         &self.toolbar
     }
 
-    /// 区域 03：侧栏（对象树）。
-    pub fn sidebar(&self) -> &gtk::Widget {
+    pub fn sidebar(&self) -> &gtk::Box {
         &self.sidebar
     }
 
-    /// 区域 05：状态栏。
     pub fn status(&self) -> &Rc<StatusBar> {
         &self.status
     }
 
-    /// 折叠 / 展开信息面板，返回新的可见性。
-    ///
-    /// 折叠时把焦点交回工作区：焦点不能留在不可见控件上（§11）。
-    ///
-    /// **折叠必须把宽度还回去**：只把 revealer 收起而让分栏位置停在原处，表格仍然
-    /// 少 280px（`workspace-model` §2.1 的「折叠 942」，比 652 多 290）。因此折叠时
-    /// 把分隔条推到最右（起始子控件占满），展开时再恢复到记忆的宽度。
-    pub fn set_inspector_visible(&self, visible: bool) -> bool {
-        if visible == self.inspector_visible.get() {
-            // 常驻面板：重复「展开」只需确保分栏位置正确（首次映射后尺寸才有效）。
-            if visible {
-                self.place_inspector();
-            }
-            return visible;
-        }
-        self.inspector_visible.set(visible);
-        // 展开 / 折叠都先关掉「宽度采样」：这一拍的位置由下面这次分栏决定，
-        // 不是用户在拖。
-        self.inspector_placing.set(true);
-        if visible {
-            // 先显示内容再滑出：否则动画期间是一块空白。
-            self.inspector_box.set_visible(true);
-        }
-        self.inspector.set_reveal_child(visible);
-        if !visible {
-            // 动画结束后把面板内容整个隐藏：`GtkRevealer` 收起时仍会报子控件的最小
-            // 宽度（实测 198px），分栏会把这 198px 继续留给面板——折叠就不算「不占宽」。
-            let box_ = self.inspector_box.clone();
-            let pane = self.work_pane.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(260), move || {
-                box_.set_visible(false);
-                // 最小宽度变成 0 之后再分一次栏：否则位置还停在「面板 min = 198」那次
-                // 钳制的结果上，表格仍然少 198px。
-                let pane_width = pane.width();
-                if pane_width > 0 {
-                    pane.set_position(pane_width);
-                }
-            });
-        }
-        eprintln!(
-            "[shell] 信息面板：{}（宽 {}）",
-            if visible { "展开" } else { "折叠" },
-            self.inspector_width.get()
-        );
-        let width = self
-            .panel_bounds
-            .get()
-            .clamp_inspector(self.inspector_width.get());
-        let pane = self.work_pane.clone();
-        let place = Rc::new(move || {
-            let pane_width = pane.width();
-            if pane_width <= 0 {
-                return;
-            }
-            let position = if visible {
-                pane_width - width - 1
-            } else {
-                // 全部给工作区：面板不占宽（间隙一并收回）。
-                pane_width
-            };
-            pane.set_position(position);
-        });
-        // 已分配尺寸时立即分栏；首次展开（宽度还是 0）时等一次布局再做。
-        place();
-        let later = Rc::clone(&place);
-        glib::timeout_add_local_once(std::time::Duration::from_millis(0), move || later());
-        {
-            let placing = Rc::clone(&self.inspector_placing);
-            let pane = self.work_pane.clone();
-            let remembered = self.inspector_width.get();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
-                placing.set(false);
-                // 折叠 / 展开之后表格实际拿到多少宽：截图之外还有可复核的数字。
-                let pane_width = pane.width();
-                let allocated = if visible && pane_width > 0 {
-                    (pane_width - pane.position() - 1).max(0)
-                } else {
-                    0
-                };
-                // 起始子控件的**分配**宽度才是表格真正拿到的宽度（分栏位置只是请求值：
-                // 折叠时 GTK 还会按面板的最小宽度再钳一次）。折叠 / 展开相差 280。
-                let work_width = pane.start_child().map_or(0, |child| child.width());
-                let (min_start, _, _, _) = pane.start_child().map_or((0, 0, 0, 0), |child| {
-                    child.measure(gtk::Orientation::Horizontal, -1)
-                });
-                eprintln!(
-                    "[shell] 面板{}：工作区宽 {pane_width}，表格区实宽 {work_width}，面板占 {allocated}（记忆宽 {remembered}；起始 min {min_start}）",
-                    if visible { "展开" } else { "折叠" },
-                );
-                // 再取一次：revealer 的滑动动画约 200ms，动画结束后才是最终宽度。
-                let pane = pane.clone();
-                let label = if visible { "展开" } else { "折叠" };
-                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-                    let work_width = pane.start_child().map_or(0, |child| child.width());
-                    eprintln!("[shell] 面板{label}（动画后）：表格区实宽 {work_width}");
-                });
-            });
-        }
-        if !visible
-            && let Some(focus) = self.root.root().and_then(|root| root.focus())
-            && focus.is_ancestor(&self.inspector_box)
-        {
-            self.work_area.grab_focus();
-        }
-        visible
+    pub fn layout_state(&self) -> PanelLayout {
+        self.layout.get()
     }
 
-    /// 把分栏放到「右侧留出记忆宽度」的位置（首次映射与宽度变化都走这里）。
-    ///
-    /// 分栏还没有真实宽度时（首帧）直接返回，由 [`Self::place_inspector_when_ready`]
-    /// 短轮询到就绪再落位：否则 `pane_width - width` 会算成负数、被 clamp 到 240，
-    /// 再把 240 当成用户选择记进 `window.json`。
-    /// 落位后 600ms 才允许「拖拽采样」生效（记录防抖是 400ms）。
-    pub fn place_inspector(&self) {
-        let pane = &self.work_pane;
-        let pane_width = pane.width();
-        if pane_width <= 0 {
-            // 还没有分配尺寸：保持「正在放置」，等 map / 重试回调来落位。
-            self.inspector_placing.set(true);
-            return;
-        }
-        let width = self
-            .panel_bounds
-            .get()
-            .clamp_inspector(self.inspector_width.get());
-        self.inspector_placing.set(true);
-        pane.set_position(pane_width - width - 1);
-        let placing = Rc::clone(&self.inspector_placing);
-        glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
-            placing.set(false);
-        });
-    }
-
-    /// 等分栏拿到真实宽度后再落位（首帧尺寸是 0；最多轮询 ~1 秒）。
-    pub fn place_inspector_when_ready(self: &Rc<Self>, attempts: u32) {
-        if self.work_pane.width() > 0 {
-            self.place_inspector();
-            return;
-        }
-        if attempts >= 25 {
-            eprintln!("[shell] 分栏宽度一直为 0：信息面板未落位（宽度保持记忆值）");
-            return;
-        }
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(std::time::Duration::from_millis(40), move || {
-            if let Some(shell) = weak.upgrade() {
-                shell.place_inspector_when_ready(attempts + 1);
-            }
-        });
-    }
-
-    /// 信息面板当前是否展开（布局自检与 QA 用）。
     pub fn inspector_visible(&self) -> bool {
-        self.inspector_visible.get()
+        self.actual.get().panels[1] > 0
     }
 
-    /// 信息面板当前记忆的宽度（折叠时仍然保留，展开时用它）。
     pub fn inspector_width(&self) -> i32 {
-        self.inspector_width.get()
+        self.layout.get().preferred(layout::current_tier())[1]
     }
 
-    /// 侧栏当前宽度（已钳制；未分配尺寸时给下限，拖动后立即反映）。
-    pub fn sidebar_width(&self) -> i32 {
-        self.panel_bounds
-            .get()
-            .clamp_sidebar(self.sidebar_width.get())
+    pub fn set_inspector_visible(&self, visible: bool) {
+        if visible != self.inspector_visible() {
+            self.toggle_panel(Panel::Inspector);
+        }
     }
 
-    /// 切档后把面板宽度换到新档位、重设钳制区间并重新分栏（规范 §2.3 / §7 第 1 条）。
-    ///
-    /// - 宽度按「compact 归一化值」换算（`window_state::rescale`），1.0 → 1.5 → 1.0
-    ///   往返不漂移；
-    /// - 若新档位的侧栏 + 信息面板把表格挤到 600px 以下，两个面板都收到各自下限并
-    ///   打日志（§2.3 最后两条）；
-    /// - 落盘走与用户拖拽同一个回调（窗口级记忆），切档后重启仍在新档位上。
-    pub fn reapply_tier(
-        &self,
-        old: crate::layout::Tier,
-        new: crate::layout::Tier,
-        bounds: crate::window_size::PanelBounds,
-        window_width: i32,
-    ) {
-        let metrics = crate::layout::Metrics::for_tier(new);
-        let old_sidebar = self.sidebar_width.get();
-        let old_inspector = self.inspector_width.get();
-        self.panel_bounds.set(bounds);
-        self.sidebar_placing.set(true);
-        self.inspector_placing.set(true);
-        let mut sidebar = bounds.clamp_sidebar(crate::window_state::rescale(old_sidebar, old, new));
-        let mut inspector =
-            bounds.clamp_inspector(crate::window_state::rescale(old_inspector, old, new));
-        let mut shrunk = false;
-        if window_width > 0 {
-            let grid = window_width
-                - sidebar
-                - metrics.inspector_gap
-                - inspector
-                - metrics.grid_padding_start
-                - metrics.grid_padding_end;
-            if grid < 600 {
-                sidebar = bounds.sidebar_min;
-                inspector = bounds.inspector_min;
-                shrunk = true;
-            }
-        }
-        self.sidebar_width.set(sidebar);
-        self.inspector_width.set(inspector);
-        self.sidebar_pane.set_position(sidebar);
-        self.status.set_gutter_width(sidebar);
-        let pane_width = self.work_pane.width();
-        if pane_width > 0 && self.inspector_visible.get() {
-            self.work_pane.set_position(pane_width - inspector - 1);
-        }
-        // 与用户拖拽同一个落盘入口：写入的是新档位下的归一化值。
-        (self.on_sidebar_width)(sidebar);
-        (self.on_inspector_width)(inspector);
-        eprintln!(
-            "[tier] 面板宽度随档位换算：侧栏 {} → {sidebar}，信息面板 {} → {inspector}（{} → {}）",
-            old_sidebar,
-            old_inspector,
-            old.id(),
-            new.id()
-        );
-        if shrunk {
-            eprintln!(
-                "[tier] 工作区放不下 {} 档的面板宽度：侧栏 / 信息面板收到下限 {} / {}（表格优先保留 600px）",
-                new.id(),
-                bounds.sidebar_min,
-                bounds.inspector_min
+    pub fn set_inspector_width(&self, width: i32) {
+        self.change_layout(|state| {
+            state.set_preferred(
+                Panel::Inspector,
+                layout::clamp_inspector(width),
+                layout::current_tier(),
             );
-        }
-        let sidebar_placing = Rc::clone(&self.sidebar_placing);
-        let inspector_placing = Rc::clone(&self.inspector_placing);
-        glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-            sidebar_placing.set(false);
-            inspector_placing.set(false);
         });
     }
 
-    /// 把面板设到指定宽度（拖拽结束后的落点；`--qa-inspector-width` 也走这里）。
-    ///
-    /// 钳制到 240–520，展开状态下立刻重新分栏，并窗口级记下来。
-    pub fn set_inspector_width(&self, width: i32) {
-        let width = self.panel_bounds.get().clamp_inspector(width);
-        if width == self.inspector_width.get() {
+    pub fn reapply_tier(&self) {
+        self.sidebar
+            .set_width_request(layout::metrics().sidebar_min);
+        self.last_width.set(0);
+    }
+
+    pub fn toggle_panel(&self, panel: Panel) {
+        self.change_layout(|state| state.toggle(panel, self.actual.get()));
+    }
+
+    pub fn reset_layout(&self) {
+        self.change_layout(|state| *state = PanelLayout::default());
+    }
+
+    pub fn reveal_navigation(&self) -> bool {
+        if self.actual.get().panels[0] == 0 {
+            self.change_layout(|state| state.request(Panel::Navigation));
+        }
+        self.actual.get().panels[0] > 0
+    }
+
+    fn change_layout(&self, change: impl FnOnce(&mut PanelLayout)) {
+        let mut state = self.layout.get();
+        let before = state.preferences;
+        change(&mut state);
+        self.layout.set(state);
+        self.relayout(self.root.width());
+        if before != state.preferences {
+            self.save_preferences();
+        }
+    }
+
+    fn save_preferences(&self) {
+        crate::window_state::save_panels(self.layout.get().preferences);
+    }
+
+    fn relayout(&self, width: i32) {
+        let mut state = self.layout.get();
+        let measured = width > 0;
+        // On first mount, the toolbar can provide a provisional size. Only
+        // measurements of the workspace update the hysteresis history.
+        let width = if measured {
+            width
+        } else {
+            self.toolbar.widget().width()
+        };
+        if width <= 0 {
             return;
         }
-        self.inspector_width.set(width);
-        self.inspector_placing.set(true);
-        let pane = self.work_pane.clone();
-        if pane.width() > 0 {
-            pane.set_position(pane.width() - width - 1);
+        let allocation = state.solve(width, layout::current_tier());
+        if measured {
+            self.last_width.set(width);
+            self.layout.set(state);
         }
-        let placing = Rc::clone(&self.inspector_placing);
-        glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
-            placing.set(false);
+        self.apply_allocation(allocation);
+    }
+
+    fn apply_allocation(&self, allocation: Allocation) {
+        self.actual.set(allocation);
+        let [left, right] = allocation.panels;
+        let state = self.layout.get();
+        let [nav, focus, inspector] = &self.toolbar.layout_buttons;
+        nav.set_active(left > 0);
+        focus.set_active(state.focus);
+        inspector.set_active(right > 0);
+        for (i, (widget, button, width)) in [
+            (self.sidebar.upcast_ref::<gtk::Widget>(), nav, left),
+            (self.inspector.upcast_ref::<gtk::Widget>(), inspector, right),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let visible = width > 0;
+            if !visible
+                && widget
+                    .root()
+                    .and_then(|root| root.focus())
+                    .is_some_and(|focus| focus == *widget || focus.is_ancestor(widget))
+            {
+                button.grab_focus();
+            }
+            widget.set_visible(visible);
+            let blocked = !state.focus && state.preferences.shown[i] && !visible;
+            let name = if i == 0 {
+                "shell.layout_navigation"
+            } else {
+                "shell.layout_inspector"
+            };
+            button.set_tooltip_text(Some(l10n::t(if blocked {
+                "shell.layout_space"
+            } else {
+                name
+            })));
+        }
+        if left > 0 && self.sidebar_pane.position() != left {
+            self.sidebar_pane.set_position(left);
+        }
+        if right > 0 && self.work_pane.position() != allocation.workspace {
+            self.work_pane.set_position(allocation.workspace);
+        }
+    }
+
+    fn handle_at(&self, x: f64, y: f64) -> Option<Panel> {
+        let handle = f64::from(layout::metrics().panel_handle);
+        for (panel, widget, pane) in [
+            (Panel::Navigation, &self.sidebar, &self.sidebar_pane),
+            (Panel::Inspector, &self.inspector, &self.work_pane),
+        ] {
+            if !widget.is_mapped() {
+                continue;
+            }
+            let Some(bounds) = widget.compute_bounds(&self.root) else {
+                continue;
+            };
+            let left_edge =
+                (panel == Panel::Inspector) != (pane.direction() == gtk::TextDirection::Rtl);
+            let start = f64::from(bounds.x())
+                + if left_edge {
+                    -handle
+                } else {
+                    f64::from(bounds.width())
+                };
+            if (start..start + handle).contains(&x)
+                && (f64::from(bounds.y())..f64::from(bounds.y() + bounds.height())).contains(&y)
+            {
+                return Some(panel);
+            }
+        }
+        None
+    }
+
+    fn install_handle_gestures(self: &Rc<Self>) {
+        let click = gtk::GestureClick::new();
+        click.set_button(1);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        click.connect_pressed(move |gesture, count, x, y| {
+            if count == 2
+                && let Some(shell) = weak.upgrade()
+                && let Some(panel) = shell.handle_at(x, y)
+            {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                shell.change_layout(|state| {
+                    state.preferences.preferred[panel.index()] =
+                        layout::PanelPreferences::default().preferred[panel.index()];
+                });
+            }
         });
-        (self.on_inspector_width)(width);
-        eprintln!("[shell] 信息面板宽度改为 {width}（已窗口级记忆）");
-    }
 
-    /// 显隐对象树侧栏，返回新的可见性。
-    pub fn set_sidebar_visible(&self, visible: bool) -> bool {
-        self.sidebar.set_visible(visible);
-        if visible {
-            self.sidebar_pane
-                .set_position(layout::metrics().sidebar_width);
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(1);
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let origin = Rc::new(Cell::new(None));
+        let changed = Rc::new(Cell::new(false));
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_begin({
+            let origin = Rc::clone(&origin);
+            move |gesture, x, y| {
+                let Some(shell) = weak.upgrade() else { return };
+                origin.set(
+                    shell
+                        .handle_at(x, y)
+                        .map(|panel| (panel, shell.actual.get())),
+                );
+                gesture.set_state(if origin.get().is_some() {
+                    gtk::EventSequenceState::Claimed
+                } else {
+                    gtk::EventSequenceState::Denied
+                });
+            }
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_update({
+            let origin = Rc::clone(&origin);
+            let changed = Rc::clone(&changed);
+            move |_, x, _| {
+                // A press or release can produce a zero-offset update. In particular,
+                // the second press of a double-click must not write back its old width.
+                if !changed.get() && x.round() == 0.0 {
+                    return;
+                }
+                let (Some(shell), Some((panel, initial))) = (weak.upgrade(), origin.get()) else {
+                    return;
+                };
+                let tier = layout::current_tier();
+                let from_left = (panel == Panel::Navigation)
+                    != (shell.root.direction() == gtk::TextDirection::Rtl);
+                let direction = if from_left { 1 } else { -1 };
+                let mut state = shell.layout.get();
+                let actual = state.drag(
+                    panel,
+                    initial.panels[panel.index()] + direction * x.round() as i32,
+                    shell.root.width(),
+                    tier,
+                    initial,
+                );
+                changed.set(true);
+                shell.layout.set(state);
+                shell.apply_allocation(actual);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_end(move |_, _, _| {
+            origin.take();
+            if changed.replace(false)
+                && let Some(shell) = weak.upgrade()
+            {
+                shell.save_preferences();
+            }
+        });
+        self.root.add_controller(click.clone());
+        self.root.add_controller(drag.clone());
+        click.group_with(&drag);
+    }
+}
+
+impl Shell {
+    /// Mount the existing search and feedback above the navigation tree.
+    pub fn mount_search(&self, entry: &impl IsA<gtk::Widget>, status: &gtk::Label) {
+        let entry = entry.as_ref().clone();
+        entry.set_hexpand(true);
+        entry.set_valign(gtk::Align::Center);
+        entry.set_margin_start(gap(Gap::Md));
+        entry.set_margin_end(gap(Gap::Md));
+        entry.set_margin_top(gap(Gap::None));
+        entry.set_margin_bottom(gap(Gap::None));
+
+        let column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        column.set_valign(gtk::Align::Center);
+        column.set_hexpand(true);
+        column.append(&entry);
+
+        {
+            let status = status.clone();
+            status.set_hexpand(true);
+            status.set_halign(gtk::Align::Fill);
+            status.set_valign(gtk::Align::Center);
+            status.set_margin_start(gap(Gap::Md));
+            status.set_margin_end(gap(Gap::Md));
+            status.set_margin_top(gap(Gap::None));
+            status.set_margin_bottom(gap(Gap::None));
+            {
+                let label = &status;
+                // 一行、省略号：长文案（错误 / 连接失败）不把状态栏撑成三行。
+                label.set_wrap(false);
+                label.set_single_line_mode(true);
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                label.add_css_class("dim-label");
+                label.set_visible(false);
+                label.connect_label_notify(|label| {
+                    let text = label.text().to_string();
+                    label.set_tooltip_text(Some(text.as_str()));
+                    // 没有文字时整行隐藏：搜索框在沟里单独居中。
+                    label.set_visible(!text.is_empty());
+                });
+            }
+            column.append(&status);
         }
-        visible
-    }
 
-    /// 切换对象树侧栏，返回新的可见性。
-    pub fn toggle_sidebar(&self) -> bool {
-        let next = !self.sidebar.is_visible();
-        self.set_sidebar_visible(next)
+        self.sidebar.prepend(&column);
     }
 }
 
@@ -689,6 +452,8 @@ impl Shell {
 /// （v0.2.3.3：等同在对象树里选中对应的库 / 分组）。函数 / 查询没有可拉取的列表，点开后
 /// 页面如实说明原因，不摆假数据。
 pub struct Toolbar {
+    layout_shell: Rc<RefCell<Weak<Shell>>>,
+    layout_buttons: [gtk::ToggleButton; 3],
     root: gtk::Box,
     left: gtk::Box,
     kinds: gtk::Box,
@@ -797,6 +562,40 @@ impl Toolbar {
         root.append(&kinds);
         root.append(&spacer);
 
+        let layout_shell: Rc<RefCell<Weak<Shell>>> = Rc::default();
+        let layout_buttons = [
+            (
+                "shell.layout_navigation",
+                "sidebar-show-symbolic",
+                Some(Panel::Navigation),
+            ),
+            ("shell.layout_focus", "view-fullscreen-symbolic", None),
+            (
+                "shell.layout_inspector",
+                "sidebar-show-right-symbolic",
+                Some(Panel::Inspector),
+            ),
+        ]
+        .map(|(key, icon, panel)| {
+            let button = gtk::ToggleButton::new();
+            button.set_icon_name(icon);
+            button.set_sensitive(false);
+            button.add_css_class("flat");
+            button.set_tooltip_text(Some(l10n::t(key)));
+            button.update_property(&[gtk::accessible::Property::Label(l10n::t(key))]);
+            let current = Rc::clone(&layout_shell);
+            button.connect_clicked(move |_| {
+                if let Some(shell) = current.borrow().upgrade() {
+                    match panel {
+                        Some(panel) => shell.toggle_panel(panel),
+                        None => shell.change_layout(|state| state.focus = !state.focus),
+                    }
+                }
+            });
+            root.append(&button);
+            button
+        });
+
         // 初始禁用：窗口在握手之前就显示工具条，不能让用户点到「没有后端」的动作。
         for button in [&connect, &new_query, &table, &view, &function, &query] {
             button.set_sensitive(false);
@@ -804,6 +603,8 @@ impl Toolbar {
         connect.set_tooltip_text(Some(l10n::t("shell.tooltip_connect_not_ready")));
 
         Rc::new(Self {
+            layout_shell,
+            layout_buttons,
             root,
             left,
             kinds,
@@ -927,28 +728,6 @@ impl Toolbar {
         &self.kinds
     }
 
-    /// 工具条按钮的几何（相对工具条根控件）：高度与 y 必须一致。
-    ///
-    /// 「Tables …」与左侧「新建查询」是同一套 flat 按钮，只要内距或字号跑偏，
-    /// 肉眼就会看到一高一低——这条日志把差异变成数字。
-    #[must_use]
-    pub fn button_geometry(&self) -> String {
-        let mut parts = Vec::new();
-        for (name, button) in [
-            ("新建查询", &self.new_query),
-            ("Tables", &self.table),
-            ("Views", &self.view),
-            ("Functions", &self.function),
-            ("Queries", &self.query),
-        ] {
-            let top = button
-                .compute_bounds(&self.root)
-                .map_or(-1.0, |rect| rect.y());
-            parts.push(format!("{name} h={} y={:.0}", button.height(), top));
-        }
-        parts.join(" · ")
-    }
-
     /// 高亮「当前种类」：`Objects` 页列的种类，或当前表标签的种类。
     pub fn set_active(&self, shortcut: Option<crate::tabs::KindShortcut>) {
         use crate::tabs::KindShortcut;
@@ -986,31 +765,9 @@ impl Toolbar {
     }
 }
 
-/// 区域 05：状态栏（两行各 24，共 48）。
-///
-/// 三段归属（§7）：
-///
-/// ```text
-///       ← 对象树功能区 →│← 工作区（v0.2.3.3 起分割线延伸到底部）
-/// 行1：                 [新增 删除 应用 撤销 刷新 取消]                 [分页器]
-/// 行2：                 [SQL 摘要]        [已加载 N 行 · 第 P 页]  [最后刷新] [连接·事务·耗时]
-/// ```
-///
-/// 左边沟的宽度由 [`Shell`] 按侧栏分栏位置设置（[`StatusBar::set_gutter_width`]），
-/// 分割线与上面的分栏线是同一根轴；左侧整块属于对象树功能区：对象树搜索框就挂在沟里
-/// （[`StatusBar::mount_search`]），因此与上面的树同一列宽，窗口左下角一眼可及。
-///
-/// 视图切换（对象树 / 平铺）**不在状态栏**：平铺列表删除后它也随之移除，
-/// 960×640 下放两处会把右组顶出窗口。这里只保留分页器。
-///
-/// 读数全部来自数据页 / 查询事件：拿不到的（总数、页码跳转）不出现，不写 `—` 冒充。
+/// Window status and the existing workspace operation controls.
 pub struct StatusBar {
-    /// 根：`左边沟 | 竖分割线 | 右列`——左沟宽度跟着侧栏分栏走，分割线与分栏线对齐。
     root: gtk::Box,
-    /// 分割线左侧的空白（v0.2.3.3：完全属于对象树功能区，不再放「连接过滤」）。
-    gutter: gtk::Box,
-    /// 分割线右侧：两行内容（行操作 / 分页器；SQL 摘要 / 记录 / 会话）。
-    right_column: gtk::Box,
     add: gtk::Button,
     delete: gtk::Button,
     apply: gtk::Button,
@@ -1218,7 +975,11 @@ impl StatusBar {
         row_one_right.append(&detail_toggle);
         row_one_right.append(&pager_box);
 
-        let row_one = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
+        let row_one = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(gap(Gap::Md))
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
         row_one.add_css_class("sqarvo-status-row");
         row_one.append(&row_one_middle);
         let spacer_one = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
@@ -1278,33 +1039,25 @@ impl StatusBar {
         row_two.append(&row_two_left);
         row_two.append(&row_two_right);
 
-        // 竖分割线：与侧栏 / 工作区之间的分栏线同一条（宽度由 `set_gutter_width` 跟随）。
-        let divider = gtk::Separator::new(gtk::Orientation::Vertical);
-        divider.add_css_class("sqarvo-status-divider");
-        divider.set_valign(gtk::Align::Fill);
-
-        let gutter = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
-        gutter.add_css_class("sqarvo-status-gutter");
-        gutter.set_width_request(layout::metrics().sidebar_width);
-        gutter.set_hexpand(false);
-
-        let right_column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
-        right_column.add_css_class("sqarvo-status-right");
-        right_column.set_hexpand(true);
-        right_column.append(&row_one);
-        right_column.append(&row_two);
-
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
+        root.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "shell.layout_status",
+        ))]);
         root.add_css_class("sqarvo-status-bar");
+        root.add_css_class("sqarvo-status-right");
         root.set_valign(gtk::Align::End);
-        root.append(&gutter);
-        root.append(&divider);
-        root.append(&right_column);
+        root.append(&row_two);
+        row_one.add_css_class("sqarvo-status-bar");
+        row_one.add_css_class("sqarvo-workspace-ops");
+        row_one.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "shell.layout_operations",
+        ))]);
 
         Rc::new(Self {
             root,
-            gutter,
-            right_column,
             add,
             delete,
             apply,
@@ -1337,75 +1090,11 @@ impl StatusBar {
         &self.root
     }
 
-    /// 左边沟宽度（= 侧栏分栏位置）：竖分割线要和上面的分栏线在同一根轴上。
-    pub fn set_gutter_width(&self, width: i32) {
-        if width > 0 && self.gutter.width_request() != width {
-            self.gutter.set_width_request(width);
-        }
-    }
-
-    /// 把对象树搜索框挂进左边沟（窗口左下角，与树同一列宽）。
-    ///
-    /// 入口只负责**摆放**：垂直居中、左右 8px，高度沿用 `.sqarvo-status-bar entry`
-    /// 的 `layout::MIN_TARGET`，不让 24 高的搜索框把 48 高的状态栏撑起来。搜索逻辑
-    /// （防抖 250ms、结果页、`Ctrl+F` 的 `focus_search()`）仍归 [`crate::tree::TreePanel`]，
-    /// 这里不复制任何一份。
-    ///
-    /// `status` 传搜索状态标签时放在搜索框**下方**：字号 11（继承状态栏字号）、`dim-label`、
-    /// 单行省略（全文进 tooltip），没有文字时整行隐藏，不占高度。
-    pub fn mount_search(
-        &self,
-        entry: &impl IsA<gtk::Widget>,
-        status: Option<&impl IsA<gtk::Widget>>,
-    ) {
-        let entry = entry.as_ref().clone();
-        entry.set_hexpand(true);
-        entry.set_valign(gtk::Align::Center);
-        entry.set_margin_start(gap(Gap::Md));
-        entry.set_margin_end(gap(Gap::Md));
-        entry.set_margin_top(gap(Gap::None));
-        entry.set_margin_bottom(gap(Gap::None));
-
-        let column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
-        column.set_valign(gtk::Align::Center);
-        column.set_hexpand(true);
-        column.append(&entry);
-
-        if let Some(status) = status {
-            let status = status.as_ref().clone();
-            status.set_hexpand(true);
-            status.set_halign(gtk::Align::Fill);
-            status.set_valign(gtk::Align::Center);
-            status.set_margin_start(gap(Gap::Md));
-            status.set_margin_end(gap(Gap::Md));
-            status.set_margin_top(gap(Gap::None));
-            status.set_margin_bottom(gap(Gap::None));
-            if let Some(label) = status.downcast_ref::<gtk::Label>() {
-                // 一行、省略号：长文案（错误 / 连接失败）不把状态栏撑成三行。
-                label.set_wrap(false);
-                label.set_single_line_mode(true);
-                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                label.add_css_class("dim-label");
-                label.set_visible(false);
-                label.connect_label_notify(|label| {
-                    let text = label.text().to_string();
-                    label.set_tooltip_text(Some(text.as_str()));
-                    // 没有文字时整行隐藏：搜索框在沟里单独居中。
-                    label.set_visible(!text.is_empty());
-                });
-            }
-            column.append(&status);
-        }
-
-        self.gutter.append(&column);
-    }
-
     /// 布局自检用的两行与三组（行 1：行操作 / 分页器；行 2：SQL 摘要 / 记录 / 右组）。
     ///
     /// 返回控件克隆，调用方只在布局稳定后读取几何，不参与显隐与业务逻辑。
     pub fn audit_groups(&self) -> Vec<(&'static str, gtk::Widget)> {
         vec![
-            ("状态栏 右列", self.right_column.clone().upcast()),
             ("状态栏 行1 整行", self.row_one.clone().upcast()),
             (
                 "状态栏 行1 操作组(新增·删除·应用·撤销·刷新·取消)",
@@ -1487,7 +1176,9 @@ impl StatusBar {
                 l10n::t("status_bar.pager_last"),
             ),
         ] {
-            button.set_sensitive(enabled && snapshot.table.is_some());
+            button.set_sensitive(
+                enabled && snapshot.table.is_some() && snapshot.state != DataState::Disconnected,
+            );
             button.set_tooltip_text(Some(tip));
         }
         // 展示形式切换的选中态由页面推回来（切标签 / 换表 / 选中集清空后自动复位）。
@@ -1517,9 +1208,13 @@ impl StatusBar {
             )));
         }
         // 表标签的 SQL 摘要 = 当前筛选/排序拼出的只读 `SELECT … LIMIT …`（不执行）。
-        if snapshot.table.is_some() && !snapshot.summary.is_empty() {
-            self.set_sql_summary(&snapshot.summary);
-        }
+        self.set_sql_summary(if snapshot.state == DataState::Disconnected {
+            l10n::t("status_bar.sql_disconnected")
+        } else if snapshot.summary.is_empty() {
+            l10n::t("status_bar.sql_not_executed")
+        } else {
+            &snapshot.summary
+        });
         self.refresh_session();
     }
 
@@ -1611,13 +1306,7 @@ impl StatusBar {
     /// 行操作全部禁用并用 tooltip 说明原因——不留下「看起来能点」的按钮。
     /// 查询标签：没有分页器，但行操作组按结果是否可编辑生效（v0.2.5）。
     pub fn show_query_ops(&self, ops: &RowOpsState) {
-        self.pager_summary.set_visible(false);
-        self.has_table.set(false);
-        self.last_refresh.set_visible(false);
-        self.selected_label.set_visible(false);
-        for button in self.pager_buttons.borrow().iter() {
-            button.set_sensitive(false);
-        }
+        self.clear_table_status();
         // 查询页：行 1 的「取消」是「取消查询」而不是「中止提交批次」。
         self.ops_context.set(OpsContext::Query);
         self.apply_row_ops(ops);
@@ -1636,15 +1325,20 @@ impl StatusBar {
         true
     }
 
-    pub fn show_no_table(&self, reason: &str) {
+    fn clear_table_status(&self) {
         self.pager_summary.set_visible(false);
         self.has_table.set(false);
+        self.last_refresh_at.set(None);
         self.last_refresh.set_visible(false);
         self.selected_label.set_visible(false);
-        // 没有表时翻页按钮一律禁用（不是「看起来能点」）。
+        self.detail_toggle.set_active(false);
         for button in self.pager_buttons.borrow().iter() {
             button.set_sensitive(false);
         }
+    }
+
+    pub fn show_no_table(&self, reason: &str) {
+        self.clear_table_status();
         // Objects 页 / 启动态：两用的「取消」在这里两个语义都不成立。
         self.ops_context.set(OpsContext::None);
         self.apply_row_ops(&RowOpsState {
@@ -1665,6 +1359,11 @@ impl StatusBar {
 
     /// SQL 摘要（行 2 左段）：来自查询事件，不推测。
     pub fn set_sql_summary(&self, text: &str) {
+        let text = if self.connection.borrow().is_none() {
+            l10n::t("status_bar.sql_disconnected")
+        } else {
+            text
+        };
         self.sql_summary.set_text(&format!("SQL: {text}"));
         self.sql_summary.set_tooltip_text(Some(text));
     }
