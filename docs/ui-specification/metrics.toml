@@ -1,15 +1,15 @@
 # Sqarvo 布局度量真值（单一口径）
 #
-# 这是三端（Linux GTK / Windows WinUI 3 / macOS SwiftUI）共享的**唯一**尺寸来源。
+# 这是 Active 前端共享的唯一尺寸来源，适用范围见 frontend/platforms.toml。
 # 规范文字见 scaling-and-window-sizing.md；本文件只放数字，数字改动必须与本文件同 PR。
 #
 # 为什么三档都写死整数、而不是「基准 × 缩放系数」：
 #   Rust 的 f64::round 是 half-away-from-zero，C# 的 Math.Round 默认是 half-to-even，
 #   Swift 的 rounded() 又是 half-away-from-zero。同一份 26×1.25 在两个语言里会得到 33 和 32，
-#   三端就会静默漂移。所有档位的取值在这里全量列出，各端只读、不计算。
+#   不同运行时就会静默漂移。所有档位的取值在这里全量列出，各端只读、不计算。
 #
-# 颜色不在这里：颜色一律走主题 token（Linux 的 @define-color / WinUI 的 ThemeResource），
-# 任何界面 CSS / XAML 里出现 #RRGGBB 都算缺陷。
+# 颜色不在这里：颜色一律走主题 token，
+# 任何界面样式 里出现 #RRGGBB 都算缺陷。
 #
 # 不随档位缩放的量（刻意排除）：
 #   border_width_px = 1        1px 描边在所有档位都保持 1px（1.5× 的 1.5px 细线会发糊）

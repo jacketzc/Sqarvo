@@ -1,14 +1,14 @@
 # UI 行为契约与全局规则
 
 本文件管两件事：**全局规则**（§8：快捷键、危险操作确认、五态、失败文案硬约束）与**已知偏差**
-（§9）。逐组件的行为——动作、可用性条件、结果文案、源码依据、三端同步状态——在**组件注册表**
+（§9）。逐组件的行为——动作、可用性条件、结果文案、源码依据、Active 平台同步状态——在**组件注册表**
 [`components/`](components/README.md)；本文件 §1–§7 只是指向各功能区的指针。
 
 ## 定位、分工与优先级
 
 | 文件 | 管什么 | 不管什么 |
 |---|---|---|
-| [`components/*.toml`](components/) | 组件存在性、层级、样式引用、交互、生命周期、三端同步 —— **UI 行为的唯一真值** | 全局规则、版式算术 |
+| [`components/*.toml`](components/) | 组件存在性、层级、样式引用、交互、生命周期、Active 平台同步 —— **UI 行为的唯一真值** | 全局规则、版式算术 |
 | **本文件** | 全局规则（§8）、已知偏差（§9）、各区指针 | 单个组件的动作细节 |
 | [`ui-components.md`](ui-components.md) | 注册表的生成物（人读），禁止手改 | — |
 | [`workspace-model.md`](workspace-model.md) | 区域划分、布局算术、平台映射、密度 | 具体动作语义 |
@@ -21,7 +21,7 @@
 - 改全局规则（快捷键 / 危险操作 / 五态 / 失败文案）→ 改本文件 §8，并同步到受影响的组件。
 - 发现代码与注册表不一致 → 记 §9（代码如此 / 文档如此 / 建议），能当场改的就改掉再删条目。
 - 依据是代码，不是旧文档：注册表与本文都以已完成的 Linux 客户端为依据（`frontend/linux`，
-  源码路径相对它）；Windows 现状在各组件的 `sync.windows` 与 `platform_notes.windows` 里。
+  源码路径相对它）。前端范围见 [平台状态](../../frontend/platforms.toml)。
 - QA 专用路径（`--qa-*`）不算用户可达行为。
 - 发版前跑 `scripts/check-ui-sync.sh release-check`（门禁见 AGENTS.md §14.4）。
 
@@ -31,7 +31,7 @@
 
 已迁入组件注册表 → [`components/shell.toml`](components/shell.toml)（24 个组件：窗口与标题、主工具条、
 四个种类入口、菜单栏、密度档、错误页、后端失效恢复）。原 §1.1–§1.6 各小节都归到上面这个文件，
-其中 §1.6 的 Windows 窗口层并入对应组件的 `platform_notes.windows`；未收口项见 §9。
+当前偏差见 §9。
 
 ## 2. 对象树
 
@@ -49,7 +49,7 @@
 已迁入组件注册表 → [`components/tabs.toml`](components/tabs.toml)（24 个组件：标签条、标签项、
 关闭确认框、查询标签的动作行 / 编辑器 / 结果区 / 分隔把手 / 关闭结果区按钮）。原 §5.11（查询标签的版面收敛与不可用态）
 也归 `tabs`。#189：查询标签编辑器 / 结果区改为可拖动 GtkPaned 分栏——新标签结果区（含把手）隐藏、
-编辑器占满整页，任何 Execute 响应后显示；默认比例与两端最小高度见 metrics.toml 的 `query_*` 键；
+编辑器占满整页，任何 Execute 响应后显示；默认比例与最小高度见 metrics.toml 的 `query_*` 键；
 结果区可主动关闭（释放游标，有脏行先确认丢弃）。
 
 ## 5. 表数据页
@@ -66,7 +66,7 @@
 ## 7. 状态栏
 
 已迁入组件注册表 → [`components/status_bar.toml`](components/status_bar.toml)（22 个组件：左边沟、
-行 1 行操作与分页器、行 2 摘要）。原 §7.1 的 Windows 现状已并入各组件 `platform_notes.windows`。
+行 1 行操作与分页器、行 2 摘要）。
 
 ## 8. 全局规则
 
@@ -138,33 +138,10 @@
 已从本节删除，其口径直接写在本文件正文相应小节；历史核验快照见 git 历史（`32b049c`
 的 `ui-behavior-contract.review.md`，已删除，只作为那次核验的记录存在）。
 
-**当前没有产品口径层面的未收口项**（v0.2.3.4，2026-11-10 复核）。2026-11-12 把功能章节迁入
-组件注册表时，暴露出若干「实现与文档 / 与注册表口径不一致」的条目，列在下面 §9.1，逐条带代码依据；
-它们需要产品或实现裁决，不由文档单方面拍定。
-
-**共享档案与 MCP 策略界面**。本期由 Linux GTK 接入共享档案的加载、保存与删除，以及MCP 管理页的两项策略、状态指示与两个确认框。Linux 同页提供回环 HTTP 服务管理和 Agent 接入。Windows 前端仍缺 MCP 一级入口与管理页，macOS 前端尚未接入。
-Windows 接入随 I5 冻结，本期交付共享档案格式、RPC 契约和 Windows v1 迁移夹具。
-macOS 前端尚未接入。行为与同步记录见 [策略组件](components/workspace.toml)及
-[风险确认框](components/dialog.toml)。
-
-### 9.1 待实现：注册表与 Windows 实现不一致（2026-11-12 已裁决）
-
-先收口三条**文档侧**（以代码为准，已改）：Windows 状态栏「已连接 · 驱动 N · 浏览会话 M」在行 1
-左格而非旧 §7.1 写的行 2 右格；`objects_page.tab` 的启动态副本由 `startup.rs` 自建；Linux 无表标签
-时分页器置灰不隐藏（保持行 1 右组宽度不跳）。
-
-下面三条已裁决、待 Windows 端实现（另一任务执行，锚点与验收见表格）：
-
-| 项 | 决定 | 实现锚点 | 完成后 |
-|---|---|---|---|
-| 断连原因可复制 | 补 | `Views/ShellView.xaml` 的 `SqlSummaryText`（约 :676）加 `IsTextSelectionEnabled="True"` | `status_bar.row2.sql` 的 windows note 去掉该差异 |
-| 「新增 / 删除」行按钮 | **不渲染**（不是置灰） | `Views/ShellView.xaml` 删 `ButtonRowAdd` / `ButtonRowDelete`（:622 / :625）及接线与 tooltip；`Ctrl+S` / `Ctrl+Z` 仍是提交 / 撤销入口 | `status_bar.row1.ops.add` / `.delete` 的 `sync.windows` 改 `na` + note |
-| 行 2 会话格 | 与 Linux 一致：当前标签是表数据标签时整格不出现 | `Views/ShellView.Chrome.cs` 的 `ApplyStatusChrome` 按当前标签切可见性，切标签即时刷新 | `status_bar.row2.session` 去掉「恒写入」差异 |
-
-Windows 的执行按钮和 `Ctrl+Enter` 仍执行全文，尚待同步基于选区的执行范围、动态按钮文案和编辑器上下文菜单。macOS 接入时继承同一规范。
-
-还有一条是实现缺口、不阻塞文档：Windows 侧栏与信息面板拖动未实现（`object_tree` / `inspector` 的
-`sync.windows` 仍是 `partial`），归 `docs/planning/windows-frontend-parity-plan.md`。
+**共享档案与 MCP 策略界面**。Linux GTK 提供共享档案的加载、保存与删除，MCP 管理页
+提供两项策略、状态指示、风险确认、回环 HTTP 服务管理和 Agent 接入。行为见 [策略组件](components/workspace.toml)
+及 [风险确认框](components/dialog.toml)。旧 WinUI 交互差异见 [ADR 0043](../decisions/0043-frontend-platform-scope.md)
+所指归档。
 
 已知边界（不是偏差，列在这里方便检索；「正文」列的 § 是已退役章节的编号，对应组件见 §1–§7 指针）：
 
@@ -176,15 +153,6 @@ Windows 的执行按钮和 `Ctrl+Enter` 仍执行全文，尚待同步基于选�
 | 960×640 下状态簇 | 动作行分配约 417px；两段常驻文字收成 24×24 的状态圆点后，整行需求 409 ≤ 分配 417、状态簇自身需求 38（`--qa-layout-audit` 实测，17 项 0 超限）；过程消息仍按省略号收缩，完整文案留在圆点 tooltip 与状态栏；删除 / 放弃的操作结果也只写在 tooltip 末段「最近一次操作：…」，可见过程消息为空（`--qa-expect-status-dot` + 「状态簇」需求 42px 实测，1400 宽） | §5.1 |
 | `Alt+N` 与拖拽重排 | 序号按 `AdwTabView::pages()` 实际顺序取，拖拽重排后的映射未实测 | §4 |
 | 搜索的取数上限 | 目录层与每个库的搜索都只取第一页（`NODE_PAGE_SIZE = 500`），不翻页；库数量或单个库的命中数超过一页时结果不完整（日志写明「目录层还有下一页」），后续需要按库翻页或服务端子树搜索 | §2.4 |
-| Windows 端连接面（#169） | 只有连接配置、测试连接、建立会话与对象树连接层；元数据树、查询面、表数据面尚未实现，入口保持禁用并在 tooltip 里逐项说明原因 | §7.1 |
-| Windows 端元数据面（#171） | 已实现对象树的库 / 分组 / 对象三层与 200 条分页、`Objects` 页三列表格、信息面板三态；仍未实现：表节点下的 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组、工具条四个种类入口的联动、对象树搜索、表数据标签（`Enter` 只同步信息面板并在状态栏说明数据标签尚未实现）、`PageInfo.total_size` 不可用因而不显示总数 | §7.1 |
-| Windows 端查询面（#172） | 已实现查询标签（新建 / 关闭 / `*` 未执行标记 / 上限 8）、等宽多行编辑器 + 行号、执行 / 取消（同一入口切换）、结果网格（列头 + 行号 + 视口虚拟化 + 横向同步）、200 行一批的 `Execute` + `FetchBatch` 续拉、五态与状态栏行 2 摘要。**已在 Windows 上以 dotnet 8.0.428 编译通过**（Debug + Release x64，0 error / 0 warning；Core 单测 107 全过），但 GUI 交互未实机运行，事件签名（`TabView.SelectionChanged` / `TabCloseRequested`）、`InputKeyboardSource.GetKeyStateForCurrentThread`（`Ctrl+.`）与行号沟滚动同步的交互待 Windows 实机确认 | §7.1 |
-| Windows 端表数据面（#173） | 已实现数据页（打开 / 复用 / 关页、200 行 offset 分页 + 加载更多、NULL 与空串区分、主键列标记、单元格暂存与 `Ctrl+S` / `Ctrl+Z`、事务状态与关页 / 关窗守卫、数据行右键菜单与标记删除（`data_page.row_menu` / `.delete` / `.copy_insert`）、删除随提交一起走 `ApplyRowChanges.deletes`）。**未实现**：排序 / 筛选下推（服务端能力位未开）、新增行、导出 CSV、跨标签同库事务提示；**已知边界**：主键列不可编辑（改主键会改变行身份）、就地编辑只覆盖文本 / 整数 / 小数 / 布尔 / JSON / UUID、数据页复用该连接已有的数据库会话（不另建标签会话）；**确认形态**：§8.2 的「含删除必须确认」已改为 WinUI 原生 `ContentDialog` 模态确认（`ConfirmDestructiveAsync`，破坏性按钮默认「取消」；>100 行与含删除共用同一对话框，正文单列删除行数）。**dotnet 8.0.428 编译通过（Debug + Release x64，0 error / 0 warning；Core 单测 107 全过），GUI 交互未实机运行**，待 Windows 实机确认，故仍按 partial 记；「复制为 INSERT」的标识符固定双引号（MySQL / MariaDB 未开 `ANSI_QUOTES` 时不可直接执行）、时间值不带时区偏移，同为 partial 差异；切密度档会重建外壳，数据页不随快照恢复（查询页按 SQL 文本恢复，表数据页需要重新打开）。 | §5、§7.1 |
-| Windows 端查询标签布局（#189） | 已实现结果区显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）、关闭按钮（`SymbolIcon(Cancel)`、可访问名「关闭结果区」、执行中置灰 + tooltip「查询执行中，请先取消」、Close RPC 幂等 + 清网格态、SQL 文本保留）、自绘拖动把手（WinUI 3 无原生 splitter，`PointerPressed/Moved/Released` 调 `RowDefinition` 高度；两端最小高度与默认比例读生成常量，比例按标签内存态保持不持久化）。脏行丢弃确认已接线（同数据页 ContentDialog 口径），但当前结果网格只读（`DirtyRowCount` 恒 0）不会触发。**未在 Windows 上构建 / 运行**：本机只过了真类型探针（真实 WinUI 2.6.5 引用程序集 + XAML 编译产物替身）编译 0 警告 0 错误；拖动手感、弹窗 / 置灰观感待人工确认 | §4、§7.1 |
-| Windows 端多语句结果（#190） | 已实现语句切换行（序号 · 类型词 · 行数/影响行数，完整预览进 tooltip）、默认选中已成功语句中最后一条 SELECT、全写脚本「无结果集」占位页（切换行仍列各写语句影响行数）、失败场景「前 N-1 条已执行，第 N 条失败」+ 失败条目默认选中 + 已执行条目「结果未返回」占位（ADR 0006 原子失败契约：不返回部分结果、metadata 无语句类型，已执行条目无类型/预览——改善需后端契约变更）、逐语句 FetchBatch(statement_index) 续拉与独立游标、单语句现状不变。**未在 Windows 上构建 / 运行**：本机只过了真类型探针（真实 WinUI 2.6.5 引用程序集 + XAML 编译产物替身，红→绿）0 警告 0 错误 + Sqarvo.Core.Tests 120 passed（基线 107 + 新增 13）；三档密度切换行间距/命中区观感、destructive 浅色主题对比度、长 SQL tooltip 可读性待人工确认 | §7.1 |
-| Windows 端 `Objects` 列头用「名称」 | 与 Linux 的「表名」是同**一列、同一含义**（该列也列视图，「表名」在 Windows 片按 issue 要求写成「名称」）；语料待统一 | §3、§7.1 |
-| Windows 端深色模式入口 | 已接入「视图 → 深色模式」三档菜单（`Views/ShellView.xaml` 的 `MenuViewTheme`）+ `ThemeService.SetPreference` setter + `window.json` 的 `theme` 即时落盘；启动期 `RequestedTheme` / 运行期元素级切换 / 标题栏同步保持原样。未做勾选状态标记（普通 `MenuFlyoutItem`），**dotnet 8.0.428 编译通过（Debug + Release x64，0 error / 0 warning；Core 单测 107 全过），GUI 交互未实机运行**，待 Windows 实机确认。Linux 的对应实现见组件 `shell.theme` | §7.1 |
-| 工具条控件（文档 vs 代码偏差） | **文档说** `shell.toolbar` 的 `platform_notes.windows` 原写「工具条是 CommandBar：左动作组 + 竖分隔 + 四个种类入口（AppBarButton）」；**代码用** Grid + Button + Border + TextBlock 拼装——#170 换成 CommandBar + AppBarButton + ToggleButton 后真机秒崩（0xc000027b，5/5 与 3/3 两轮），整块已回退（`frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:432-434`）。**建议：以代码为准**，注册表 platform_notes 已同步改为实际事实 | §1.2 |
 | 结果集下拉的可访问名（Linux，#231） | **代码如此**：GTK 4.22 把 GtkDropDown 的 AT-SPI name 暴露为当前选中条目文本（实测「结果 1」），`update_property(Label, 「结果集」)` 不上 name、也没有 description（未设 tooltip）；展开后的弹层是 list box → list → list item，条目本身没有 click 动作，换条目只能靠「选中 list item + 对弹层容器发 default.activate」或指针。**文档如此**：注册表 `tabs.query.results.result_picker` 的 `a11y.name` 是产品口径「结果集」；功能用例按 role=combo box + name 前缀「结果 」定位，换条目走 Selection.select_child + default.activate（本环境合成按键无效，见上表「快捷键验收方式」）。**建议**：二选一——规范承认「下拉的名称由平台以选中值暴露」并把固定名移到区域标签 / 说明文字，或改用能承载固定名的其它原生控件；属产品口径，本轮按产品口径记 `a11y.name`，实测口径写进组件 impl_notes，不单方面改成实测值 | §7.1 |
 
 **裁定说明（2026-11-19，#231）**：上一轮登记的「GtkDropDown 可访问名（Linux，#231）」待决策已作废——它指向的语句切换控件 `tabs.query.results.statements` 整体退役（`status = "removed"`，v0.2.3.4 起不再渲染），产品不再需要为那个控件钉固定名，原「二选一」问题随之消解。同类平台行为在新控件 `tabs.query.results.result_picker` 上依然存在，已按同一格式重新登记为上表末行。

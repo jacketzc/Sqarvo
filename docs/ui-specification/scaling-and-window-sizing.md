@@ -1,8 +1,7 @@
 # 界面缩放、窗口尺寸与显示器适配
 
-本文件定义三端（Linux GTK / Windows WinUI 3 / macOS SwiftUI）**界面密度档、初始窗口尺寸、
-显示器识别与窗口几何持久化**的规范口径。数字不在本文件里，也不在代码里各写一份：唯一真值是
-[`metrics.toml`](metrics.toml)。本文件说明这些数字怎么用、什么时候用、用错了会坏在哪。
+本文件定义 Active 前端的**界面密度档、初始窗口尺寸、显示器识别与窗口几何持久化**。
+共享数字以 [metrics.toml](metrics.toml) 为准。现行平台范围见 [平台状态](../../frontend/platforms.toml)。
 
 配套决策：[ADR 0026](../decisions/0026-ui-scaling-window-sizing.md)。
 
@@ -25,16 +24,14 @@
 
 | 轴 | 谁提供 | 应用侧怎么处理 | 会不会进代码 |
 |---|---|---|---|
-| **A 系统 DPI / 缩放因子** | 操作系统：GNOME 的缩放设置、Windows 的「缩放与布局」 | **不处理**。GTK 的逻辑像素与 XAML 的 DIP 已经是「与屏幕密度无关」的单位，框架会把它们换成物理像素 | **永远不乘进密度档**，否则双重缩放 |
+| **A 系统 DPI / 缩放因子** | 操作系统：GNOME 的缩放设置 | **不处理**。GTK 的逻辑像素是密度无关的单位，框架会把它换成物理像素 | **永远不乘进密度档**，否则双重缩放 |
 | **B 界面密度档** | 本产品：`compact` / `comfortable` / `large` | 换一套 [`metrics.toml`](metrics.toml) 的数字 + 重载样式 | 是 |
-| **C 字号（无障碍）** | 操作系统：`text-scaling-factor` / Windows「文本大小」 | 跟随系统，**不另设应用内字号设置**（见 §3.3） | 否 |
+| **C 字号（无障碍）** | 操作系统：`text-scaling-factor` | 跟随系统，**不另设应用内字号设置**（见 §3.3） | 否 |
 
-两个可直接照抄的事实：
+GTK 的逻辑坐标：
 
 - GTK 4 在 `GDK_SCALE=2` 下，应用侧读到的仍是 **1200×800 逻辑像素**（实测：布局日志与 1× 完全
   一致，`--qa-layout-audit` 也报 `窗口 1200x800`）。也就是说 A 轴对布局算术透明。
-- WinUI 3 的 XAML 布局单位是 DIP（1/96 英寸），同样是密度无关的；只有 `AppWindow` /
-  `DisplayArea` 那一层用物理像素。
 
 ## 2. 密度档
 
@@ -109,13 +106,11 @@
     C#   `Math.Round(12.5)`  → 12    (half-to-even，默认)
     Swift `12.5.rounded()`   → 13
 
-三端会静默漂移 1px，而这种偏差只在特定档位出现、肉眼几乎发现不了。接入方式：
+不同运行时会静默漂移 1px，而这种偏差只在特定档位出现、肉眼几乎发现不了。接入方式：
 
 | 端 | 方式 |
 |---|---|
 | Linux（Rust） | `include_str!("../../docs/ui-specification/metrics.toml")` + `toml` 解析，启动时解析一次；单测断言不变量（§3.3）与「与 baseline 完全一致」 |
-| Windows（C#） | 构建期源生成器读同一份 TOML 生成 `Metrics.g.cs`（三档常量 + `ClearValues()`），**不在运行时解析**，失败要让构建红 |
-| macOS（Swift） | 构建脚本生成 `Metrics.swift`（同上）；未接入前不写死第二套数字 |
 
 ### 3.2 不随档位缩放的量
 
@@ -155,12 +150,7 @@
 
 ### 5.1 轴是「逻辑工作区」，不是分辨率
 
-4K@200% 的逻辑工作区 = 1920×1048，和 1080p@100% 一样；1080p@150% = 1280×698。所以拿
-「1080p / 2K / 4K」当轴会得出自相矛盾的结论。代码里只认两个数：**逻辑工作区宽高**。
-
-逻辑工作区 = 显示器几何（GTK `GdkMonitor::geometry()` / WinUI `DisplayArea.WorkArea ÷ 栅格化比例`）
-减去顶栏 / 任务栏。三端各自按平台估算（Linux GNOME 顶栏 32、Windows 任务栏 48、macOS 菜单栏 25
-+ Dock 按是否自动隐藏），估算值写在平台适配层，不在本文件。
+4K@200% 的逻辑工作区取自平台适配层。GTK 以 `GdkMonitor::geometry()` 减去平台顶栏估算。
 
 ### 5.2 基准推荐尺寸（100% 档）
 
@@ -226,15 +216,15 @@
 
 ## 6. 显示器识别与重算
 
-### 6.1 三个平台各自的取值方式
+### 6.1 GTK 取值方式
 
-| 需要的东西 | Linux（GTK4） | Windows（WinUI 3） | macOS（AppKit/SwiftUI） |
-|---|---|---|---|
-| 窗口所在显示器 | `display.monitor_at_surface(&surface)` | `DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest)` | `window.screen` / `NSWindow.screen` |
-| 工作区 | **`GdkMonitor` 没有 `workarea()`**（gdk4 0.11.5 全量方法已核）：用 `geometry()` 减平台顶栏估算 | `DisplayArea.WorkArea`（**物理像素**，先除栅格化比例） | `NSScreen.visibleFrame`（已是逻辑点） |
-| 栅格化比例 | `GdkMonitor::scale_factor()`（整数）/ `scale()`（f64，GNOME 分数缩放） | `XamlRoot.RasterizationScale` | `NSScreen.backingScaleFactor` |
-| DPI / 缩放变化 | surface 的 `notify::scale-factor` | `XamlRoot.Changed`（`DisplayInformation.GetForCurrentView()` 在 WinUI 3 抛异常） | `NSApplication.didChangeScreenParametersNotification` |
-| 分辨率 / 热插拔 | `GdkMonitor::connect_invalidate` + `connect_geometry_notify` | 同上（`XamlRoot.Changed`）+ `AppWindow.Changed` | 同上 |
+| 需要的东西 | Linux（GTK4） |
+|---|---|
+| 窗口所在显示器 | `display.monitor_at_surface(&surface)` |
+| 工作区 | **`GdkMonitor` 没有 `workarea()`**（gdk4 0.11.5 全量方法已核）：用 `geometry()` 减平台顶栏估算 |
+| 栅格化比例 | `GdkMonitor::scale_factor()`（整数）/ `scale()`（f64，GNOME 分数缩放） |
+| DPI / 缩放变化 | surface 的 `notify::scale-factor` |
+| 分辨率 / 热插拔 | `GdkMonitor::connect_invalidate` + `connect_geometry_notify` |
 
 ### 6.2 一个入口：`relayout(work_area, scale, tier)`
 
@@ -243,15 +233,13 @@
 
 ### 6.3 顺序
 
-启动时先在默认尺寸下 `present()`，拿到 surface / XamlRoot 之后才做第一次 `relayout`——
+启动时先在默认尺寸下 `present()`，拿到 surface 之后才做第一次 `relayout`——
 surface 未就绪时读不到显示器。第一次 `relayout` 会改窗口尺寸，允许有一帧的跳动；不要为了
 消掉这一帧去猜显示器（猜错后跳得更狠）。
 
 ## 7. 持久化
 
-窗口级偏好写 `window.json`（Linux `$XDG_CONFIG_HOME/sqarvo/Sqarvo/window.json`，Windows
-`%LOCALAPPDATA%\Sqarvo\window.json`，macOS 对应 Application Support）。**未打包的 WinUI 应用
-拿不到 `ApplicationData`**（需要 package identity），所以三端都用同一份手写 JSON，schema 一致。
+窗口级偏好写入 GTK 的 `$XDG_CONFIG_HOME/sqarvo/Sqarvo/window.json`。
 
 ```json
 {
@@ -282,56 +270,31 @@ surface 未就绪时读不到显示器。第一次 `relayout` 会改窗口尺寸
 
    | 平台 | 读位置 | 设位置 | 恢复策略 |
    |---|---|---|---|
-   | Windows（WinUI 3） | `AppWindow.Position`（物理像素） | `AppWindow.MoveAndResize` | 位置 + 尺寸 + 最大化 |
-   | macOS（AppKit） | `NSWindow.frame` | `setFrame` | 位置 + 尺寸 + 最大化 |
    | Linux（GTK4） | **无 API** | **无 API**（Wayland 明确不允许；X11 后端同样未暴露 `gtk_window_move` 的替代） | 尺寸 + 最大化；位置不恢复 |
 4. 写入用「临时文件 + rename」，进程崩溃不留半个 JSON；读失败一律回退默认值，不报错弹窗。
 5. 文件里不含任何凭据（这条与连接配置分离的原则见 `window_state.rs` 模块注释）。
-6. `theme`（`system` / `light` / `dark`）记主题偏好，与 Windows 同键同值；**可缺**，缺 = 跟随系统。
+6. `theme`（`system` / `light` / `dark`）记主题偏好；**可缺**，缺 = 跟随系统。
    它是加法字段，不升 `version`：读侧按「缺 = 默认」处理，写回时原样保留。启动优先级是
    `--theme`（QA）→ `window.json` 的 `theme` → 跟随系统，且在装样式表之前定下来（否则先浅色再闪
    成深色）。入口与行为见组件 `shell.theme`。
 
-## 8. 平台映射要点（Windows 原生支持）
+## 8. 平台适配
 
-这一节写给 Windows 端的实现者：这些能力在 WinUI 3 上都是平台自带的，但单位与主题时机有坑。
-
-1. **两套像素单位**：XAML 用 DIP，`AppWindow.Resize` / `MoveAndResize` / `DisplayArea.WorkArea`
-   用**物理像素**。所有「选多大」的计算都在 DIP 里做（与 GTK 的逻辑像素同一套数字，§5.2 的表
-   可以直接照抄），只在喂给 `AppWindow` 之前乘一次 `XamlRoot.RasterizationScale`。
-   不乘的症状是「150% 屏上窗口小一号」，在 100% 缩放的机器上永远看不到。
-2. **DPI 变化只能从 `XamlRoot.Changed` 拿**，`DisplayInformation.GetForCurrentView()` 会抛异常。
-3. **最小尺寸**用 `OverlappedPresenter.PreferredMinimumWidth/Height`（物理像素、含边框）；
-   新版 WinUI 另有 `Window.MinWidth/MinHeight`（DIP、仅客户区）。**两者不要同时设**，
-   WinUI 会互相覆盖，症状是「设了最小值还能拖更小」。
-4. **主题**：`Application.RequestedTheme` 只能在启动时设（运行中设抛 `NotSupportedException`）；
-   运行中切换用元素级 `((FrameworkElement)Content).RequestedTheme = ElementTheme.Default / Dark / Light`。
-5. **标题栏要单独处理**，否则暗色窗口顶上是白的（Linux/macOS 没有这条，最容易漏）：
-   `AppWindow.TitleBar.PreferredTheme = TitleBarTheme.UseDefaultAppMode`；该 API 不存在时回退
-   `DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(int))`（Win10 2004 之前是 20 → 19）。
-6. **密度档切换走「重建页面」**，不要指望改资源字典后界面立刻变：`StaticResource` 只解析一次，
-   `ThemeResource` 只在主题切换时重算。重建前把「当前标签 / 未提交编辑 / 滚动位置」序列化到模型，
-   重建后回放——这个能力多窗口与会话恢复本来也需要。
-7. **Windows 用系统标准密度，不复刻 Linux 的紧凑档**（ADR 0023 已授权：三端区域一致、控件原生，
-   密度不必一致）。`compact` 档在 Windows 上映射为「系统标准密度」，`comfortable` / `large`
-   映射为系统密度的 1.25 / 1.5 倍（仅缩放在本文件管辖范围内的自有元素）。
-8. **颜色一律走 `ThemeResource`**，XAML 里不写 `#RRGGBB`；唯一例外是 `Tokens.xaml` 里的
-   `SqarvoBrand*` 品牌色板（与 Linux 的 `LIGHT_PALETTE` / `DARK_PALETTE` 逐值一致）。品牌表面
-   （主按钮填充、当前种类高亮、强调文字）用品牌中档；系统强调色只用于平台自己画的东西
-   （焦点框、系统菜单/对话框）。高对比用 `AccessibilitySettings.HighContrast`，此时不套品牌色。
+平台引用见 [工作区模型 §8](workspace-model.md#8-平台映射)；重新接入条件见
+[ADR 0043](../decisions/0043-frontend-platform-scope.md)。
 
 ## 9. 验收
 
 | # | 检查 | 方式 |
 |---|---|---|
-| 1 | 三档 `metrics.toml` 解析成功且不变量全成立 | Linux 单测（Rust 解析）+ Windows 生成器自检 |
+| 1 | 三档 `metrics.toml` 解析成功且不变量全成立 | Linux 单测（Rust 解析） |
 | 2 | 每档窗口不超出工作区 | `--qa-report-monitor` 打印工作区、档位、最终窗口；断言 `w ≤ W-32 且 h ≤ H-48` |
 | 3 | 工作区小于默认下限时窗口仍完整可见 | 用 `--window-size` 与 `--tier` 组合跑 960×640 / 1280×698 / 1920×1048 三档 |
 | 4 | 档位切换后表格仍 ≥ 3 列 | `--qa-layout-audit` 在 1.0 / 1.25 / 1.5 各跑一次，记录「需求 ≤ 分配」与列数 |
 | 5 | 最小窗口 = `min(960·T, W-32)` | X11 实测窗口尺寸；Wayland 只验证 `set_size_request` 已下发 |
 | 6 | 面板宽度跨档来回切换不漂移 | 在 1.5× 设 630 → 切回 1.0× → 再切 1.5×，宽度仍是 630 |
 | 7 | 几何恢复的越界回退 | 手改 `window.json` 的 `window_x = 99999`，启动后窗口落在主显示器内 |
-| 8 | 暗色 / 高对比下三档都无对比度回归 | 三档 × {浅色, 暗色, 高对比} 截图 |
+| 8 | 暗色 / 高对比下三档都无对比度回归 | 三档的浅色、暗色和高对比样式由人工确认 |
 
 `--qa-layout-audit` 的断言比的是「控件需求 ≤ 分配」，两者都随档位放大，因此**断言本身在每档
 都成立**；但契约里贴的具体数字（如「需求 409 ≤ 分配 417」「17 项 0 超限」）是 100% 档的实测值，
@@ -348,7 +311,6 @@ MCP 管理页使用 `meta.mcp_dialog_width` 作为原生对话框的首选逻辑
 | GNOME 分数缩放 | `GdkMonitor::scale()` 是 f64（1.25 等）；`geometry()` 给整数逻辑像素 | 允许 ±1px 误差，验收按「不超工作区」判定，不按精确像素 |
 | 窗口位置恢复（Linux） | GTK4 没有读写 toplevel 位置的 API（Wayland 不允许、X11 后端未暴露），`window.json` 里的 `window_x/y` 只写不读 | 按平台能力实现：字段与校验保留，恢复只做尺寸与最大化（§7 规则 3 的能力表） |
 | 系统字号放大 | 本机 `text-scaling-factor = 1.0`，未实测 1.5 下的行高自适应 | §4 的公式先落地，实测后回填 |
-| macOS | 只有骨架，未验证 | 本文件的 macOS 列属未验证口径，接入时复核 |
 | 高对比（Linux） | 已接入（#161）：`AdwStyleManager::is_high_contrast()` 决定分隔线 / 外框 / 浮层描边 / 状态栏前景的强度，并接 `connect_high_contrast_notify` 重载样式表。本机已装 `gnome-accessibility-themes`（`/usr/share/themes/HighContrast` 存在），但 GNOME 42+ 的「高对比」开关只翻转 `a11y.interface high-contrast`，不会把 `gtk-theme` 从 Yaru 切成 HighContrast——**完整 HC 主题观感**需 `GTK_THEME=HighContrast` 或系统里改 `gtk-theme`，未复核 | `theme.rs` 的 `Palette::high` |
 
 ## 变更记录

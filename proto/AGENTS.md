@@ -2,7 +2,7 @@
 
 作用域：`proto/` 全部 `.proto`（`proto/common/v1/`、`proto/services/v1/`）。相关消费方：
 `backend/crates/rpc-server`（服务端实现，运行时细则见 `backend/AGENTS.md` §7.3/7.4）、
-三端生成客户端、`tests/contract/`。命名与结构约定真值：`docs/api/grpc-conventions.md`；
+实际受影响的 Active 前端生成客户端、`tests/contract/`。命名与结构约定真值：`docs/api/grpc-conventions.md`；
 结果游标/多语句/会话并发决策：ADR 0005/0006/0008。
 契约变更几乎总是跨模块任务：同时读根 §4/§7/§15 与受影响消费方的 AGENTS.md。
 
@@ -17,8 +17,8 @@
 - 显式 package 与版本名（如 `product.query.v1`）。
 - 已发布的字段号**永不复用**；删除字段标 `reserved`。避免不必要的字段类型变更。
 - 新增字段必须有合理默认语义，老客户端行为可推理。
-- 修改前检查所有调用方：rpc-server 实现、三端生成客户端、契约测试、`docs/api/`。
-- 不兼容变更属根 §15.2 先确认项；改动后重新生成所有受影响客户端代码并跑契约测试（根 §13）。
+- 修改前检查所有调用方：rpc-server 实现、实际受影响的 Active 前端生成客户端、契约测试、`docs/api/`。
+- 不兼容变更属根 §15.2 先确认项；改动后重新生成受影响的公共代码与 Active 前端客户端代码并跑契约测试（根 §13）。
 - 协议字段承载什么由本目录定义；不把 Rust 内部结构或第三方驱动类型映射进公共消息（根 §4）。
 
 ## 7.3 查询结果传输语义（实现侧约束在 `backend/AGENTS.md`）

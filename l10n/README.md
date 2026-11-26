@@ -1,15 +1,13 @@
 # `l10n/` 文案目录 schema（ADR 0031：界面国际化）
 
-这里三端共享的界面文案**唯一真值**。运行时不解析这里的文件：构建期由
-`tools/l10n_gen.py` 生成 Linux 的 Rust catalog（`frontend/linux/build.rs` 调
-`rust` 子命令写进 `OUT_DIR/l10n_catalog.rs`）与 Windows 的
-`Strings.{en,zh}.resw` + `Strings.g.cs`（`resw` 子命令，S6/#204 接线）。
+这里是界面文案的唯一真值。`frontend/linux/build.rs` 在构建期调用 `tools/l10n_gen.py rust`，
+生成 `OUT_DIR/l10n_catalog.rs`。
 
 ## 文件布局
 
 - 一个功能区一个文件：`shell.toml`、`tabs.toml`、`status_bar.toml`、`startup.toml`…
   区名直接用 UI 注册表（`docs/ui-specification/components/`）的区，不发明第二套地名。
-- 本表当前只落 `shell.toml`（S1/#199）；其余区随各区迁移切片（#200–#204）追加。
+- 本表当前只落 `shell.toml`（S1/#199）；其余区随各区迁移切片（#200–#203）追加。
 
 ## 条目格式
 
@@ -36,14 +34,13 @@ status = "done"
 - key 名规则：`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`，生成器强制。
 - 字段只允许 `key/zh/en/status/en_one/zh_one`，出现别的字段名直接报错（防拼错后
   静默丢翻译）。
-- 插值只支持 `{name}` 命名占位符（Linux `l10n::tf` / Windows `Strings.T` 侧原样
-  替换），不做位置参数。
+- 插值只支持 `{name}` 命名占位符（`l10n::tf` 原样替换），不做位置参数。
 
 ## 运行时语义
 
-- 查找与回落（Linux `src/l10n.rs`，Windows 生成的 `Strings.T` 同口径）：
+- 查找与回落（Linux `src/l10n.rs`）：
   当前语言 → `en` → `zh` → key 本身，**永不空白**。
-- 复数 API `t_n(key, n)` / `Strings.Tn(key, n)`：中文恒用 `zh`；英文 `n==1` 用
+- 复数 API `t_n(key, n)`：中文恒用 `zh`；英文 `n==1` 用
   `en_one`（没有则回落 `en`），否则 `en`。
 - 日志行（`eprintln!` 等）**不进 catalog**，保持中文：日志是开发者界面。
 - 生效方式：切换语言**重启生效**（决策 6），菜单见「视图 → 语言」。

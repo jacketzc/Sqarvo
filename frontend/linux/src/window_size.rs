@@ -130,8 +130,8 @@ pub fn work_area(geometry: Rect) -> Rect {
 
 /// 由几何与计算出的工作区得出窗口尺寸 / 最小尺寸 / 面板区间（§6.2 的唯一入口）。
 ///
-/// `scale` 本平台不参与算术（GTK 的逻辑像素已经除过系统缩放），保留参数是为了三端同形：
-/// Windows 的 `DisplayArea.WorkArea` 是物理像素，要先除栅格化比例。
+/// `scale` 不参与 GTK 布局算术。
+/// 调用方传入的工作区应已换算为逻辑坐标。
 #[must_use]
 pub fn relayout(work: Rect, scale: f64, tier: Tier) -> Sizing {
     let (width, height) = recommended(work, tier);

@@ -16,14 +16,6 @@ state = "done"
 spec_hash = "033325b9bc4d"
 evidence = "tests/ui/linux/test_06_mcp_access.py 和 GTK --qa-mcp-* 验证真实交互。"
 
-[component.sync.windows]
-state = "blocked"
-note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入共享档案及 MCP 策略。"
-
 [[component]]
 id = "workspace.manage.menu.mcp_access"
 parent = "workspace"
@@ -45,14 +37,6 @@ state = "done"
 spec_hash = "e1ddc4bf5b2f"
 evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认、revision 与安全默认值；test_07_mcp_http.py 通过管理页按钮启用与撤销。"
 
-[component.sync.windows]
-state = "blocked"
-note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入共享档案及 MCP 策略。"
-
 [[component]]
 id = "workspace.manage.menu.mcp_readonly"
 parent = "workspace"
@@ -73,14 +57,6 @@ source = "src/mcp_management.rs、src/mcp_access.rs"
 state = "done"
 spec_hash = "fcc956b55a77"
 evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证确认、取消、回读；test_07_mcp_http.py 验证管理页只读按钮唤起确认框。"
-
-[component.sync.windows]
-state = "blocked"
-note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入共享档案及 MCP 策略。"
 
 [[component]]
 id = "workspace.status.mcp_indicator"
@@ -110,14 +86,6 @@ state = "done"
 spec_hash = "5c1cd658371c"
 evidence = "tests/ui/linux/test_06_mcp_access.py 验证状态的可访问名称，以及 CLI 开关变更后打开主菜单刷新状态。"
 
-[component.sync.windows]
-state = "blocked"
-note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入共享档案及 MCP 策略。"
-
 [[component]]
 id = "workspace.mcp_management"
 parent = "workspace"
@@ -146,14 +114,6 @@ note = "已接入原生关闭按钮，待在 GNOME Wayland 会话中完成 AT-SP
 spec_hash = "64ec7ae0d6a6"
 evidence = "AT-SPI 用例 test_06_mcp_access.py 和 test_07_mcp_http.py 断言关闭按钮唯一且可关闭管理页。"
 
-[component.sync.windows]
-state = "blocked"
-note = "Windows 前端未接入 MCP 管理，见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入 MCP。"
-
 [[component]]
 id = "workspace.mcp_management.service"
 parent = "workspace.mcp_management"
@@ -174,14 +134,6 @@ source = "frontend/linux/src/mcp_management.rs"
 state = "done"
 spec_hash = "64df220c1a43"
 evidence = "AT-SPI test_06_mcp_access.py 验证端口冲突；test_07_mcp_http.py 验证端口保存、启停和停服时禁用地址复制。"
-
-[component.sync.windows]
-state = "blocked"
-note = "Windows 前端未接入 MCP 管理，见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入 MCP。"
 
 [[component]]
 id = "workspace.mcp_management.agent"
@@ -204,14 +156,6 @@ state = "done"
 spec_hash = "8137ffa1964b"
 evidence = "AT-SPI test_06_mcp_access.py 验证旧入口移除；test_07_mcp_http.py 验证两种提示词与复制 Toast。GTK 单测 clipboard_output_uses_actual_listener_and_secret_reference 断言载荷。"
 
-[component.sync.windows]
-state = "blocked"
-note = "Windows 前端未接入 MCP 管理，见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入 MCP。"
-
 [[component]]
 id = "workspace.mcp_management.token"
 parent = "workspace.mcp_management"
@@ -232,11 +176,3 @@ source = "frontend/linux/src/mcp_management.rs"
 state = "done"
 spec_hash = "9726fd430778"
 evidence = "test_07_mcp_http.py 验证管理入口、取消保留旧令牌、确认后重新生成和撤销。"
-
-[component.sync.windows]
-state = "blocked"
-note = "Windows 前端未接入 MCP 管理，见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入 MCP。"

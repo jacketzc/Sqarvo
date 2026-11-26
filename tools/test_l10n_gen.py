@@ -12,7 +12,6 @@ import io
 import sys
 import tempfile
 import unittest
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -144,65 +143,6 @@ class RustGenTest(unittest.TestCase):
             self.assertNotIn("1 row", text.split("pub fn lookup_one")[0])
 
 
-class ReswGenTest(unittest.TestCase):
-    def generate(self, tmp: Path) -> Path:
-        entries = l10n_gen.load_entries(fixture(tmp, BASE_TOML, PLURAL_TOML))
-        out_dir = tmp / "resw"
-        l10n_gen.gen_resw(entries, out_dir)
-        return out_dir
-
-    def test_resw_is_parseable_and_named_by_key(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            out_dir = self.generate(Path(raw))
-            for name, first in [("Strings.zh.resw", "语言"), ("Strings.en.resw", "Language")]:
-                tree = ET.parse(out_dir / name)
-                items = {
-                    node.get("name"): node.findtext("value")
-                    for node in tree.getroot().findall("data")
-                }
-                self.assertEqual(items["shell.menu.view_language"], first)
-                self.assertIn("tabs.status_row_count", items)
-                self.assertIn("tabs.status_row_count.one", items)
-            en = ET.parse(out_dir / "Strings.en.resw").getroot()
-            en_items = {n.get("name"): n.findtext("value") for n in en.findall("data")}
-            self.assertEqual(en_items["tabs.status_row_count.one"], "1 row")
-            self.assertEqual(en_items["shell.menu.lang_zh"], "简体中文")
-
-    def test_key_sets_are_identical(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            out_dir = self.generate(Path(raw))
-
-            def names(path: Path) -> set[str]:
-                root = ET.parse(path).getroot()
-                return {str(node.get("name")) for node in root.findall("data")}
-
-            self.assertEqual(
-                names(out_dir / "Strings.zh.resw"), names(out_dir / "Strings.en.resw")
-            )
-
-    def test_missing_en_falls_back_to_zh_in_resw(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            with quiet():
-                entries = l10n_gen.load_entries(
-                    fixture(
-                        tmp, '[[entry]]\nkey = "shell.menu.x"\nzh = "某文案"\nstatus = "pending_en"\n'
-                    )
-                )
-            out_dir = tmp / "resw"
-            l10n_gen.gen_resw(entries, out_dir)
-            root = ET.parse(out_dir / "Strings.en.resw").getroot()
-            items = {node.get("name"): node.findtext("value") for node in root.findall("data")}
-            self.assertEqual(items["shell.menu.x"], "某文案")
-
-    def test_strings_g_cs_template_written(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            out_dir = self.generate(Path(raw))
-            text = (out_dir / "Strings.g.cs").read_text(encoding="utf-8")
-            self.assertIn("public static string T(string key)", text)
-            self.assertIn("public static string Tn(string key, long n)", text)
-
-
 class CliTest(unittest.TestCase):
     def test_main_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -215,13 +155,6 @@ class CliTest(unittest.TestCase):
                     0,
                 )
             self.assertIn("pub fn lookup", out.read_text(encoding="utf-8"))
-            self.assertEqual(
-                l10n_gen.main(
-                    ["--l10n-dir", str(l10n_dir), "resw", "--out-dir", str(tmp / "resw")]
-                ),
-                0,
-            )
-            self.assertTrue((tmp / "resw" / "Strings.zh.resw").exists())
 
     def test_main_fails_on_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

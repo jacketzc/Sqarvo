@@ -33,21 +33,11 @@ impl_notes = [
   "页面槽位轮流承载 Loading / 启动态外壳 / 工作区 / 错误页，四者互斥。",
 ]
 
-platform_notes.windows = "窗口级材质：Windows 11 起窗口挂 Mica 材质（`Window.SystemBackdrop` = `MicaBackdrop`），22621（22H2）用 `MicaKind.BaseAlt`（与文件资源管理器同档）、22000–22621 用 `MicaKind.Base`；Windows 10 不挂材质，保持实色底。材质是 DWM 合成的，只在「上面没有不透明的东西盖着」的地方透得出来，所以窗口根元素（MainWindow.xaml 的 RootGrid）与外壳根 Grid 的实色底在挂上材质后换成透明，band 层（LayerFillColorDefaultBrush）与内容层（CardBackgroundFillColorDefaultBrush）两支刷子不改。回退交给平台：关掉「透明效果」/ 硬件不支持 / 远程桌面时 WinUI 自动退成实色主题色，高对比下系统抑制材质并改用用户的高对比底色，代码里不写特判。材质有没有真的挂上只能程序化验证——`--report-theme` 的 `[theme] … backdrop=Mica` 是证据（`--screenshot` 的 RenderTargetBitmap 只渲染 XAML 像素，拍不到 DWM 合成的材质）。"
 
 [component.sync.linux]
 state = "done"
 spec_hash = "f398d9283e00"
 evidence = "§1.1 / §1.2 外壳结构；ui.rs activate 的 header → toolbar → slot 挂载顺序"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "f398d9283e00"
-note = "六区域外壳：系统 caption 按钮 + 自绘标题行（图标 / 标题 + 副标题 / 汉堡菜单）+ 工具条（Grid + Button，不是 CommandBar）+ TreeView + TabView + 两行状态栏 + SplitView 信息面板；工具条种类入口未接线、无界面密度菜单。窗口级材质：Windows 11 挂 Mica（22621+ 用 BaseAlt，否则 Base）、Windows 10 保持实色（frontend/windows/Sqarvo.Windows/Theming/ThemeService.cs:251）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.window"
@@ -101,15 +91,6 @@ state = "done"
 spec_hash = "5e266c21d40d"
 evidence = "§1.1 最小尺寸 / 几何恢复 / 关闭窗口；window_size.rs relayout + apply，ui.rs connect_close_request"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "5e266c21d40d"
-note = "几何恢复含位置、最大化写还原边界、DPI / 工作区变化单入口（§1.6）；脏行守卫换成「状态栏提示 + 第二次放行」的不弹框口径（§7.1 数据页关窗守卫），与 Linux 的确认框差一条。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.header"
 parent = "shell"
@@ -126,21 +107,11 @@ impl_notes = [
   "没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。",
 ]
 
-platform_notes.windows = "自绘标题行（v0.2.5）：`ExtendsContentIntoTitleBar = true` + `SetTitleBar(拖拽区)`，窗口按钮仍是系统的；行高取 `header_height`（64 / 80 / 96），右侧内距 = `AppWindow.TitleBar.RightInset / RasterizationScale` 给 caption 按钮让位。整行不进拖拽区的只有左侧图标带（24 + gap_sm）与右侧汉堡按钮。Windows 11 起自绘标题行透出窗口材质（Mica）：标题行仍是自绘控件，只是底用 band 层（`LayerFillColorDefaultBrush`，低透明度叠层），材质能透上来（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261）；Windows 10 与高对比下是实色，视觉与改动前一致。"
 
 [component.sync.linux]
 state = "done"
 spec_hash = "54eaf23d9a80"
 evidence = "§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "54eaf23d9a80"
-note = "有自绘标题行（图标 / 标题 / 副标题 / 汉堡菜单，v0.2.5 起）；标题固定 `Sqarvo`，副标题取后端状态文案（`未连接` / `已连接 · 驱动 N · 浏览会话 M` / `已断开：原因`），在 `ApplyBackendState` 一处更新，不跟标签走。Windows 11 起标题行透出 Mica 材质（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:261），Windows 10 保持实色。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.title"
@@ -196,15 +167,6 @@ state = "done"
 spec_hash = "3d3d47678dd2"
 evidence = "§1.1 六条标题 / 副标题规则；show_startup_workspace / show_workspace / TabSet::refresh_current"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录窗口标题 / 副标题的更新规则。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.menu"
 parent = "shell"
@@ -239,15 +201,6 @@ state = "done"
 spec_hash = "266fdcc0d784"
 evidence = "GTK 单测 mcp_management_has_a_top_level_menu_item 检查菜单模型，AT-SPI test_06_mcp_access.py 验证菜单、权限动作与回读。"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "2d0595d6a38d"
-note = "S6-a 已接入视图菜单的共享文案和原生语言单选（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:396，frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:1044、:1092）；密度标签按确认 #10 A 使用与 Linux 相同的百分比文案。Windows 构建、菜单交互和重启未验收；其他主菜单文案仍待迁移。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.menu.new_connection"
 parent = "shell.menu"
@@ -275,16 +228,6 @@ source = "src/ui.rs:320"
 state = "done"
 spec_hash = "fcfd5efc278d"
 evidence = "§1.4 文件 → 新建连接；open_connection_dialog_for 的未就绪兜底与「只前置」分支"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "fcfd5efc278d"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:75；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:357；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:871"
-note = "菜单项与 Ctrl+N 走同一个处理器（ShowNewConnectionDialogAsync），未就绪时整项禁用；但工具条「连接」是另一条判定与另一个动作（直接连选中的已保存连接，不打开新建连接对话框），也没有逐项 tooltip 原因。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.menu.new_tab"
@@ -314,15 +257,6 @@ state = "done"
 spec_hash = "a9eefc8582db"
 evidence = "§1.4 文件 → 新建查询标签；set_workspace_ready 与 new-tab 接线"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 只记录 `Ctrl+T` 新建查询页，没有记录「文件 → 新建查询标签」这个菜单项。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.menu.quit"
 parent = "shell.menu"
@@ -350,15 +284,6 @@ source = "src/main.rs:76"
 state = "done"
 spec_hash = "d618be550538"
 evidence = "§1.1 退出应用；quit_app 的「先关窗」分支与 accel 绑定"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录「退出」菜单项与退出守卫。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.menu.export_csv"
@@ -393,16 +318,6 @@ state = "removed"
 spec_hash = ""
 evidence = "build_main_menu 不再挂「表」子菜单（src/ui.rs:4945-4953）；菜单按钮 tooltip 已改「主菜单（文件 / 视图 / 帮助）」（src/ui.rs:208）；win.export-csv 与 Ctrl+Shift+E 保留（src/ui.rs:5328、377）"
 
-[component.sync.windows]
-state = "removed"
-spec_hash = ""
-note = "按契约 §9.1「能力性不可用不渲染」+ 改动确认单 #1 / #198，「表」整项不挂：MenuTable / MenuExportCsv 的 XAML 块与 WireMenu 接线已删（ShellView.xaml / ShellView.xaml.cs）。dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。该端不适用此菜单项，保持 none。"
-
-[component.sync.macos]
-state = "na"
-spec_hash = ""
-note = "macOS 前端未接入，本就没有这一项。"
-
 [[component]]
 id = "shell.menu.about"
 parent = "shell.menu"
@@ -427,15 +342,6 @@ state = "done"
 spec_hash = "5a0fd68e7105"
 evidence = "§1.4 帮助 → 关于 Squarvo；show_about 的「已打开只前置」与诊断行"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录「帮助 → 关于」菜单项。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.toolbar"
 parent = "shell"
@@ -443,7 +349,7 @@ display_name = "主工具条"
 kind = "container"
 status = "active"
 hand_drawn = true
-why_not_native = "WinUI 3 的 CommandBar + AppBarButton 在真机秒级崩溃（0xc000027b，#170，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装：六个按钮都是朴素原生 Button，但它们组成的整条工具条是拼装件，不是 CommandBar，也没有原生等价的「左动作组 + 竖分隔 + 四个纯拉丁种类入口」复合控件（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:452-454）。"
+why_not_native = "WinUI 3 的 CommandBar + AppBarButton 在真机秒级崩溃（0xc000027b，#170，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装：六个按钮都是朴素原生 Button，但它们组成的整条工具条是拼装件，不是 CommandBar，也没有原生等价的「左动作组 + 竖分隔 + 四个纯拉丁种类入口」复合控件（旧实现，见归档）。"
 style.slot = "toolbar"
 style.metrics = ["toolbar_height", "toolbar_padding_h", "gap_sm", "min_target", "font_ui"]
 style.tokens = ["sqarvo_separator"]
@@ -468,21 +374,12 @@ precondition = "当前标签切换 / 每次标签状态刷新"
 result = "高亮跟着当前标签：表数据标签 → 该表的种类；`Objects` 页 → 页面**正在列**的种类（树里换分组导致页换作用域时，高亮在同一次刷新里跟上）；查询标签 → 无高亮。同一时刻最多一个按钮带 `sqarvo-kind-active`"
 source = "src/ui.rs:1840、src/shell.rs:958"
 
-platform_notes.windows = "工具条**不是** CommandBar：#170 把它换成 CommandBar + AppBarButton + ToggleButton 后在真机秒级崩溃（0xc000027b，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:452-454）。现状 = 左动作组 + 竖分隔 + 四个种类入口（朴素 Button），本片四个入口仍未接线（§7.1）；文档与代码差异已记入契约 §9.1。"
+platform_notes.windows = "工具条**不是** CommandBar：#170 把它换成 CommandBar + AppBarButton + ToggleButton 后在真机秒级崩溃（0xc000027b，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装（旧实现，见归档）。现状 = 左动作组 + 竖分隔 + 四个种类入口（朴素 Button），本片四个入口仍未接线（§7.1）；文档与代码差异已记入契约 §9.1。"
 
 [component.sync.linux]
 state = "done"
 spec_hash = "ea0e4cffb7e7"
 evidence = "§1.2 主工具条结构与「窗口级、不随工作区重建」；Toolbar::new / set_backend_ready / log_availability"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "ea0e4cffb7e7"
-note = "工具条已回退为 Grid + Button + Border + TextBlock 拼装（非 CommandBar，真机崩溃回退见 frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:452-454），六个入口在（§7.1）；种类入口未接线、无高亮联动，工具条高度按 Metrics 取档但对外壳的分配未核对。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.toolbar.connect"
@@ -509,16 +406,6 @@ state = "done"
 spec_hash = "a5a90c8823ed"
 evidence = "§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂"
 
-[component.sync.windows]
-state = "done"
-spec_hash = "a5a90c8823ed"
-evidence = "click 打开连接对话框（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:1020）；启用只认后端握手 BackendState.IsReady（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:417）；tooltip 就绪/未就绪与 Linux 同句（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:418）；强调色摘挂 ApplyConnectAccent（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:464）；禁用兜底日志（frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:1024）"
-note = "几何 v0.2.5 修正：高取 `min_target`(24)，此前误用 `badge_min_height`(26)，比 Linux 高 2 DIP（`Views/ShellView.xaml:261-262`）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.toolbar.new_query"
 parent = "shell.toolbar"
@@ -543,15 +430,6 @@ source = "src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859"
 state = "done"
 spec_hash = "a27092daa726"
 evidence = "§1.2「新建查询」；apply_new_query 的两条件与三段 tooltip"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "v0.2.5 起与 Linux 同尺寸：高取 `min_target`(24)（此前 26）。（`Views/ShellView.xaml:294-295`）"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.toolbar.tables"
@@ -587,15 +465,6 @@ state = "done"
 spec_hash = "a7f18caeeac3"
 evidence = "§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "a7f18caeeac3"
-note = "入口已回退为朴素 Button（非 AppBarButton，CommandBar 真机崩溃回退），本片仍未接线：点了不切 Objects 页、不高亮，tooltip 说明去树里点分组（§7.1）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:572 ButtonTables、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:975 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.toolbar.views"
 parent = "shell.toolbar"
@@ -628,15 +497,6 @@ source = "src/ui.rs:1942、src/startup.rs:298"
 state = "done"
 spec_hash = "3bbc4d786577"
 evidence = "§1.3 点 Views；KindGroup::Views 与 kinds 组合"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "3bbc4d786577"
-note = "入口已回退为朴素 Button（非 AppBarButton），本片仍未接线（§7.1），与 Tables 同一状态。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:584 ButtonViews、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:978 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.toolbar.functions"
@@ -671,15 +531,6 @@ state = "done"
 spec_hash = "33656da40d0f"
 evidence = "§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "33656da40d0f"
-note = "入口已回退为朴素 Button（非 AppBarButton），未接线；树里 Functions 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:596 ButtonFunctions、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:981 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.toolbar.queries"
 parent = "shell.toolbar"
@@ -713,15 +564,6 @@ state = "done"
 spec_hash = "43daeedc82f9"
 evidence = "§1.3 点 Queries；unavailable_copy 的 Queries 原文"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "43daeedc82f9"
-note = "入口已回退为朴素 Button（非 AppBarButton），未接线；树里 Queries 分组展开只写「尚未实现（点开看说明，不发请求）」（§7.1）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:608 ButtonQueries、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:984 tooltip；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.theme"
 parent = "shell"
@@ -753,15 +595,6 @@ state = "done"
 spec_hash = "c5e1391d398b"
 evidence = "§1.5 菜单入口；build_main_menu 的「深色模式」子菜单、install_window_actions 的 win.theme-* 与 apply_theme_choice；--qa-open-menu 截出 -menu-view-theme.png"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "「视图 → 深色模式」三档菜单入口 + setter + 持久化已静态接入（代码已接入锚点：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:367、frontend/windows/Sqarvo.Windows/Theming/ThemeService.cs:118、frontend/windows/Sqarvo.Windows/MainWindow.xaml.cs:601）；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。按最高诚实约束，未运行不标 done，故保留 none（待实机确认后再提状态）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.theme.system"
 parent = "shell.theme"
@@ -782,14 +615,6 @@ source = "src/ui.rs:5247、src/ui.rs:5188"
 state = "done"
 spec_hash = "f96b3652002b"
 evidence = "§1.5 三档之一；apply_theme_choice → theme::set_scheme"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.theme.light"
@@ -812,14 +637,6 @@ state = "done"
 spec_hash = "e12518f16e88"
 evidence = "§1.5 三档之一；--theme light 与菜单同一落点"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.theme.dark"
 parent = "shell.theme"
@@ -840,14 +657,6 @@ source = "src/ui.rs:5188、src/theme.rs:246"
 state = "done"
 spec_hash = "592c649bd075"
 evidence = "§1.5 三档之一；--theme dark 与菜单同一落点"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.density"
@@ -907,15 +716,6 @@ state = "done"
 spec_hash = "ca07508afe8b"
 evidence = "§1.5 全部行为；density::switch 的六步、ensure_startup_tier 的守卫、fill_density_section 的「放不下」文字"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "「视图 → 界面密度」三档菜单入口 + 切档事件已静态接入（代码已接入锚点：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:384、frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:166/1071-1073、frontend/windows/Sqarvo.Windows/MainWindow.xaml.cs:592）；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。勾选 / 逐项禁用 / 条目文字语义未在实机核对；按最高诚实约束，未运行不标 done，故保留 none。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.density.compact"
 parent = "shell.density"
@@ -941,15 +741,6 @@ state = "done"
 spec_hash = "5d689ee09274"
 evidence = "§1.5 菜单入口；build_main_menu 的密度子菜单与 apply_tier_choice"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录本单选项。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.density.comfortable"
 parent = "shell.density"
@@ -971,15 +762,6 @@ state = "done"
 spec_hash = "e60a6e711ae8"
 evidence = "§1.5 菜单入口、逐项禁用与「放不下」条目文字；refresh_tier_actions 与 fill_density_section"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录本单选项。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.density.large"
 parent = "shell.density"
@@ -1000,15 +782,6 @@ source = "src/ui.rs:5183、src/ui.rs:5303"
 state = "done"
 spec_hash = "053ff105cfbb"
 evidence = "§1.5 升一档上界与菜单禁用；refresh_tier_actions 的 available 判定"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录本单选项。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.error"
@@ -1041,15 +814,6 @@ state = "done"
 spec_hash = "bd6f6da90e50"
 evidence = "§1.1 后端握手失败 / 后端断开；show_error 与 show_disconnected"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 只记录「断开即回未连接、原因与错误码写状态栏」，没有核对错误页表面。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.error.retry"
 parent = "shell.error"
@@ -1073,15 +837,6 @@ source = "src/ui.rs:369、src/ui.rs:3786"
 state = "done"
 spec_hash = "b9713a3eb891"
 evidence = "§1.1 错误页「重试」；retry 闭包的未就绪回退与 worker.connect"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录重试 / 重新连接入口。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "shell.backend_failure"
@@ -1120,15 +875,6 @@ state = "done"
 spec_hash = "b65d1eadbaf0"
 evidence = "§1.1 后端失效 / 重启 Sqarvo；show_backend_failure_dialog 与 restart_software"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1：断开后回「未连接」并在状态栏给原因与错误码、不自动重启后端；没有「重启 Sqarvo」横幅 / 对话框的记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "shell.menu.mcp"
 parent = "shell.menu"
@@ -1150,11 +896,3 @@ source = "frontend/linux/src/ui.rs、frontend/linux/src/mcp_management.rs"
 state = "done"
 spec_hash = "3484efb6342d"
 evidence = "GTK 单测 mcp_management_has_a_top_level_menu_item 核对一级菜单模型；AT-SPI test_06_mcp_access.py 打开 MCP 管理页。"
-
-[component.sync.windows]
-state = "blocked"
-note = "本次仅交付 Linux GTK 管理入口，Windows 接入范围见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入 MCP。"

@@ -7,7 +7,7 @@ AGENTS.md（就近生效；跨模块任务要读全相关模块的规范，不�
 
 ## 1. 项目定位
 
-- 开源、轻量、跨平台的原生桌面数据库管理客户端：Windows WinUI 3/C#，Linux GTK4 + libadwaita/Rust，macOS SwiftUI/Swift。
+- 开源、轻量、跨平台的原生桌面数据库管理客户端：当前活跃实现为 Linux GTK4 + libadwaita/Rust，旧 Windows C# 前端已退役。
 - 数据库能力集中在独立 Rust 后端伴生进程；前后端 gRPC + Protobuf；驱动经 Driver SPI 接入。
 - **任何平台都不使用 Electron / Chromium / CEF / WebView2 作为 UI runtime**，不以 HTML/CSS/JS 仿原生界面。产品定位红线，无例外。
 - 可参考 Navicat 等成熟客户端的用户流程，但必须独立设计：不复制专有代码、素材、图标、文案或未公开实现细节，不宣称与其有关联。
@@ -48,6 +48,9 @@ AGENTS.md（就近生效；跨模块任务要读全相关模块的规范，不�
 **作用域与阅读策略（重要）**：指令发现按「就近目录」生效——工具**不会**因为本表存在映射，
 就把其他目录的 AGENTS.md 自动应用到当前文件。本表是**人工阅读清单**：
 
+- 前端平台状态以 [frontend/platforms.toml](frontend/platforms.toml) 为准。默认只处理任务明确指定的平台与实际受影响的公共模块；非 Active 前端的实现或同步，以及平台状态变更，须经维护者明确授权。
+- Linux 前端任务不读取、分析或修改其他平台的前端源码、平台专用测试、规划和历史 Issue，也不主动检索旧实现、归档分支或 Tag。非 Active 前端的适配、同步、构建、测试与缺口均不扩大 Linux 任务范围。
+- 公共后端、协议、安全和业务契约保持平台中立。公共契约变更只同步实际受影响的 Active 前端消费者；后端跨操作系统兼容性按影响范围验证。
 - 任务开始时：按预期影响范围对照本表只读命中的模块文件，不必默认读全部模块规范。
 - 阅读触发：`backend/**` → backend 文件；`frontend/**` → frontend 文件；`.proto` 或其生成物
   → proto 文件（契约改动几乎总是跨模块，同时读受影响消费方）；用户可见组件行为 → 另读
@@ -72,14 +75,14 @@ AGENTS.md（就近生效；跨模块任务要读全相关模块的规范，不�
 - 已发布字段号永不复用，删除用 `reserved`；新字段给合理默认语义；不兼容变更 = §15.2 先确认项。
 - 大结果集默认禁止整包序列化返回：查询走 Query ID + 批量/流式 + 取消 + 背压；表浏览走游标分页并定义排序稳定性。
 - 错误用稳定错误码 + 可安全展示信息，绝不回传密码、完整连接串、内部堆栈；取消传播到驱动且幂等。
-- 改契约后重新生成全部受影响客户端并跑契约测试；不得靠无限放大 gRPC 消息上限解决大结果问题。
+- 改契约后重新生成实际受影响的 Active 前端客户端与公共生成物并跑契约测试；不得靠无限放大 gRPC 消息上限解决大结果问题。
 
 ## 8. 原生前端红线（全文：`frontend/AGENTS.md` §8）
 
 - 优先平台原生控件，四档 L0–L3：平台已有的不自造（L3 禁止，先 ADR 再实现）；自绘组件须登记注册表（`hand_drawn`/`why_not_native`）。
 - 「未实现」不是灰化占位：能力级不可用不出现在界面；状态级不可用可见 + 禁用 + 原因（唯一例外：对象树占位分组行）。
-- 跨端一致的是**行为**（条目、顺序、可用性、快捷键、文案）；尺寸/字重/间距/颜色一律来自 `docs/ui-specification/metrics.toml` 与主题 token，禁止代码算 `base × scale`；仅字体族按平台差异并记 `platform_notes.*`。
-- 颜色只用 token，唯一例外是品牌色板（Linux/Windows 两份取值必须一致，见 frontend §8.6）；深色模式默认跟随系统。
+- Active 前端共同遵循**行为**（条目、顺序、可用性、快捷键、文案）；尺寸/字重/间距/颜色一律来自 `docs/ui-specification/metrics.toml` 与主题 token，禁止代码算 `base × scale`；仅字体族按平台差异并记 `platform_notes.*`。
+- 颜色只用 token，唯一例外是品牌色板（见 frontend §8.6）；深色模式默认跟随系统。
 - SQL 编辑器与数据网格是核心组件，不得用普通文本框/列表凑数；变更尺寸/规则须同 PR 更新 metrics、缩放文档与（涉行为时）行为契约。
 
 ## 9. 安全与隐私红线（任何任务不得弱化；本节改动属 §15.2）
@@ -101,23 +104,23 @@ AGENTS.md（就近生效；跨模块任务要读全相关模块的规范，不�
 - rustfmt + clippy 必须过；豁免 lint 要局部抑制并写明原因。错误类型带上下文、可分类，不一律转 String。
 - `unwrap()/expect()/panic` 仅用于已确立不变式处；不跨 `.await` 持锁；`unsafe` 写明安全不变式并加针对性测试；公开类型与复杂算法有文档注释。
 
-## 12. C# / Swift / GTK 准则（全文：`frontend/AGENTS.md` §12）
+## 12. 原生前端工程准则（全文：`frontend/AGENTS.md` §12）
 
 UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻辑；UI 线程不做同步网络/磁盘/数据库；每条异步路径处理取消、异常与销毁后回调；UI 状态机可表达 Loading/Empty/Success/Error/Cancelled/Disconnected。
 
 ## 13. 测试与验证基线
 
 - 检查类型齐备：单元（规则/类型转换/方言/错误映射/生命周期）、驱动集成（经 `driver-testkit` 符合性）、契约（Protobuf 生成与兼容性）、端到端、性能、安全（日志脱敏、凭据、IPC、路径、泄露）。
-- 用户可见行为（交互、状态流转、可访问性）的验证以**该平台自动化功能用例**为载体；三端用例库的共同契约（语义选择器、输出摘要、隔离、PASS/FAIL/BLOCKED 如实报告）以 `tests/ui/README.md` 为真值，各端命令与环境限制见各端 README 与 `justfile`（Linux 现为 `tests/ui/linux/`，入口 `just ui-test-smoke|sql|all`；Windows/macOS 首次涉及该类验收时按同一定位建立）。
+- 用户可见行为（交互、状态流转、可访问性）的验证以**该平台自动化功能用例**为载体；Active 前端用例库的共同契约（语义选择器、输出摘要、隔离、PASS/FAIL/BLOCKED 如实报告）以 `tests/ui/README.md` 为真值，各端命令与环境限制见各端 README 与 `justfile`（Linux 现为 `tests/ui/linux/`，入口 `just ui-test-smoke|sql|all`）。
   - UI 功能开发、改动、缺陷修复与功能验收：必须先读 `tests/ui/README.md` 与对应端 README；验证一律优先复用既有用例与复用操作，已有用例覆盖的行为**不得再人工反复点界面**。
   - Linux UI 自动化必须经统一隔离入口执行；禁止在宿主桌面会话直接运行，隔离初始化失败必须停止且不得回退。入口、依赖与资源配置见 `tests/ui/linux/README.md`。
   - 新增/变更 UI 行为：同一 PR 内按组件 `id` 找到既有用例更新，无覆盖则**先补用例、再改再验**；纯样式调整且交互行为不变的不强制新增功能用例（样式由人工确认，ADR 0029）。
   - 改动后执行**最小相关子集**并如实报告 **PASS / FAIL / BLOCKED** 三态（BLOCKED = 该验证在当前环境无法执行，必须写明原因，不得写成通过；与注册表 `sync = "blocked"` 状态值是两回事）。
   - UI 功能验收只验**交互与功能**（响应、状态流转、可访问性名称、控件存在于预期的窗口/对话框/语义容器）：不含视觉回归、样式断言、像素比较、截图比对、OCR 或 AI 视觉分析，样式由人工确认（ADR 0029）；截图仅当任务验收条件明确声明时允许，且不触发自动视觉分析；注册表 `sync.*.evidence` 只收命令/断言/可访问性读取结果。
 - **验证范围按变更影响与风险选档，档位不是强制阶梯**：Level 1 已覆盖风险就不机械上跳；跨模块风险明显可直接高档；没有任何任务被要求必须全量测试。档位只决定一般验证的**覆盖广度**，不得用于跳过上述 UI 专项要求：UI 行为变化必须执行受影响的 UI 自动化用例（按最小相关子集选择，不强制全量），不得以 L1 已通过为由豁免，环境不可用按 BLOCKED 报告。命令以仓库实际为准（`just` 目标见 `justfile`）：
-  - **L1 局部**：`cd backend && cargo fmt --all -- --check`、`cargo clippy --all-targets -D warnings`、`cargo test -p <crate>`（再以 `--test <名>` 收窄）；Linux 前端同套命令在 `frontend/linux/`（独立 cargo 工作区）；Windows：`cd frontend/windows && dotnet build Sqarvo.Windows/Sqarvo.Windows.csproj -p:Platform=x64 -c Debug`、`dotnet test Sqarvo.Core.Tests/Sqarvo.Core.Tests.csproj -c Debug`、仓库根 `python scripts/xaml_lint.py`。
+  - **L1 局部**：`cd backend && cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test -p <crate>`（再以 `--test <名>` 收窄）；Linux 前端同套命令在 `frontend/linux/`（独立 cargo 工作区）。
   - **L2 模块**：`just test`（后端全量含 UDS gRPC 冒烟）或 `cd frontend/linux && cargo test`；驱动集成按 `tests/integration/` 编排（mariadb），SQLite 端到端 `cargo test -p sqarvo-rpc-server --test grpc_sqlite_e2e`。
-  - **L3 跨模块**：Protobuf 字段或 Driver SPI 接口改动、前后端行为联动、共享组件改动 → 重新生成各端客户端 + 契约/e2e 测试 + 实际构建受影响前端；UI 注册表改动 → `scripts/check-ui-sync.sh gen` 与 `mark`。
+  - **L3 跨模块**：Protobuf 字段或 Driver SPI 接口改动、前后端行为联动、共享组件改动 → 重新生成受影响的 Active 客户端与公共生成物 + 契约/e2e 测试 + 实际构建受影响的 Active 前端；UI 注册表改动 → `scripts/check-ui-sync.sh gen` 与 `mark`。
   - **L4 全量**：重大架构调整、发布前、高风险系统性变更或明确要求 → `just check` + 各模块全量 + 门禁（`scripts/check-ui-sync.sh release-check`、`scripts/check-tracking.sh`、`python scripts/check-readme-pair.py`）。
 - 跑不了的平台按 **BLOCKED + 原因**报告该项，不声称通过（三态口径见上）；测试只用专用数据库与合成数据，禁连生产库或使用真实凭据。
 
@@ -125,8 +128,8 @@ UI、状态、gRPC 客户端、平台适配分层；View/Widget 不放业务逻�
 
 - **14.1 唯一真值**：产品规划 `docs/product/`、开发规划 `docs/planning/`、技术真值 `docs/architecture|api|database|ui-specification/`、UI 组件注册表 `docs/ui-specification/components/*.toml`（`ui-components.md` 是生成物禁止手改）、ADR `docs/decisions/`（追加式）、任务状态 GitHub Issues/Projects（`scripts/check-tracking.sh` 校验）。可多处摘要，不得重复维护细则；里程碑无验证证据不得标完成；不在仓库外复制计划、不在仓库内建第二任务清单。
 - **影响范围驱动同步**：架构变→架构文档/ADR；API 变→契约+生成+契约测试+`docs/api/`；UI 行为变→注册表+mark（全局规则→契约 §8）；功能行为变→对应文档；纯内部实现不碰无关文档。`README.md` 与 `README.zh-CN.md` 是一个交付物，同一提交共改（`scripts/check-readme-pair.py`）。
-- **14.2/14.3 注册表（绑定）**：逐组件行为唯一真值=注册表（契约只留全局规则与已知偏差）。改/增用户可见组件必须同 PR 改注册表并报组件 `id`（授权任务已点名组件时视为已确认范围）；`id` 发布不改名；条目出现 `px`/`#RRGGBB` 即缺陷；规范改动使三端 mark 失效，重核后 `scripts/check-ui-sync.sh mark`；退役走 `status=removed` 生命周期，不许删条目。
-- **14.4 发版门禁（不得绕过）**：发布前 `scripts/check-ui-sync.sh release-check` 必须通过——支持平台（当前 Linux、Windows；macOS 未接入不计）所有 active/deprecated 组件 `sync` 为 done/na/blocked（有说明）。带缺口发版须在 `docs/releases/<版本>.md` 单列「未同步的 UI 行为」并取得维护者批准，不允许静默发布。
+- **14.2/14.3 注册表（绑定）**：逐组件行为唯一真值=注册表（契约只留全局规则与已知偏差）。改/增用户可见组件必须同 PR 改注册表并报组件 `id`（授权任务已点名组件时视为已确认范围）；`id` 发布不改名；条目出现 `px`/`#RRGGBB` 即缺陷；规范改动使受影响组件的 Active 平台标记失效，重核后 `scripts/check-ui-sync.sh mark`；退役走 `status=removed` 生命周期，不许删条目。
+- **14.4 发版门禁（不得绕过）**：发布前 `scripts/check-ui-sync.sh release-check` 必须通过——Active 前端所有 active/deprecated 组件 `sync` 为 done/na/blocked（有说明）。带缺口发版须在 `docs/releases/<版本>.md` 单列「未同步的 UI 行为」并取得维护者批准，不允许静默发布。
 
 ## 15. Agent 执行策略（风险分级；取代原 §15.0 逐次确认单机制）
 

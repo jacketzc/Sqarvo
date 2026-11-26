@@ -7,7 +7,7 @@
 
 Sqarvo 的目标是同时满足三件事：
 
-1. **原生**：Windows 使用 WinUI 3，Linux 使用 GTK4 + libadwaita，macOS 使用 SwiftUI；
+1. **原生**：使用平台原生控件与交互。当前 Linux 实现使用 GTK4 + libadwaita；
 2. **轻量**：快速启动、低空闲占用，数据库能力集中在单个 Rust 后端进程；
 3. **不失真**：不把 Decimal 变成浮点、不把 NULL 变成空字符串、不把不同数据库的
    Catalog/Schema 语义压成一个字段。

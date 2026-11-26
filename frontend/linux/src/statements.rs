@@ -354,10 +354,10 @@ pub fn kind_label(entry: &StatementEntry) -> String {
 
 /// 条目文案：「1 · SELECT · 3 行」「2 · UPDATE · 影响 5 行」「3 · 失败」。
 ///
-/// 定稿版式的界面不再显示这一行（消息页改成逐语句文本日志），但它是三端
-/// 「语句身份」的统一措辞规则，Windows 端对齐时要用，因此保留并单测。
+/// 定稿版式的界面改为逐语句文本日志。
+/// 此格式化规则可供需要「语句身份」的展示路径复用。
 #[must_use]
-#[allow(dead_code)] // 定稿版式不再显示条目行；规则保留给三端对齐（见文档注释）。
+#[allow(dead_code)] // 定稿版式不再显示条目行；格式化规则保留以供复用。
 pub fn entry_label(entry: &StatementEntry) -> String {
     let number = (entry.index + 1).to_string();
     let plural = |rows: u64| i64::try_from(rows).unwrap_or(i64::MAX);
@@ -710,7 +710,7 @@ mod tests {
 
     #[test]
     fn entry_labels_keep_statement_identity() {
-        // 定稿版式不再显示这一行，但规则仍是三端「语句身份」的统一措辞。
+        // 定稿版式不再显示这一行，但继续覆盖「语句身份」的格式化规则。
         let script = [statement(0, true), statement(1, false), statement(2, true)];
         let entries =
             entries_from_statements(&script, "SELECT 0; UPDATE t1 SET a = 1; SELECT 2", 3, true);

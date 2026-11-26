@@ -76,7 +76,7 @@ Windows v1 使用 `{"version":1,"connections":[...]}`，条目含 `driver`、`na
 `host`、`port`、`database`、`username`、`file_path`、`read_only`、`tls_mode` 和
 `credential_ref`。迁移将 `driver` 写成 `driver_id`，将 `tls_mode` 写入 `tls`。共享 TLS 模式使用
 连字符，例如 `verify-ca` 和 `verify-full`。SQLite 使用文件路径和驱动属性 `properties.read_only`。
-Windows 前端接入冻结。合成示例见 [Windows v1 fixture](../../tests/fixtures/windows-connections-v1.json)。
+该格式用于已退役 Windows 前端的用户数据迁移。合成示例见 [Windows v1 fixture](../../tests/fixtures/windows-connections-v1.json)。
 
 ## 本地 gRPC
 

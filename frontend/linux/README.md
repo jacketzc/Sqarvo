@@ -148,8 +148,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 但它只覆盖端点文件，不覆盖 socket 路径。本前端拉起后端时把**子进程**的 `XDG_RUNTIME_DIR`
 设为 `<runtime_root>`，让后端把 socket 与端点写到同一目录；因此覆盖路径必须保持
 `<runtime_root>/sqarvo/backend-endpoint.json` 布局，不符合该布局时前端直接报错说明原因，
-而不是空等超时。（Windows 前端没有 `XDG_RUNTIME_DIR`，改用 `--endpoint-file` 显式指定
-路径，见 ADR 0002 附记。）
+而不是空等超时。
 
 ## 文档索引
 

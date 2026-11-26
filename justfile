@@ -34,7 +34,7 @@ run-debug:
 doc:
     cd backend && cargo doc --no-deps --workspace
 
-# ---- UI 功能测试（各端用例库见 tests/ui/README.md；Linux 实现 tests/ui/linux/） ----
+# ---- UI 功能测试（用例库见 tests/ui/README.md） ----
 
 # 准备 Linux 端测试 venv（系统 python 的 gi/Atspi + pytest）
 ui-test-env:
@@ -49,7 +49,7 @@ ui-test-env:
     fi
     uv pip install -q --python tests/ui/linux/.venv/bin/python -r tests/ui/linux/requirements.txt
 
-# 冒烟：启动 / 主窗口可访问性 / 连接对话框 / 关窗断开（本机分派：当前 Linux 唯一实现端）
+# 冒烟：启动 / 主窗口可访问性 / 连接对话框 / 关窗断开
 ui-test-smoke: ui-test-env
     #!/usr/bin/env bash
     set -euo pipefail
@@ -70,5 +70,5 @@ ui-test-all: ui-test-env
     cd "{{justfile_directory()}}"
     scripts/run-ui-tests-isolated.sh
 
-# 显式指定 Linux 端（Windows 端接入后 ui-test-win-* 同构；跨机时在本机调用对应 runner）
+# 显式指定 Linux 端
 ui-test-linux-all: ui-test-all

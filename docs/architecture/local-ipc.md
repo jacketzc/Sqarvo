@@ -39,7 +39,7 @@
 Named Pipe + ACL 仍是目标方案（可省掉 token 文件与端口），但需要与 gRPC 传输层
 组合验证。
 
-**Windows 侧验证状态**：本仓库的 CI 与开发机是 Linux，上述 DACL 代码只经过
+**Windows 侧验证状态**：此前 DACL 代码经过
 `cargo check -p sqarvo-local-store --target x86_64-pc-windows-msvc`（含
 `--all-targets`，即 `cfg(windows)` 的单测模块也通过类型检查）与 `win_acl` 的纯逻辑
 单测（SDDL 形态、错误分类、文案不含 token）。`SetNamedSecurityInfoW` 的**真实效果**
@@ -111,8 +111,7 @@ MCP Agent 的 stdio 接口提供工具与资源，策略管理由本地 GUI 或 
 
 - Windows Named Pipe（DACL 已落地，管道化未做）；
 - Windows 实机复核：显式 DACL 读回、凭据管理器往返（清单见
-  `docs/planning/windows-frontend-parity-plan.md` WP1 与
-  `crates/local-store/src/credentials/mod.rs` 模块文档）；
+  `backend/crates/local-store/src/credentials/mod.rs` 模块文档）；
 - macOS 是否改用 Unix socket 以外的机制（评估 XPC）；
 - 前端崩溃后后端会话的租约回收；
 - 端点文件被替换的检测（前端应校验文件所有者）。

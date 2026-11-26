@@ -1,12 +1,8 @@
 # 前端
 
-三个平台各自使用原生技术实现，功能与核心交互语义保持一致，不共享 UI 代码。
-
-| 平台 | 技术 | 目录 | 状态 |
-|---|---|---|---|
-| Windows | WinUI 3 / Windows App SDK / C# | [windows](windows/) | 窗口骨架，未接后端，未构建验证 |
-| Linux | GTK4 + libadwaita / Rust | [linux](linux/) | 已接后端：握手 / 进程管理 / 连接对话框 / SQL 执行与取消 / 结果虚拟化（v0.2，见 `docs/releases/v0.2.md`） |
-| macOS | SwiftUI / Swift | [macos](macos/) | 窗口骨架，未接后端，未构建验证 |
+Linux 的 GTK4 + libadwaita 客户端是主线活跃前端，构建与运行见 [Linux 前端](linux/README.md)。
+各平台的开发范围以 [platforms.toml](platforms.toml) 为准。旧 Windows C# 前端已归档，重写独立开发。
+macOS 保留规划。归档与重写接入条件见 [ADR 0043](../docs/decisions/0043-frontend-platform-scope.md)。
 
 共同约束：
 
@@ -16,7 +12,7 @@
 - UI 线程禁止阻塞操作；必须能表达 Loading / Empty / Success / Error / Cancelled / Disconnected；
 - 未实现功能必须明确标注，不得用占位数据伪装成可用。
 
-## 后端启动顺序（规划）
+## 后端启动顺序
 
 1. 前端检查端点描述文件是否存在、`protocol_version` 主版本是否兼容、`pid` 是否存活；
 2. 不存在或不兼容时启动 `sqarvo-backend`（随应用分发）；
@@ -26,5 +22,4 @@
 
 以上流程已在 Linux 前端实现（`frontend/linux/src/backend/endpoint.rs`、
 `src/backend/supervisor.rs`、`src/backend/worker.rs`，PR #36），细节与实测记录见
-[`frontend/linux/README.md`](linux/README.md)。Windows 与 macOS 前端**尚未实现**该流程，
-仍是窗口骨架，未构建、未验证。
+[`frontend/linux/README.md`](linux/README.md)。

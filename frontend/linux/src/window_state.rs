@@ -71,16 +71,16 @@ struct Document {
     /// 写入时的密度档名（v2）：宽度字段是这一档的归一化值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tier: Option<String>,
-    /// 主题偏好（`system` / `light` / `dark`，与 Windows 同键同值）。
+    /// 主题偏好（`system` / `light` / `dark`）。
     ///
-    /// 可缺：缺字段 = 跟随系统（与 `windows/Sqarvo.Windows/Storage/WindowState.cs` 的
-    /// `theme` 兼容）。加字段不升版本——读侧按「缺 = 默认」处理，写回时原样保留。
+    /// 缺字段时跟随系统。
+    /// 该字段兼容旧版设置，写回时原样保留。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theme: Option<String>,
     /// 语言偏好（`system` / `zh` / `en`，ADR 0031 决策 6，与 `theme` 同款兼容口径）。
     ///
     /// 可缺：缺字段 = 跟随系统。加字段不升版本——读侧按「缺 = 默认」处理，
-    /// 写回时原样保留（Windows 端 #204 消费同名字段）。
+    /// 写回时原样保留。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     language: Option<String>,
     /// 窗口级信息面板宽度（归一化值）。

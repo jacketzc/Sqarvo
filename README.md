@@ -12,8 +12,7 @@
 
 ## Why Sqarvo
 
-- **Natively built** — WinUI 3 · GTK4 · SwiftUI, each platform using its own controls and interaction
-  conventions; no Chromium / WebView, no JavaScript.
+- **Natively built** — GTK4 on Linux, with native controls and interaction conventions; no Chromium / WebView, no JavaScript.
 - **Low footprint** — about 70 MB idle.
 - **Minimal UI** — only what daily work needs: connect, write SQL, browse data, MCP control.
 
@@ -36,8 +35,10 @@
 
 ## Status
 
-The Linux client works end to end (SQLite and MariaDB); Windows and macOS are window shells that do
-not talk to the backend yet.
+Linux is the Active frontend and works end to end with SQLite and MariaDB. The old Windows C# frontend
+has been retired. Windows is Rewriting and macOS is Planned. Frontend releases and UI checks cover Active
+platforms only. The Rust backend and MCP retain Windows support. See the [platform configuration](frontend/platforms.toml)
+and the [retirement decision](docs/decisions/0043-frontend-platform-scope.md).
 
 - **Available**: connections and connection tests, passwords stored only in the OS credential store,
   object tree and metadata (lazy per level, search by name), SQL editor with paged results, table
@@ -60,8 +61,7 @@ backend/               Rust workspace: driver SPI, drivers (SQLite / MariaDB),
                        transport, gRPC services
 frontend/
   linux/               GTK4 + libadwaita + Rust (wired to the backend)
-  windows/             WinUI 3 + C# (window shell)
-  macos/               SwiftUI + Swift (window shell)
+  macos/               Planned frontend prototype
 docs/                  Product, planning, architecture, API, drivers, UI spec, ADRs
 tests/                 Contract / integration tests and fixtures
 packaging/             Per-platform packaging
@@ -104,8 +104,8 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 
 Starting the test database: [tests/integration/README.md](tests/integration/README.md).
 
-> Built and tested on Linux only. The Windows and macOS transport and UI code has not been verified
-> on this machine.
+> Linux is the frontend build and release target. For a Windows backend or MCP build, use the same
+> Cargo workspace from a Windows Rust toolchain.
 
 ## MCP Server
 

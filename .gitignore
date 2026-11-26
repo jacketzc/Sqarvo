@@ -13,8 +13,6 @@
 /build/
 /frontend/linux/target/
 /frontend/macos/.build/
-/frontend/windows/**/bin/
-/frontend/windows/**/obj/
 
 # IDE / 系统垃圾
 .idea/

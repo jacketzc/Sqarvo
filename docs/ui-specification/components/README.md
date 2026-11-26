@@ -6,12 +6,15 @@
 1. 这个东西**叫什么、从属于谁**（`id` / `parent`）
 2. 它**长什么样**（`style`：布局槽 + 尺寸 key + 主题 token，不写具体数字与色值）
 3. 它**点了会发生什么**（`interaction`：触发、前置条件、结果、源码依据）
-4. **三端各自做到哪一步**（`sync`：done / partial / none / na / blocked）
+4. **Active 平台各自做到哪一步**（`sync`：done / partial / none / na / blocked）
 
-决策与理由见 [ADR 0027](../../decisions/0027-ui-component-registry.md)；迁移分阶段进行，
-旧的 [ui-behavior-contract.md](../ui-behavior-contract.md) 在 P1 完成前仍是行为叙述的来源。
+决策与理由见 [ADR 0027](../../decisions/0027-ui-component-registry.md)。全局规则见 [UI 行为契约](../ui-behavior-contract.md)。
 
 `ui-components.md` 由脚本生成，**不要手改**。
+
+同步维护与发版验收仅适用于 [Active 前端](../../../frontend/platforms.toml)。旧 Windows 同步证据
+与旧平台实现说明可从 [ADR 0043](../../decisions/0043-frontend-platform-scope.md) 指定的 Tag 回查。
+现有选型及交互备注里的旧实现路径相对于归档提交。重新接入时须提交新实现的同步记录和真实验证证据。
 
 ## 怎么用
 
@@ -19,7 +22,8 @@
 scripts/check-ui-sync.sh check          # 结构 / 引用 / 哈希检查；有硬错误返回 1
 scripts/check-ui-sync.sh check --strict # 额外把「同步标记过期」也算失败
 scripts/check-ui-sync.sh gen            # 重新生成 docs/ui-specification/ui-components.md
-scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "--qa-layout-audit 通过"
+scripts/check-ui-sync.sh mark --id object_tree.row --platform linux
+scripts/check-ui-sync.sh release-check --full   # 列出全部发版缺口
 ```
 
 `mark` 只做一件事：把这个组件在该端记下的 `spec_hash` 更新为**当前**规范哈希，意思是
@@ -54,7 +58,7 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 
 1. 能独立命名（QA 能单独指认它）；
 2. 有独立交互，或有自己的可见状态；
-3. 三端可以各自判断「做到了没有」。
+3. Active 前端可以判断「做到了没有」。
 
 因此：容器与背景板没有交互，只记 `style`；列表行模板与它的行种类是父子组件，不重复记
 样式；搜索结果行**不是**新组件（复用 `object_tree.row`，见 §2.4）。
@@ -71,16 +75,16 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 | `style.slot` | 建议 | 布局槽，见下方清单 |
 | `style.metrics` | 建议 | `metrics.toml` 的 key 名（**不写数字**） |
 | `style.tokens` | 建议 | 主题 token 名（**不写 `#RRGGBB`**），必须能在 `frontend/linux/src/theme.rs` 找到 `@<name>` |
-| `style.icon` | 有图标时 | 语义图标 id（字符串或数组），必须在 [`icons.toml`](../icons.toml) 里存在；各端按 id 取自己的字形（该表 `winui` 已是 Segoe Fluent 码点，`winui_name` 是官方字形名；`winui_note` 非空表示是近似字形） |
+| `style.icon` | 有图标时 | 语义图标 id（字符串或数组），必须在 [`icons.toml`](../icons.toml) 里存在；各端按 id 取自己的字形 |
 | `style.states` | 可选 | 键限 `hover` / `active` / `selected` / `focus` / `disabled`，值是 token 名 |
 | `a11y.name` / `a11y.tab` | P1 补 | 可访问名与 Tab 次序；缺了报警告，不失败。`（行内容：…）` 表示名字由行内容生成（列表行没有静态名） |
-| `native_control` | 选型有意义时 | `gtk:<控件> / winui:<控件> / swift:<控件>`；未实现写 `—`，未核对写 `待核`。纯文本、行模板不必填 |
+| `native_control` | 选型有意义时 | 当前用 `gtk:<控件>`。纯文本、行模板不必填 |
 | `hand_drawn` | 可选 | `true` = 视觉是自绘的（不是原生控件渲染），此时必须给 `why_not_native` |
 | `why_not_native` | `hand_drawn=true` 时 | 为什么没有用原生控件；也可以用在 `hand_drawn` 之外，解释「为什么没用最直觉的那个原生控件」 |
 | `interaction[]` | 有交互时必填 | `trigger` / `precondition` / `result` / `source`，`key` 触发必带 `keys` |
 | `impl_notes[]` | 可选 | 某端的实现细节（不参与哈希、不是规范） |
 | `platform_notes.<plat>` | 可选 | 平台差异与限制（不参与哈希） |
-| `sync.<plat>` | 是（三端各一条） | 见下 |
+| `sync.<plat>` | 每个 Active 平台一条 | 见下 |
 
 `kind`：`area` / `container` / `control` / `row` / `cell` / `item` / `slot`。
 
@@ -93,7 +97,7 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 `startup`、`overlay`。
 
 **样式只放引用，不放数字和色值。** `metrics.toml` 是尺寸的唯一真值，主题 token 是颜色的
-唯一真值（AGENTS.md §8.6）。组件条目里出现 `200`、`#A66FA0` 一律视为缺陷 —— 三端取整
+唯一真值（AGENTS.md §8.6）。组件条目里出现 `200`、`#A66FA0` 一律视为缺陷 —— 不同运行时的取整
 规则不同，第二份数字必然漂 1px；alpha、1px 描边这类细节写进 `impl_notes`。
 
 ## 原生控件优先（L0–L3）
@@ -107,11 +111,10 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 | L2 | 自绘视觉，或把原生控件自组装成工具包没有的复合件 | 允许；必须在组件里登记 `hand_drawn` / `why_not_native`，**登记即可，不另开 ADR** |
 | L3 | 有原生等价物却自己实现（自绘菜单、对话框、表格、标签条） | 禁止；确需例外先写 ADR |
 
-- 三端只承诺**行为**一致（条目、顺序、可用性、快捷键、文案）。字号 / 字重 / 行高 / 间距 / 颜色
+- Active 前端共用**行为**规范（条目、顺序、可用性、快捷键、文案）。字号 / 字重 / 行高 / 间距 / 颜色
   一律取 `metrics.toml` 与主题 token，任何一个平台都不许从自己的控件库里「借」一个尺寸或字重当作
-  平台惯例 —— 产品用了这个值，它就该进 `metrics.toml`。只有**字体族**允许按平台不同（写
-  `platform_notes.*`，例如「Windows 用 Segoe UI」）。
-- 原生控件名记在 `native_control`，没实现的端写 `—`，没核对过的写 `待核` —— 不要拿猜测填空。
+  平台惯例 —— 产品用了这个值，它就该进 `metrics.toml`。只有**字体族**允许按平台不同（写入 `platform_notes.*`）。
+- 原生控件名记在 `native_control`，按实际使用的控件填。
 
 ## 生命周期：active / deprecated / removed
 
@@ -124,19 +127,19 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 | `removed` | 这版起产品不需要 | `removed_in` + `removed_reason` |
 
 - **removed 的条目不许直接删。** 删了条目，别的端就失去「要去掉什么」的对照物，正好违背这条设计
-  的目的。三端都清干净后，才把它归档到 `components/_archived.toml`（保留可查：上一版删过什么）。
-- 退役组件（`deprecated` / `removed`）的 `sync` 只允许三种值：`removed`（该端已按退役处理：
+  的目的。全部 Active 前端清理或标明不适用后，才把它归档到 `components/_archived.toml`（保留可查：上一版删过什么）。
+- `removed` 组件的 `sync` 只允许三种值：`removed`（该端已按退役处理：
   代码删了，或界面隐藏了）/ `present`（还留着，待清理）/ `na`（该端本来就没有）。**这三种不记
   `spec_hash`** —— 退役没有「按规范实现」这回事，只有一个清理进度。
-- **单端不做 ≠ 全局退役**：macOS 不做密度三档是 `sync.macos = "na"`，不是 `status = "removed"`。
-- 动态查询：`scripts/check-ui-sync.sh pending` 列出所有退役组件与各端清理进度，
+- **单端不做 ≠ 全局退役**：某 Active 前端不提供某个控件时，记该平台的 `state = "na"`，不是 `status = "removed"`。
+- 动态查询：`scripts/check-ui-sync.sh pending` 列出所有退役组件与 Active 前端清理进度，
   `--release v0.3.0` 只看某一版。
 
 ## 两个「不可用」不要混
 
 | 概念 | 写法 | 语义 |
 |---|---|---|
-| 产品不想要它了 | `status = "removed"` + `removed_in` | 代码删，或界面暂时隐藏；条目保留到三端清零 |
+| 产品不想要它了 | `status = "removed"` + `removed_in` | 代码删，或界面暂时隐藏；条目保留到 Active 前端清理完成 |
 | 控件在、当前不可用 | `style.states.disabled` / 交互里的前置条件 | 可见 + 置灰 + 原因（见下节） |
 
 ## 禁用项：能力性 vs 状态性
@@ -153,31 +156,31 @@ scripts/check-ui-sync.sh mark --id object_tree.row --platform linux --evidence "
 ```toml
 [component.sync.linux]
 state = "done"            # done | partial | none | na | blocked
-spec_hash = "9f2c1a0b3c4d" # 该端核对时对应的规范哈希；doing/partial 必填
+spec_hash = "9f2c1a0b3c4d" # 该端核对时对应的规范哈希；done/partial 必填
 commit = "7436cd5"         # 核对时的提交（可空）
 evidence = "--qa-layout-audit 通过"  # 证据（可空，done 时缺失只报警告）
 ```
 
-- `done`：样式 + 交互都按本规范实现。**必须带当前 `spec_hash`**，否则 `check` 判过期。
+- `done`：已按本规范核对实现。**必须带当前 `spec_hash`**，否则 `check` 判过期。
 - `evidence` 记**交互与功能**的证据：命令、断言、QA 开关的输出、可访问性名称 / 控件文本的读取
   结果。截图、录屏与像素比较**不是**验收证据——样式由人工确认，agent 不做图像识别
   （[ADR 0029](../../decisions/0029-ui-acceptance-boundary.md)）。历史条目里已引用的截图不必回改，
   但新登记不再以截图为准。
 - `partial`：做了一部分。差异写 `platform_notes.<plat>`，别写「未同步」了事。
 - `none`：完全没做。
-- `na`：产品上就不做（如 macOS 不做界面密度三档），须给 `note`。
+- `na`：产品上就不做，须给 `note`。
 - `blocked`：平台能力做不到（如 GTK4 没有读写 toplevel 位置的 API），须给 `note` 并进
   行为契约 §9 已知偏差。
 
 **过期是派生的，不靠人记得清理**：哈希覆盖组件除 `sync` / `impl_notes` /
-`platform_notes` 之外的全部内容。任何人改了规范，三端标记自动失效，`check` 会列出来；
+`platform_notes` 之外的全部内容。任何人改了规范，受影响组件的 Active 平台标记自动失效，`check` 会列出来；
 谁要恢复 `done`，就得按新规范核对一遍再 `mark`。这样「改了就清标记」不需要纪律。
 
 `--strict` 用于 CI 之后收紧：结构错误始终失败，过期在 P1 起可设为失败。
 
-**发版门禁**：`scripts/check-ui-sync.sh release-check` —— 发布前所有 `active` 组件在 Linux / Windows
+**发版门禁**：`scripts/check-ui-sync.sh release-check` —— 发布前所有 `active` / `deprecated` 组件在 Active 前端上
 必须 `done`（或 `na` / `blocked` 且有说明），否则返回非 0。规则见 AGENTS.md §14.4。
 
 **CI 分工**：代码改动走 `ci.yml`（后端 / 前端 / MariaDB）；注册表与 UI 规格文档走
-`ui-contract.yml`（按路径触发，同时覆盖 `theme.rs` 与 `metrics.toml` 这两个校验输入）。打包（`.deb`）
+`ui-contract.yml`（按路径触发，同时覆盖平台配置、`theme.rs` 与 `metrics.toml`）。打包（`.deb`）
 在纯文档提交时由 `guard` 作业判定后跳过；标签推送与手动触发一律打包。

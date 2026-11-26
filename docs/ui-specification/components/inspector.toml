@@ -93,15 +93,6 @@ state = "done"
 spec_hash = "6c8452924d4a"
 evidence = "test_14_inspector_no_cache.py 按 MetadataHub 提交计数核对按需查询；test_15_refresh_regressions.py 核对真实 GTK 标签切换、行数与连接归属"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "6c8452924d4a"
-note = "§7.1 只记「SplitView 右侧信息面板」：宽度拖拽、窗口级记忆、选中驱动换页未记录；标签钉住未实现（面板仍只由选中驱动），跟进 Issue #197。Windows 无跨访问元数据结果缓存：_detailKey 只做同一次选中事件的去重。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.header"
 parent = "inspector"
@@ -121,15 +112,6 @@ impl_notes = [
 state = "done"
 spec_hash = "685b1e7ff485"
 evidence = "§6 空态保留面板外壳；inspector.rs::new 的 header 与 Separator"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "685b1e7ff485"
-note = "§7.1 记标题 = 连接名 / 库名、副标题 = 驱动 / 「库」；标题块留白与分隔线未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.empty"
@@ -156,16 +138,6 @@ state = "done"
 spec_hash = "33fc2281fe42"
 evidence = "§6 没有选中对象；§5 空态与选中态共用外壳（inspector.rs::show_empty）"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "33fc2281fe42"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:290；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:900"
-note = "无选中时内容区留白（RenderInspector 的默认分支只清空 InspectorBody，外壳与「信息面板」标题保留）；但选中分组行时 Windows 走库视图（带「当前分组」字段），没有回到规范要求的空态。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.connection"
 parent = "inspector"
@@ -180,7 +152,6 @@ impl_notes = [
   "服务器型驱动没有默认库时写「未指定」（吞掉整行会像漏了字段）；文件型驱动没有 TLS 一层，这一行整行不出现。",
   "凭据引用只写 credential_ref，面板里没有明文密码。",
 ]
-platform_notes.windows = "§7.1：字段行给驱动、地址、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、会话前 8 位；不记连接延迟与会话数。"
 
 [[component.interaction]]
 trigger = "load"
@@ -198,15 +169,6 @@ source = "src/inspector.rs:625"
 state = "done"
 spec_hash = "ff0220fb8f1d"
 evidence = "§6 选中连接；inspector.rs::connection_facts 与 show_connection"
-
-[component.sync.windows]
-state = "done"
-spec_hash = "ff0220fb8f1d"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:937；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:954；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:963"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.field"
@@ -228,15 +190,6 @@ impl_notes = [
 state = "done"
 spec_hash = "0e099676cda2"
 evidence = "§5 拿不到的字段不出现；inspector.rs::fill_facts"
-
-[component.sync.windows]
-state = "done"
-spec_hash = "0e099676cda2"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1256；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1262"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.catalog"
@@ -274,16 +227,6 @@ source = "src/ui.rs:2152"
 state = "done"
 spec_hash = "e877108d8794"
 evidence = "test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect；GTK catalog_counts_require_the_same_browse_session_and_catalog_identity"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "e877108d8794"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:974；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:981"
-note = "标题 /「库」副标题与已展开分组的表、视图计数都实现了；但缺「计数说明：按已展开的结果统计（该层还有下一页）」，且分组行选中时进入本视图而不是回到空态。SQL 标签按绑定连接展示库视图尚未实现。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.object"
@@ -324,16 +267,6 @@ state = "done"
 spec_hash = "8419e9c1a27d"
 evidence = "§6 选中表 / 视图；inspector.rs::show_object 的 Table 分支"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "8419e9c1a27d"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1048；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1066"
-note = "表 / 视图的标题、两个独立按钮与两页切换都实现了；但序列 / 函数 / 过程 / 类型照样出现切换条并会去读列（规范要求这类对象只显示 DDL 页、切换条隐藏），标题也没有完整路径 tooltip。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.pane_switch"
 parent = "inspector"
@@ -358,16 +291,6 @@ state = "done"
 spec_hash = "7cceb8b38fa1"
 evidence = "§5 两个独立 toggle；theme.rs 的 .sqarvo-pane-switch 规则"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "7cceb8b38fa1"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1052；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1063"
-note = "两个独立 Button（不是 ToggleButton、也不是分段容器）已实现；但切换条对表 / 视图以外的种类也出现，规范要求它只在表 / 视图视图里出现，按钮也没有 tooltip。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.pane_switch.ddl"
 parent = "inspector.pane_switch"
@@ -391,15 +314,6 @@ state = "done"
 spec_hash = "1fab492e67c3"
 evidence = "§6 切换表页；inspector.rs::install_toggles / set_pane"
 
-[component.sync.windows]
-state = "done"
-spec_hash = "1fab492e67c3"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1053"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.pane_switch.info"
 parent = "inspector.pane_switch"
@@ -422,15 +336,6 @@ source = "src/inspector.rs:972、src/inspector.rs:1070"
 state = "done"
 spec_hash = "84101618c781"
 evidence = "§6 切换表页；inspector.rs::install_toggles / apply_pane"
-
-[component.sync.windows]
-state = "done"
-spec_hash = "84101618c781"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1058"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.object.info"
@@ -459,15 +364,6 @@ state = "done"
 spec_hash = "212c8eec52b1"
 evidence = "test_15_refresh_regressions.py 验证后台标签关闭与 A 分页时预览 B，计数更新不提交元数据请求"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "212c8eec52b1"
-note = "§7.1 只记表信息的列一节（四列表头）；主键 / 索引 / 触发器 / 已加载行数几节未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.object.info.columns"
 parent = "inspector.object.info"
@@ -495,15 +391,6 @@ state = "done"
 spec_hash = "6140fbb5f485"
 evidence = "§6 表信息给列与主键；inspector.rs 列节的渲染"
 
-[component.sync.windows]
-state = "done"
-spec_hash = "6140fbb5f485"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1203；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.object.info.columns.row"
 parent = "inspector.object.info.columns"
@@ -523,15 +410,6 @@ impl_notes = [
 state = "done"
 spec_hash = "52f283b1bc5a"
 evidence = "§6 表信息页的列；inspector.rs 列卡片的 compact_row 四行"
-
-[component.sync.windows]
-state = "done"
-spec_hash = "52f283b1bc5a"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1230"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.object.info.pk"
@@ -565,16 +443,6 @@ state = "done"
 spec_hash = "df8b658b8509"
 evidence = "§6 表信息给主键；inspector.rs::primary_key_label 与失败路径 info_note"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "df8b658b8509"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1187；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1208"
-note = "主键读不到时的说明行与列尾的 PK 标记都有；但没有规范要求的主键节「主键列」一行，也没有「无主键」这句，主键只能从列尾标记读出来。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.object.ddl"
 parent = "inspector.object"
@@ -590,7 +458,6 @@ impl_notes = [
   "服务端返回空 DDL 时正文区写「服务端返回了空 DDL」+ 说明，不当成对象没有结构。",
   "没有浏览会话时正文区换状态页「这条连接没有浏览会话」+「对象所属连接的会话已断开：在对象树里点该连接重新连接后再试。」",
 ]
-platform_notes.windows = "§7.1：DDL 正文用等宽字体、不折行、横向滚动、可选中复制；正文上方只在 exact=false 时有一行琥珀警示。"
 platform_notes.linux = "Linux 侧不单独设等宽字族：§5 要求 DDL 正文与表信息同字体同字号，正文走 .sqarvo-panel-text。"
 
 [[component.interaction]]
@@ -609,15 +476,6 @@ source = "src/ddl.rs:307、src/ddl.rs:317"
 state = "done"
 spec_hash = "478edaf882b5"
 evidence = "§6 DDL 页；ddl.rs::DdlPanel::new 的 TextView 与 ScrolledWindow"
-
-[component.sync.windows]
-state = "done"
-spec_hash = "478edaf882b5"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1145；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1159"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.object.ddl.warning"
@@ -645,15 +503,6 @@ source = "src/ddl.rs:289、src/ddl.rs:291、src/ddl.rs:92"
 state = "done"
 spec_hash = "0f72ea521310"
 evidence = "§6 exact=false 时正文上方有琥珀警示；ddl.rs 的 warning 标签与样式表"
-
-[component.sync.windows]
-state = "done"
-spec_hash = "0f72ea521310"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1129；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:1132"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.column"
@@ -688,15 +537,6 @@ state = "done"
 spec_hash = "a11628afdfbb"
 evidence = "test_15_refresh_regressions.py::test_column_info_f5_reloads_that_column_not_another_object；GTK column_reload_updates_model_and_discards_stale_responses"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.state"
 parent = "inspector"
@@ -729,15 +569,6 @@ state = "done"
 spec_hash = "3201f0fc87a1"
 evidence = "§6 选中索引 / 触发器、选中列（无父表）；inspector.rs::StateText"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "inspector.txn_hint"
 parent = "inspector"
@@ -763,15 +594,6 @@ source = "src/inspector.rs:847、src/ui.rs:1832"
 state = "done"
 spec_hash = "c3e589348227"
 evidence = "§6 跨标签事务提示；inspector.rs::set_txn_hint"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "inspector.object.info.status"
@@ -803,12 +625,3 @@ source = "src/inspector.rs:1045、src/inspector.rs:931"
 state = "done"
 spec_hash = "e18b5b426013"
 evidence = "§6 表信息页的失败路径；inspector.rs::info_note 与 load_table 的提示行"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "e18b5b426013"
-note = "§7.1 只记「列读取失败：…」；「正在读取列、主键与索引…」与没有浏览会话时的说明未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""

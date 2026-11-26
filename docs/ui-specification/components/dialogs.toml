@@ -38,15 +38,6 @@ spec_hash = "588e07793c24"
 commit = "7436cd5"
 evidence = "dialog.rs（AdwDialog + AdwPreferencesPage）与 ui.rs show_about 逐条对照"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "588e07793c24"
-note = "本区的连接与关于对话框仍待 Windows 存量迁移。S6-a 共享目录包含提交和删除确认文案，交互状态登记在数据页及状态栏触发组件。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection"
 parent = "dialogs"
@@ -90,15 +81,6 @@ spec_hash = "1b573b8cebd3"
 commit = "7436cd5"
 evidence = "§2.3 编辑连接 + dialog.rs build / apply_saved 复核"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "1b573b8cebd3"
-note = "§7.1 只记录新建模式（Views/ConnectionDialog.xaml）；编辑模式、标题与宽度未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.header"
 parent = "dialogs.connection"
@@ -138,15 +120,6 @@ spec_hash = "bb3d90788ea7"
 commit = "7436cd5"
 evidence = "dialog.rs apply_selection / set_pending 复核"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.driver"
 parent = "dialogs.connection"
@@ -180,15 +153,6 @@ spec_hash = "63fe1d7cd5c6"
 commit = "7436cd5"
 evidence = "dialog.rs apply_selection 与 DriverChoice::from_summary 复核"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.fields"
 parent = "dialogs.connection"
@@ -202,7 +166,6 @@ impl_notes = [
   "隐藏的字段不进入 ConnectionParams：不是「显示了但不填」。",
   "分组标题「连接参数」；顺序固定，不随驱动重排。",
 ]
-platform_notes.windows = "§7.1：MariaDB 字段为主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档；文件型驱动的数据库文件路径与只读打开未记录。"
 
 [[component.interaction]]
 trigger = "load"
@@ -215,15 +178,6 @@ state = "done"
 spec_hash = "00cc1cbf684d"
 commit = "7436cd5"
 evidence = "driver_form.rs fields_for 描述表 + dialog.rs 显隐接线"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "00cc1cbf684d"
-note = "§7.1 只记录 MariaDB 字段（主机 / 端口 / 用户名 / 密码 / 库 / TLS 五档）；文件型驱动的路径与只读未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.connection.fields.host"
@@ -253,15 +207,6 @@ state = "done"
 spec_hash = "0332ac1f48a8"
 commit = "7436cd5"
 evidence = "dialog.rs 默认值 + driver_form.rs 校验文案"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "0332ac1f48a8"
-note = "§7.1 只写「主机」是 MariaDB 字段；默认值、空值校验与错误文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:41 HostBox；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.connection.fields.alias"
@@ -297,14 +242,6 @@ spec_hash = "34da2c5d7e0d"
 commit = ""
 evidence = "tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证编辑别名与档案修订。"
 
-[component.sync.windows]
-state = "blocked"
-note = "本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 已保存连接前端未接入。"
-
 [[component]]
 id = "dialogs.connection.fields.port"
 parent = "dialogs.connection.fields"
@@ -334,15 +271,6 @@ spec_hash = "e2745ea241c8"
 commit = "7436cd5"
 evidence = "driver_form.rs 端口解析与两条文案"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "e2745ea241c8"
-note = "§7.1 只写「端口」是 MariaDB 字段；范围校验与文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:48 PortBox；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.fields.username"
 parent = "dialogs.connection.fields"
@@ -364,15 +292,6 @@ state = "done"
 spec_hash = "e17b4b593516"
 commit = "7436cd5"
 evidence = "driver_form.rs 用户名校验"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "e17b4b593516"
-note = "§7.1 只写「用户名」是 MariaDB 字段；必填校验与文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:56 UsernameBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:295 读取值；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.connection.fields.database"
@@ -400,15 +319,6 @@ spec_hash = "c12f15394c07"
 commit = "7436cd5"
 evidence = "dialog.rs 行标题 + driver_form.rs default_name"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "c12f15394c07"
-note = "§7.1 只写「库」是 MariaDB 字段；留空语义与显示名规则未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:71 DatabaseBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:297 读取值；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.fields.password"
 parent = "dialogs.connection.fields"
@@ -423,7 +333,6 @@ impl_notes = [
   "密码永不回显：没有「读出旧密码」的路径，编辑模式下这一行一定是空的。",
   "密码随草稿交给 worker 后即被对话框丢弃，本模块不保存它。",
 ]
-platform_notes.windows = "§7.1：密码只进 Windows 凭据管理器，落盘只有 credential_ref；密码行的留空与复用规则未记录。"
 
 [[component.interaction]]
 trigger = "load"
@@ -442,15 +351,6 @@ state = "done"
 spec_hash = "94b3a2af8827"
 commit = "7436cd5"
 evidence = "dialog.rs apply_saved（留空 + 复用引用）+ driver_form.rs 密码校验"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "94b3a2af8827"
-note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；密码行的留空与复用规则未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:63 PasswordBox、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:269 PrepareCredentialAsync；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.connection.fields.tls"
@@ -485,15 +385,6 @@ spec_hash = "fa339da22914"
 commit = "7436cd5"
 evidence = "dialog.rs rebuild_tls_model / tls_subtitle_for + TlsMode::label_for"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "fa339da22914"
-note = "§7.1 只写「TLS 五档」；档位文案、随驱动能力的退化说明未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml:78 TlsCombo、frontend/windows/Sqarvo.Windows/Views/ConnectionDialog.xaml.cs:324-326 档位退化；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.fields.file_path"
 parent = "dialogs.connection.fields"
@@ -527,15 +418,6 @@ spec_hash = "f1d9c74ef524"
 commit = "7436cd5"
 evidence = "dialog.rs open_file_chooser + driver_form.rs 路径校验"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.fields.read_only"
 parent = "dialogs.connection.fields"
@@ -558,15 +440,6 @@ state = "done"
 spec_hash = "e5a1f6718b82"
 commit = "7436cd5"
 evidence = "driver_form.rs 只读 + 内存库互斥规则"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.connection.credential_note"
@@ -594,15 +467,6 @@ spec_hash = "d00e93235e45"
 commit = "7436cd5"
 evidence = "dialog.rs credential_note 构建与显隐"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "d00e93235e45"
-note = "§7.1 记录密码只进 Windows 凭据管理器、落盘只有 credential_ref；对话框内的说明行未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.status"
 parent = "dialogs.connection"
@@ -617,7 +481,6 @@ impl_notes = [
   "成功 / 失败 / 说明三种语义只靠样式类区分，不换控件。",
   "状态行只在对话框里，不落到状态栏、不弹第二个提示框。",
 ]
-platform_notes.windows = "§7.1：测试连接就地展示延迟与服务端版本；失败给「标题 + 后端文案 + 稳定错误码」；状态行的位置与两行样式未记录。"
 
 [[component.interaction]]
 trigger = "load"
@@ -649,15 +512,6 @@ spec_hash = "918d0445abcb"
 commit = "7436cd5"
 evidence = "§7.1 失败三段文案口径 + dialog.rs show_status / show_failure / show_test_report"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "918d0445abcb"
-note = "§7.1 记录「测试连接」就地展示延迟与服务端版本、失败给「标题 + 后端文案 + 稳定错误码」；状态行的位置与样式未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.connection.actions"
 parent = "dialogs.connection"
@@ -682,15 +536,6 @@ state = "done"
 spec_hash = "99f3f0eab301"
 commit = "7436cd5"
 evidence = "dialog.rs actions 布局 + set_pending 禁用清单"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "99f3f0eab301"
-note = "§7.1 只记录「测试连接」一个按钮；操作条布局、另两个按钮与「进行中整体禁用」未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.connection.actions.test"
@@ -720,15 +565,6 @@ state = "done"
 spec_hash = "5f2015e247d9"
 commit = "7436cd5"
 evidence = "dialog.rs 测试按钮接线 + Event::Tested 回填"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "5f2015e247d9"
-note = "§7.1 记录「测试连接」就地展示延迟与服务端版本；按钮可用性判定未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.connection.actions.save"
@@ -777,14 +613,6 @@ spec_hash = "98c6cad015aa"
 commit = "7436cd5"
 evidence = "GTK --qa-profile --qa-action save 验证新建；tests/ui/linux/test_06_mcp_access.py 验证编辑、UUID 与 revision。"
 
-[component.sync.windows]
-state = "blocked"
-note = "本条共享档案行为由 I5 冻结，当前端仍使用旧档案路径。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 已保存连接前端未接入。"
-
 [[component]]
 id = "dialogs.connection.actions.cancel"
 parent = "dialogs.connection.actions"
@@ -807,15 +635,6 @@ state = "done"
 spec_hash = "ed87dc8ff640"
 commit = "7436cd5"
 evidence = "dialog.rs cancel 接线与注释"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.about"
@@ -851,15 +670,6 @@ spec_hash = "5d6291ee129b"
 commit = "7436cd5"
 evidence = "§1.4 帮助 → 关于 + ui.rs show_about 逐行对照"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.about.app_info"
 parent = "dialogs.about"
@@ -882,15 +692,6 @@ state = "done"
 spec_hash = "dab9db0aba6d"
 commit = "7436cd5"
 evidence = "ui.rs show_about 应用信息三行"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.about.protocol"
@@ -919,15 +720,6 @@ state = "done"
 spec_hash = "4a8b0ceaf7d2"
 commit = "7436cd5"
 evidence = "ui.rs backend_diagnostic_lines 首行与未握手分支"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "dialogs.about.diagnostics"
@@ -961,15 +753,6 @@ spec_hash = "f1e04163a20b"
 commit = "7436cd5"
 evidence = "ui.rs backend_diagnostic_lines + 会话行拼装"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "dialogs.about.privacy_note"
 parent = "dialogs.about"
@@ -991,12 +774,3 @@ state = "done"
 spec_hash = "5d6546bb291c"
 commit = "7436cd5"
 evidence = "ui.rs show_about 结尾说明行"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""

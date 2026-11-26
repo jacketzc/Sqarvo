@@ -9,8 +9,8 @@
     mark               把某端记录的 spec_hash 刷新为当前规范哈希
     pending [--release v0.3.0]
                        列出退役组件（deprecated / removed）与各端清理进度
-    release-check [--release v0.3.0]
-                       发版门禁：已支持平台（Linux / Windows）的 active 组件必须 done / na / blocked
+    release-check [--release v0.3.0] [--full]
+                       发版门禁：Active 平台的 active / deprecated 组件必须 done / na / blocked
 
 设计约束（不要为了「方便」放宽）：
   * 数字只来自 metrics.toml，颜色只来自主题 token —— 组件里出现 px 或 #RRGGBB 是缺陷；
@@ -36,10 +36,26 @@ ICONS_PATH = REPO / "docs/ui-specification/icons.toml"
 LINUX_SRC_DIR = REPO / "frontend/linux/src"
 LINUX_ICON_DIR = REPO / "frontend/linux/resources/icons"
 
-PLATFORMS = ("linux", "windows", "macos")
 PLATFORM_LABEL = {"linux": "Linux", "windows": "Windows", "macos": "macOS"}
-# 当前支持的桌面端：发版门禁只看这两端。macOS 未接入，不参与门禁。
-SUPPORTED_PLATFORMS = ("linux", "windows")
+PLATFORM_CONFIG = REPO / "frontend/platforms.toml"
+
+
+def load_platform_states() -> dict[str, str]:
+    try:
+        states = tomllib.loads(PLATFORM_CONFIG.read_text(encoding="utf-8")).get("platforms")
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"{PLATFORM_CONFIG}: {exc}") from exc
+    if not isinstance(states, dict) or states.keys() != PLATFORM_LABEL.keys():
+        raise SystemExit(f"{PLATFORM_CONFIG}: 必须为 {', '.join(PLATFORM_LABEL)} 分别配置状态")
+    if any(state not in ("active", "rewriting", "planned") for state in states.values()):
+        raise SystemExit(f"{PLATFORM_CONFIG}: 状态必须是 active / rewriting / planned")
+    if "active" not in states.values():
+        raise SystemExit(f"{PLATFORM_CONFIG}: 至少需要一个 Active 前端")
+    return states
+
+
+PLATFORM_STATES = load_platform_states()
+ACTIVE_PLATFORMS = tuple(p for p in PLATFORM_LABEL if PLATFORM_STATES[p] == "active")
 
 KINDS = {"area", "container", "control", "row", "cell", "item", "slot"}
 STATUSES = {"active", "deprecated", "removed"}
@@ -82,12 +98,10 @@ HASH_EXCLUDE = {"sync", "impl_notes", "platform_notes"}
 ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 REF_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift)):(\d+)(?:-(\d+))?")
 REF_BARE_RE = re.compile(r"((?:frontend/)?[\w./-]+\.(?:rs|xaml|cs|swift))")
-# Windows 台账里「未核对（待核）」的标记：done 时不允许出现，否则等于没核对就宣称完成。
-PENDING_RE = re.compile("待核")
 TOKEN_RE = re.compile(r"@([A-Za-z0-9_]+)")
 HEX_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
 ICONS: dict[str, dict] = {}
-NATIVE_RE = re.compile(r"^gtk:.+ / winui:.+ / swift:.+$")
+NATIVE_RE = re.compile(r"^gtk:.+$")
 
 
 class Report:
@@ -153,21 +167,6 @@ def load_icons(rep: "Report") -> dict[str, dict]:
             )
         elif linux.startswith("sqarvo-") and not (LINUX_ICON_DIR / f"{linux}.svg").is_file():
             rep.error(f"icons.toml#{iid}", f"自有图标缺 SVG：resources/icons/{linux}.svg")
-        winui = str(icon.get("winui", ""))
-        if not re.match(r"^([0-9A-Fa-f]{4}|待核)$", winui):
-            rep.error(f"icons.toml#{iid}", f"winui 应为 4 位十六进制码点或「待核」，现为 {winui!r}")
-        # 码点必须配官方字形名，否则没人能复核这 4 位数字是从哪来的（AGENTS §8.1：不许猜码点）。
-        winui_name = str(icon.get("winui_name", ""))
-        if winui != "待核":
-            if not winui_name:
-                rep.error(f"icons.toml#{iid}", "winui 有码点但缺 winui_name（Segoe Fluent 字形名）")
-            elif not re.match(r"^[A-Za-z][A-Za-z0-9]*$", winui_name):
-                rep.error(
-                    f"icons.toml#{iid}",
-                    f"winui_name 应为官方字形名（ASCII 字母数字），现为 {winui_name!r}",
-                )
-        elif winui_name:
-            rep.error(f"icons.toml#{iid}", "winui 还是「待核」却写了 winui_name，删掉或补上码点")
     return icons
 
 
@@ -327,11 +326,11 @@ def check_component(
     if native is not None and not NATIVE_RE.match(native):
         rep.error(
             where,
-            f"native_control 应形如 `gtk:<控件> / winui:<控件> / swift:<控件>`，现为 {native!r}",
+            f"native_control 应以 `gtk:<控件>` 开头，现为 {native!r}",
         )
 
     sync = comp.get("sync", {})
-    for plat in PLATFORMS:
+    for plat in ACTIVE_PLATFORMS:
         entry = sync.get(plat)
         if not entry:
             rep.error(where, f"缺少 sync.{plat}")
@@ -361,26 +360,6 @@ def check_component(
         note = entry.get("note") or comp.get("platform_notes", {}).get(plat)
         if state in {"partial", "na", "blocked", "present"} and not note:
             rep.warn(where, f"sync.{plat}={state} 但没有说明（note / platform_notes.{plat}）")
-        # Windows 侧没有 CI 构建与手势级 QA，唯一能拦住「口述 done」的就是这条锚点规则：
-        # evidence / note 里必须有一条 frontend/windows/…:行，并且路径与行号要真实存在。
-        # P1 先记 warning（82 条 partial 尚未补锚点），转 error 的触发条件写在 Issue 里。
-        if plat == "windows" and state in {"done", "partial"}:
-            blob = " ".join(x for x in (entry.get("evidence") or "", note or "") if x)
-            if state == "done" and PENDING_RE.search(blob):
-                rep.error(
-                    where,
-                    "sync.windows=done 但依据里写着「待核」：没核对过就只能记 partial/none",
-                )
-            win_refs = [r for r in REF_RE.findall(blob) if r[0].startswith("frontend/windows/")]
-            if not win_refs:
-                rep.warn(
-                    where,
-                    "sync.windows 的 evidence/note 里没有 frontend/windows/…:行 锚点"
-                    "（P1 转 error；先按代码核对再补）",
-                )
-            else:
-                joined = "；".join(f"{path}:{start}" + (f"-{end}" if end else "") for path, start, end in win_refs)
-                check_source(where, joined, rep)
 
 
 def run_check(strict: bool) -> int:
@@ -417,13 +396,12 @@ def run_check(strict: bool) -> int:
             )
 
     total = len(all_ids)
-    pending = sum(1 for i in ICONS.values() if str(i.get("winui", "")) == "待核")
-    print(f"组件总数：{total}（{len(areas)} 个功能区）· 图标语义 {len(ICONS)} 条（winui 待核 {pending}）")
+    print(f"组件总数：{total}（{len(areas)} 个功能区）· 图标语义 {len(ICONS)} 条")
     for item in areas:
         area = item["area"]
         comps = item["components"]
         line = [f"  {area.get('display_name', '?')}（{area['id']}）：{len(comps)} 个"]
-        for plat in PLATFORMS:
+        for plat in ACTIVE_PLATFORMS:
             counts: dict[str, int] = {}
             for comp in comps:
                 state = comp.get("sync", {}).get(plat, {}).get("state", "?")
@@ -486,11 +464,18 @@ def run_gen() -> int:
     out.append("> [ADR 0027](../decisions/0027-ui-component-registry.md)。")
     out.append("")
 
+    platform_columns = "".join(f" {PLATFORM_LABEL[p]} |" for p in ACTIVE_PLATFORMS)
+    platform_separators = "---|" * len(ACTIVE_PLATFORMS)
+    out.append("前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：" + "、".join(
+        f"{PLATFORM_LABEL[p]} {state.title()}" for p, state in PLATFORM_STATES.items()
+    ) + "。同步列仅显示 Active 平台。")
+    out.append("")
+
     total = sum(len(a["components"]) for a in areas)
     out.append(f"共 {total} 个组件 / {len(areas)} 个功能区。同步列：`done` 已实现并按本规范核对过，")
     out.append("`partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，")
     out.append("`blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」")
-    out.append("与「还留着」的清理进度（见文末「待清理」）。")
+    out.append("与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。")
     out.append("")
 
     for item in areas:
@@ -500,15 +485,14 @@ def run_gen() -> int:
         if area.get("summary"):
             out.append(area["summary"])
             out.append("")
-        out.append("| 组件 | 名称 | kind | 状态 | Linux | Windows | macOS |")
-        out.append("|---|---|---|---|---|---|---|")
+        out.append("| 组件 | 名称 | kind | 状态 |" + platform_columns)
+        out.append("|---|---|---|---|" + platform_separators)
         for comp in item["components"]:
             indent = comp["id"].count(".")
             name = "　" * indent + comp.get("display_name", "")
             out.append(
-                f"| `{comp['id']}` | {name} | {comp.get('kind', '')} | {comp.get('status', '')} "
-                f"| {sync_cell(comp, 'linux')} | {sync_cell(comp, 'windows')} "
-                f"| {sync_cell(comp, 'macos')} |"
+                f"| `{comp['id']}` | {name} | {comp.get('kind', '')} | {comp.get('status', '')} |"
+                + "".join(f" {sync_cell(comp, p)} |" for p in ACTIVE_PLATFORMS)
             )
         out.append("")
 
@@ -552,12 +536,15 @@ def run_gen() -> int:
                 ids = [icons] if isinstance(icons, str) else list(icons)
                 out.append("- 图标：" + "、".join(f"`{i}`" for i in ids))
             if comp.get("native_control"):
-                out.append("- 原生控件：" + comp["native_control"])
+                # 旧选型附录仍在原字段里，保留既有规范哈希。
+                out.append("- 原生控件：" + comp["native_control"].split(" / winui:", 1)[0])
             if comp.get("hand_drawn"):
                 out.append("- 自绘：" + comp.get("why_not_native", ""))
             elif comp.get("why_not_native"):
                 out.append("- 原生选型说明：" + comp["why_not_native"])
-            notes = comp.get("platform_notes", {})
+            notes = {
+                p: note for p, note in comp.get("platform_notes", {}).items() if p in ACTIVE_PLATFORMS
+            }
             if notes:
                 out.append(
                     "- 平台差异：" + "；".join(f"{PLATFORM_LABEL.get(k, k)}：{v}" for k, v in notes.items())
@@ -565,7 +552,7 @@ def run_gen() -> int:
             sync = comp.get("sync", {})
             if sync:
                 parts = []
-                for plat in PLATFORMS:
+                for plat in ACTIVE_PLATFORMS:
                     entry = sync.get(plat, {})
                     state = entry.get("state", "?")
                     detail = entry.get("note") or entry.get("evidence") or ""
@@ -598,15 +585,16 @@ def run_gen() -> int:
         retired.sort(key=lambda c: (str(c.get("removed_in", "")), c["id"]))
         out.append("## 待清理（按版本）")
         out.append("")
-        out.append("退役组件的条目**不删**：别的端要靠它知道「要去掉什么」。三端都成 `已清` 之后再归档。")
+        out.append("退役组件待所有 Active 平台清理或标明不适用后归档。")
         out.append("")
-        out.append("| 版本 | 组件 | 名称 | status | Linux | Windows | macOS | 理由 |")
-        out.append("|---|---|---|---|---|---|---|---|")
+        out.append("| 版本 | 组件 | 名称 | status |" + platform_columns + " 理由 |")
+        out.append("|---|---|---|---|" + platform_separators + "---|")
         for comp in retired:
             out.append(
                 f"| {comp.get('removed_in', '?')} | `{comp['id']}` | {comp.get('display_name', '')} "
-                f"| {comp.get('status')} | {sync_cell(comp, 'linux')} | {sync_cell(comp, 'windows')} "
-                f"| {sync_cell(comp, 'macos')} | {comp.get('removed_reason', '—')} |"
+                f"| {comp.get('status')} |"
+                + "".join(f" {sync_cell(comp, p)} |" for p in ACTIVE_PLATFORMS)
+                + f" {comp.get('removed_reason', '—')} |"
             )
         out.append("")
 
@@ -619,8 +607,10 @@ def run_gen() -> int:
 
 
 def run_mark(cid: str | None, plat: str, all_mode: bool) -> int:
-    if plat not in PLATFORMS:
+    if plat not in PLATFORM_STATES:
         raise SystemExit(f"未知平台：{plat}")
+    if plat not in ACTIVE_PLATFORMS:
+        raise SystemExit(f"{PLATFORM_LABEL[plat]} 为 {PLATFORM_STATES[plat].title()}，不接受主线同步标记")
     areas = load_areas()
     touched = 0
     for item in areas:
@@ -706,7 +696,7 @@ def run_pending(release: str | None) -> int:
             print(f"\n{version}")
             current = version
         parts = []
-        for plat in PLATFORMS:
+        for plat in ACTIVE_PLATFORMS:
             state = comp.get("sync", {}).get(plat, {}).get("state", "?")
             parts.append(f"{PLATFORM_LABEL[plat]} {label.get(state, state)}")
         print(f"  {comp['id']}「{comp.get('display_name', '')}」（{comp.get('status')}）")
@@ -729,8 +719,8 @@ def parse_version(text: str | None) -> tuple[int, int, int]:
     return tuple(int(g) if g else 0 for g in m.groups())  # type: ignore[return-value]
 
 
-def run_release_check(release: str | None) -> int:
-    """发版门禁：已支持平台上，产品里还存在的组件必须已同步。
+def run_release_check(release: str | None, full: bool = False) -> int:
+    """发版门禁：Active 平台上，产品里还存在的组件必须已同步。
 
     done 要求哈希与当前规范一致（否则就是"规范改了没重新核对"）；na / blocked 不算缺口 ——
     前者该平台不做，后者是平台能力限制且已在契约 §9 记录。--release 额外检查该版本要删的组件。
@@ -745,14 +735,14 @@ def run_release_check(release: str | None) -> int:
             status = comp.get("status")
             if status == "removed":
                 if target and parse_version(comp.get("removed_in")) <= target:
-                    for plat in SUPPORTED_PLATFORMS:
+                    for plat in ACTIVE_PLATFORMS:
                         state = comp.get("sync", {}).get(plat, {}).get("state")
                         if state in {"removed", "na"}:
                             ok += 1
                         else:
                             gaps.append((comp["id"], plat, f"退役未清理（{state}）"))
                 continue
-            for plat in SUPPORTED_PLATFORMS:
+            for plat in ACTIVE_PLATFORMS:
                 entry = comp.get("sync", {}).get(plat) or {}
                 state = entry.get("state")
                 if state == "done":
@@ -765,8 +755,11 @@ def run_release_check(release: str | None) -> int:
                 else:
                     gaps.append((comp["id"], plat, state or "缺失"))
 
-    print("发版门禁：已支持平台 " + " / ".join(PLATFORM_LABEL[p] for p in SUPPORTED_PLATFORMS)
-          + "（macOS 未接入，不参与）")
+    print("发版门禁：Active 平台 " + " / ".join(PLATFORM_LABEL[p] for p in ACTIVE_PLATFORMS))
+    inactive = [f"{PLATFORM_LABEL[p]} {state.title()}" for p, state in PLATFORM_STATES.items()
+                if p not in ACTIVE_PLATFORMS]
+    if inactive:
+        print("不参与门禁：" + "、".join(inactive))
     if release:
         print(f"目标版本：{release}（同时检查该版本要删的组件是否已清干净）")
     if not gaps:
@@ -778,10 +771,10 @@ def run_release_check(release: str | None) -> int:
         by_plat[plat] = by_plat.get(plat, 0) + 1
     print(f"\n通过 {ok} 项，缺口 {len(gaps)} 条（"
           + "、".join(f"{PLATFORM_LABEL[p]} {n}" for p, n in sorted(by_plat.items())) + "）")
-    for cid, plat, why in gaps[:40]:
+    for cid, plat, why in (gaps if full else gaps[:40]):
         print(f"  x {cid} [{plat}] {why}")
-    if len(gaps) > 40:
-        print(f"  …还有 {len(gaps) - 40} 条（跑 check 看全量）")
+    if not full and len(gaps) > 40:
+        print(f"  …还有 {len(gaps) - 40} 条（加 --full 看全量）")
     print("\n发版被门禁拦住。要么补齐实现并 mark，要么按 AGENTS.md §14.4 在发布说明里列明并取得批准。")
     return 1
 
@@ -810,7 +803,7 @@ def main(argv: list[str]) -> int:
         for i, a in enumerate(args):
             if a == "--release" and i + 1 < len(args):
                 release = args[i + 1]
-        return run_release_check(release)
+        return run_release_check(release, full="--full" in args)
     if cmd == "mark":
         plat = "linux"
         cid = None

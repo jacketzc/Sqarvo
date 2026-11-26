@@ -10,7 +10,7 @@
 | v0.2.1 | 数据浏览与编辑 | 表数据浏览、安全编辑、事务状态 | 已完成（M4） |
 | v0.2.2 | 数据库对象管理 | 对象树、列信息、DDL、对象搜索、插入行 | 已完成（2026-11-06） |
 | v0.2.3 | 工作区 UI 重构 | 六区域外壳、多连接对象树、标签工作区（一标签一会话）、表格排序/筛选/分页、对象信息面板、导出 CSV | 已完成（2026-11-07，M7） |
-| v0.2.4 | 三端/三驱动可用版本 | 三平台、SQLite/MariaDB/PostgreSQL、性能与安全验收、打包 | 未开始 |
+| v0.2.4 | 多驱动与主线硬化 | Active 前端、SQLite/MariaDB/PostgreSQL、性能与安全验收、打包 | 未开始 |
 | v0.2.5 | 导入导出与结构管理 | CSV/JSON/SQL 导入导出、结构对比与迁移脚本 | 未开始 |
 | v0.3 | MCP 对外接口 V1 | 独立 `sqarvo-mcp` stdio 进程：MCP 配置与连接授权、SQL 只读安全策略、结构发现与只读查询工具、Resources、审计 | 进行中（M9，#207–#212） |
 | v0.4 | 共享连接档案与 MCP 全局访问 | 共享档案、GTK 服务接入、全局访问与只读策略、旧档案迁移 | 进行中（[M10](https://github.com/jacketzc/Sqarvo/milestone/11)） |
@@ -40,7 +40,7 @@
   （一标签一会话）、表格排序/筛选/offset 分页与总数三态、信息面板、导出当前结果/当前页 CSV；
   契约增量（`BrowseTable` 的 offset/排序/筛选/总数/计数超时）只追加、旧客户端行为不变。
   验证记录与已知限制见 [v0.2.3 发布说明](../releases/v0.2.3.md)；
-- 前端：Linux 已接入后端并可查询；Windows / macOS 仅有窗口骨架，未接后端、未构建验证；
+- 前端：Linux 已接入后端并可查询；Windows 前端独立重写，macOS 保留规划，见[前端平台状态](../../frontend/platforms.toml)；
 - v0.2.3 范围已于 2026-11-07 调整：由「导入导出与结构管理」改为「工作区 UI 重构」
   （[workspace-model.md](../ui-specification/workspace-model.md)），导入导出与结构对比顺延到
   v0.2.5；里程碑对应关系见 [milestones.md](../planning/milestones.md) 的「范围调整记录」；

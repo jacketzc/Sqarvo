@@ -48,15 +48,6 @@ spec_hash = "36a17ac4ffc4"
 commit = ""
 evidence = "v0.2.5 Linux 客户端；§5.1–§5.10 逐条对照 data_page.rs（begin_open / show_open / 四态）"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "36a17ac4ffc4"
-note = "§7.1 记录数据页（#173）已落地，但版面是「页内动作行 + 状态栏行 2」，没有页内徽标行 / 逐行错误列表 / 占位页；差异见本文件各条目的 windows note。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.toolbar"
 parent = "data_page"
@@ -79,14 +70,6 @@ spec_hash = "dfb24c39e473"
 commit = ""
 evidence = "§5.1 单行工具条；data_page.rs new() 的 controls 行 + --qa-layout-audit「表格工具条 / 状态簇」两项"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "dfb24c39e473"
-note = "§7.1：页内动作行是「上一页 / 下一页 / 加载更多…」+ 编辑动作，没有筛选 / 列显隐 / 导出，也没有状态簇；事务与脏行写在状态栏行 2。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 [[component]]
 id = "data_page.toolbar.commit"
 parent = "data_page.toolbar"
@@ -136,14 +119,6 @@ source = "src/data_page.rs:6743、src/data_page.rs:4289"
 state = "removed"
 note = "工具条提交按钮已从 data_page.rs 删除；提交走 status_bar.row1.ops.apply（RowOp::Apply → on_commit_clicked），在途取消走 status_bar.row1.ops.cancel。"
 
-[component.sync.windows]
-state = "na"
-note = "Windows 从来没有工具条提交按钮：提交走状态栏「应用（✓）」与 Ctrl+S 的同一条 SubmitDataAsync 路径，无需清理。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端未接入，本来就没有该按钮。"
-
 [[component]]
 id = "data_page.toolbar.begin_txn"
 parent = "data_page.toolbar"
@@ -184,15 +159,6 @@ spec_hash = "befede8178a5"
 commit = ""
 evidence = "§5.1 开始事务 / §5.2；begin_transaction + begin_tooltip；驱动不支持时落只读原因 capability.unsupported"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "befede8178a5"
-note = "§7.1：第一次暂存才 Begin（没有改动就没有事务），没有隔离级别卡片与只读勾选；驱动不支持显式事务时如实退回自动提交。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.toolbar.commit_txn"
 parent = "data_page.toolbar"
@@ -226,15 +192,6 @@ spec_hash = "4fc4ee55abba"
 commit = ""
 evidence = "§5.1 / §5.2 事务按钮互斥与失败态；commit_transaction + sync_badge"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "4fc4ee55abba"
-note = "§7.1：Ctrl+S = ApplyRowChanges（带 transaction_id）→ 全部成功再 Commit；没有「提交事务」文字按钮，失败行保留在原处可重试。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.toolbar.rollback_txn"
 parent = "data_page.toolbar"
@@ -261,15 +218,6 @@ state = "done"
 spec_hash = "00a535b0c5fd"
 commit = ""
 evidence = "§5.1 回滚事务 / §8.2 回滚确认；rollback_transaction 的 AlertDialog"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "00a535b0c5fd"
-note = "§7.1：Ctrl+Z / 状态栏「撤销（↶）」= 丢弃暂存 + Rollback，不弹确认对话框；有未提交改动时关页 / 关窗第一次只提示。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.toolbar.status_cluster"
@@ -320,15 +268,6 @@ spec_hash = "d58ad0f374b3"
 commit = ""
 evidence = "§5.1 工具条状态簇与「操作结果收进圆点」；set_state / set_status / note_action"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录工具条状态簇：Windows 的脏行数 / 提交中 / 已回滚写在状态栏行 2 右侧。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.toolbar.status_dot"
 parent = "data_page.toolbar"
@@ -367,15 +306,6 @@ spec_hash = "54dca8a34269"
 commit = ""
 evidence = "§5.1 状态圆点三态 / §5.2 事务状态的可见表达；sync_status_dot + update_dirty_label"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录工具条状态圆点：数据页状态按优先序写在状态栏行 2 右侧（只读 / 自动提交 / 未提交 N 行 / 提交中… / 已回滚）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.toolbar.filter"
 parent = "data_page.toolbar"
@@ -411,15 +341,6 @@ spec_hash = "5c08cf8d11ae"
 commit = ""
 evidence = "§5.1 / §5.3 能力位与面板开合；toggle_filter_panel + show_open"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：Windows 数据页没有筛选 / 排序入口。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.toolbar.columns"
 parent = "data_page.toolbar"
@@ -449,15 +370,6 @@ state = "done"
 spec_hash = "04602b802e72"
 commit = ""
 evidence = "§5.1 列显隐 / §5.3 列显隐卡片；open_column_visibility"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：Windows 数据页没有列显隐入口。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.toolbar.columns.card"
@@ -497,15 +409,6 @@ spec_hash = "8ab6fd053dde"
 commit = ""
 evidence = "§5.3 列显隐卡片；cc_card 构建 + on_column_choice_toggled"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：Windows 数据页没有列显隐卡片。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.toolbar.export"
 parent = "data_page.toolbar"
@@ -542,15 +445,6 @@ spec_hash = "c820bd6cf424"
 commit = ""
 evidence = "§5.1 导出 ▾ / §5.7 入口；MenuButton + 三个菜单项走 export_ui::begin"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：Windows 数据页没有导出入口（对象树条目同样写明「数据页导出亦未实现」）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.export_menu"
 parent = "data_page"
@@ -571,15 +465,6 @@ state = "done"
 spec_hash = "2cc1e43b8e8f"
 commit = ""
 evidence = "§5.7 三种出口共用一条流程；data_page new() 的 export popover + export_ui::begin"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：无导出菜单。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.export_menu.csv"
@@ -615,15 +500,6 @@ spec_hash = "cbec81923beb"
 commit = ""
 evidence = "§5.7 CSV 出口 / §6.1 导出口径与公式注入防护；export_ui::begin(ExportKind::Csv)"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：无导出。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.export_menu.insert"
 parent = "data_page.export_menu"
@@ -652,15 +528,6 @@ spec_hash = "a3adabf3c3b6"
 commit = ""
 evidence = "§5.7 INSERT 写出口径；export_ui::begin(ExportKind::Insert) + export 的 sql_literal / write_insert"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：无导出。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.export_menu.dump"
 parent = "data_page.export_menu"
@@ -687,15 +554,6 @@ state = "done"
 spec_hash = "e4cbbb528dcd"
 commit = ""
 evidence = "§5.7 转储表内容；export_ui::begin_object_dump + run_whole_table_export"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录：无转储表入口。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.badges"
@@ -730,15 +588,6 @@ state = "done"
 spec_hash = "efc84d117a14"
 commit = ""
 evidence = "§5.1 表头上方徽标行 / §5.6 权限不足；update_badges + show_failure"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录页内徽标行：只读 / 无主键 / 驱动不支持只作为编辑被拒的原因出现在提示里。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.grid"
@@ -803,15 +652,6 @@ spec_hash = "887ee82ba6d8"
 commit = ""
 evidence = "§5.4 网格结构 / §5.5 offset 分页与总数三态；build_columns + navigate + scroll_to_top"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "ac2a249587f8"
-note = "§7.1 + 改动确认单 #2：行号列 row_number_width、单行表头、row_height_data / column_width、横向滚动一致；列头把手 column_resize_hit 命中热区（SizeWestEast），拖动改列宽、双击按本页内容自适应，受 column_min_width / column_width 约束；拖动位移取 RowsGrid 坐标（把手自己随列宽移动，用把手取点会来回抖）；表头与所有行共用一份列宽状态，翻页 / 刷新 / 重读（列未载入的那一帧）不覆写用户宽度、换表重置（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1833 把手构造、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2182 WireColumnResize、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2161 ApplyColumnWidthLive、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2120 EnsureColumnWidths）。仍 partial：每页 200 行（非 500）、无页内徽标行 / 逐行错误列表 / 占位页 / 新行占位。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.grid.header"
 parent = "data_page.grid"
@@ -852,15 +692,6 @@ spec_hash = "eb55028d5e3c"
 commit = ""
 evidence = "§5.3 表头排序标记 / §5.4 点列头；refresh_header_tooltips + header_title_text；Linux 表头无 PK 标记（见 impl_notes）"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "eb55028d5e3c"
-note = "§7.1：列头「列名 · 原始类型（· PK）」，没有类型信息时只写列名；列右缘现在是可拖宽的把手（column_resize_hit 命中热区 + 双击自适应），列宽不再固定 column_width，表头与行共用一份列宽状态（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2182）；没有排序标记与点击查看列属性。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.grid.row_number"
 parent = "data_page.grid"
@@ -894,15 +725,6 @@ state = "done"
 spec_hash = "c09290d4c459"
 commit = ""
 evidence = "§5.4 行号标记；build_columns 的 number_factory（●N / ✕N / ＋ 与四条 tooltip）"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "c09290d4c459"
-note = "§7.1：脏行在行号列显示 ●N（tooltip「有未提交的更改」）、被其它会话删除的行显示 ✕N；行号 = offset + 下标 + 1，右对齐等宽。未记录新行占位「＋」。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1866 行号列宽、:1864 行号单元格；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.grid.cell"
@@ -945,15 +767,6 @@ state = "done"
 spec_hash = "0a982d98943d"
 commit = ""
 evidence = "§5.4 单击 / 双击 / 脏行底色 / NULL 与空串；cell_factory bind + edit_block_reason"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "0a982d98943d"
-note = "§7.1：NULL 用弱色斜体 NULL、空串保持空白；双击或 F2 进入编辑；编辑被拒逐条给原因（只读表、主键列、行不可定位、值被截断、类型不在就地编辑范围）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:970 BeginCellEdit、:1017 CommitCellEdit、:1997 NULL 文案；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.editor"
@@ -1040,15 +853,6 @@ spec_hash = "d0c44be7dc7d"
 commit = ""
 evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "d0c44be7dc7d"
-note = "§7.1：格内就地编辑（双击 / F2），Enter 暂存、Esc 取消、点别处按暂存；编辑被拒五类原因逐条说明；没有「设为 NULL」勾选与类型提示行。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.row_menu"
 parent = "data_page"
@@ -1083,16 +887,6 @@ spec_hash = "a060853acbec"
 commit = ""
 evidence = "§5.8 数据行右键菜单；show_row_menu + context_menu 模块"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "a060853acbec"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2574 行右键 MenuFlyout（删除行 / 复制为 ▸ 复制为 INSERT）；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2034 ✕N 行号与整行删除线 + 压暗"
-note = "已落地：手势挂在整行 Grid 上（单元格文字 / 列分隔处 / 行分隔线 / 末列右侧空白都落在同一行容器里），表格下方空白不属于任何行、不挂手势；右键先选中该行，菜单用 WinUI 原生 MenuFlyout / MenuFlyoutSubItem（不是 GTK 弹层），点菜单外由 WinUI 收起。差异：Windows 数据页当前是单选、没有 Ctrl/Shift 多选集，没有 Linux 的状态圆点 tooltip 末段「最近一次操作」；故记 partial，不宣称与 Linux 逐字一致。见 docs/planning/windows-frontend-parity-plan.md §8.2。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.row_menu.delete"
 parent = "data_page.row_menu"
@@ -1119,16 +913,6 @@ spec_hash = "c1d666ff7ed9"
 commit = ""
 evidence = "§5.8 删除行；delete_selected_row + delete_note"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "c1d666ff7ed9"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2596 删除入口；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:1354 提交请求；frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:649 移除已提交的删除行"
-note = "S6-a 删除确认、按钮及取消反馈接入共享文案（frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2615）；确认仍只标记行，提交后写入数据库。现有 Windows 单选与状态栏结果文案差异仍在，Windows 构建及模态确认未验收。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.row_menu.copy_insert"
 parent = "data_page.row_menu"
@@ -1154,16 +938,6 @@ state = "done"
 spec_hash = "71912e7913bd"
 commit = ""
 evidence = "§5.8 复制为 INSERT；copy_selected_as_insert + export 的 multi_row_insert"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "71912e7913bd"
-evidence = "frontend/windows/Sqarvo.Windows/Workspace/DataModel.cs:1218 多值 INSERT 生成器；frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:2646 写入系统剪贴板"
-note = "始终可用（只读连接也能复制数据），复用既有值格式化口径 QueryCellText.Format。Windows 端没有现成的导出 INSERT 生成器（Linux 的在 frontend/linux/src/export.rs，Rust，不可直接复用），因此在 Workspace/DataModel.cs 内按注册表写出口径实现最小生成器 DataInsertSql：把选中行当前值（含未提交编辑）合成一条多值 INSERT INTO 表 (列清单) VALUES (…),(…); 写进系统剪贴板；标识符双引号、字符串单引号（' 转义成 ''）、NULL 写 NULL、BLOB / 非有限浮点 / 截断值写 NULL 并在末尾附 sqarvo 注释。差异：标识符固定双引号、不按驱动区分 SQLite / MariaDB，剪贴板写入失败只写状态行 warning；故记 partial。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.detail"
@@ -1210,15 +984,6 @@ state = "done"
 spec_hash = "04aa5ddb1ed8"
 commit = ""
 evidence = "§5.9 展示形式切换；toggle_detail_view / set_detail_mode / fill_detail / detail_cell_factory"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录展示形式切换（Windows 只有按行浏览）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.filter_panel"
@@ -1281,15 +1046,6 @@ spec_hash = "ec72d4f8c528"
 commit = ""
 evidence = "§5.3 打开 / 关闭 / 应用 / 清空 / 草稿模型；open_filter_panel + apply_browse_options + clear_filter"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录筛选与排序面板（Windows 数据页没有筛选 / 排序入口）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.filter_panel.condition_composer"
 parent = "data_page.filter_panel"
@@ -1328,15 +1084,6 @@ state = "done"
 spec_hash = "312faf6647dd"
 commit = ""
 evidence = "§5.3 添加筛选条件；add_filter_condition + read_condition_editor"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.filter_panel.condition_row"
@@ -1379,15 +1126,6 @@ spec_hash = "e9e25f72bb2e"
 commit = ""
 evidence = "§5.3 编辑条件；condition_label_row / condition_editor_row / commit_condition_edit"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.filter_panel.sort_composer"
 parent = "data_page.filter_panel"
@@ -1419,15 +1157,6 @@ state = "done"
 spec_hash = "17fe9d3cb21c"
 commit = ""
 evidence = "§5.3 排序键；add_sort_key"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.filter_panel.sort_row"
@@ -1469,15 +1198,6 @@ spec_hash = "127c9ad748a0"
 commit = ""
 evidence = "§5.3 排序键行；render_sort_keys + toggle_sort_key_direction / move_sort_key / remove_sort_key"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.txn_chooser"
 parent = "data_page"
@@ -1518,15 +1238,6 @@ spec_hash = "56f25f4f800b"
 commit = ""
 evidence = "§5.2 打开「开始事务」卡片；open_txn_chooser + render_isolation_options + confirm_begin_transaction"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录隔离级别卡片：Windows 第一次暂存时直接 Begin（带 transaction_id），没有级别选择。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.placeholder"
 parent = "data_page"
@@ -1552,15 +1263,6 @@ state = "done"
 spec_hash = "834f3414fa98"
 commit = ""
 evidence = "§5.6 打开表（加载中）；begin_open 的占位页分支"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录数据页占位页文案（只记录总数三态与页码写法）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.banner"
@@ -1608,15 +1310,6 @@ spec_hash = "d321694fce31"
 commit = ""
 evidence = "§5.6 只读 / 断连；show_read_only_banner + mark_disconnected"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "d321694fce31"
-note = "§7.1：只读与失败原因写在状态栏提示行（关页 / 关窗守卫也走提示行，不弹对话框）；没有页首横幅。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "data_page.errors"
 parent = "data_page"
@@ -1643,15 +1336,6 @@ state = "done"
 spec_hash = "437c40c53168"
 commit = ""
 evidence = "§5.4 提交结果；show_applied → show_failures"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "437c40c53168"
-note = "§7.1：失败的行保留在原处可重试，主键被删的行报 table_data.row_deleted、影响行数不符报 table_data.rows_affected_mismatch；没有逐行列表控件。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "data_page.query_edit"
@@ -1725,12 +1409,3 @@ state = "done"
 spec_hash = "84b4a963bda7"
 commit = ""
 evidence = "§5.10 查询结果的单表编辑（v0.2.5）；sql_page try_enable_edit / on_applied，result_edit，results 重绘"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 明确「查询结果网格在本版不支持编辑」（结果区 ReadOnly 文案即此口径），没有 + − ✓ ↶ 与暂存。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""

@@ -12,8 +12,7 @@
 
 ## 为什么是 Sqarvo
 
-- **平台原生** — WinUI 3· GTK4 · SwiftUI，各平台用系统自己的
-  控件与交互；没有 Chromium / WebView，没有 JavaScript。
+- **平台原生** — Linux 使用 GTK4 原生控件与交互；没有 Chromium / WebView，没有 JavaScript。
 - **低占用** — 空载常驻约 70 MB
 - **简洁** — 只留日常要用的：连接数据库、写 SQL、看数据、MCP 控制。
 
@@ -35,7 +34,9 @@
 
 ## 当前状态
 
-Linux 端已可端到端使用（SQLite 与 MariaDB）；Windows / macOS 仍是窗口骨架，尚未接后端。
+Linux 是 Active 前端，已可端到端使用 SQLite 与 MariaDB。旧 Windows C# 前端已退役，Windows 为
+Rewriting，macOS 为 Planned。前端发布与 UI 验收只覆盖 Active 平台。Rust 后端与 MCP 保留 Windows 支持。
+参见[平台配置](frontend/platforms.toml)与[退役决策](docs/decisions/0043-frontend-platform-scope.md)。
 
 - **已有**：连接与测试连接、密码只写系统凭据库、对象树与元数据（逐层懒加载、按名搜索）、
   SQL 编辑器与分批结果、表数据浏览 / 编辑 / 插入 / 显式事务、导出 CSV / INSERT / 转储表、
@@ -53,8 +54,7 @@ backend/               Rust workspace：Driver SPI、驱动（SQLite / MariaDB�
                        查询与事务、元数据、凭据、本地传输、gRPC 服务
 frontend/
   linux/               GTK4 + libadwaita + Rust（已接入后端）
-  windows/             WinUI 3 + C#（窗口骨架）
-  macos/               SwiftUI + Swift（窗口骨架）
+  macos/               规划中的前端原型
 docs/                  产品、规划、架构、API、驱动、UI 规范与决策记录
 tests/                 契约 / 集成测试与测试数据
 packaging/             各平台打包
@@ -96,7 +96,7 @@ SQARVO_MARIADB_URL='mysql://sqarvo_test:***@127.0.0.1:53306/sqarvo_test' \
 
 测试库启动方式见 [tests/integration/README.md](tests/integration/README.md)。
 
-> 目前只在 Linux 上做过构建与测试；Windows / macOS 的传输与 UI 代码未在本机验证。
+> Linux 是当前前端构建与发布目标。Windows 上构建后端或 MCP 时，使用 Windows Rust 工具链与同一 Cargo 工作区。
 
 ## MCP Server
 

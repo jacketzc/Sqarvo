@@ -39,15 +39,6 @@ state = "done"
 spec_hash = "aca4e74230da"
 evidence = "v0.2.5 Linux 客户端；§4 十一条逐条对照 tabs.rs（标签条 + 查询标签）"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "aca4e74230da"
-note = "TabView 承载：固定 Objects 页（IsClosable=false、不占名额）+ 可关闭的查询 / 数据页；标签条外形与密度档 §7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.strip"
 parent = "tabs"
@@ -68,15 +59,6 @@ impl_notes = [
 state = "done"
 spec_hash = "08a335ff11c2"
 evidence = "§4 标签条；theme.rs `.sqarvo-tab-strip` / `.sqarvo-tab-bar` 规则"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "08a335ff11c2"
-note = "TabView 自带标签条（查询页可关闭、Objects 钉首位）；标签条上的 ＋ 按钮与拖拽重排 §7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.strip.tab"
@@ -111,15 +93,6 @@ source = "src/tabs.rs:2830、src/tabs.rs:2845、src/tabs.rs:2850"
 state = "done"
 spec_hash = "6c8176f57385"
 evidence = "§4 切换标签 / 标签被摘掉两行；select_page 与 on_page_detached"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "6c8176f57385"
-note = "标签可切、可关；切换不重建会话与 detach 时释放会话的顺序 §7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.strip.tab.table"
@@ -157,15 +130,6 @@ state = "done"
 spec_hash = "044d086043af"
 evidence = "§4 表数据标签标题 / 打开表 / 复用三行；table_tab_title 与 tooltip_for"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "044d086043af"
-note = "标签名 `表名 @ 库`（库为空写「默认」）、同表复用、上限 8、有未提交改动带 `*` 已落地（§7.1 数据页 #173）；tooltip 的「会话 <id 前 8 位>」§7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.strip.tab.query"
 parent = "tabs.strip.tab"
@@ -178,7 +142,6 @@ impl_notes = [
   "库与连接放 tooltip：`查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`。多连接各自开着「查询 1」时靠 tooltip 区分。",
   "窗口标题仍是 `<标签标题> (<连接名>)`。",
 ]
-platform_notes.windows = "标签名后缀 `*` = 编辑器内容与「按下执行那一刻的编辑器内容」不同（v0.1 没有「保存查询」，标记口径就是「未执行」）；Linux 的标题只有「查询 N」，不带任何标记。"
 
 [[component.interaction]]
 trigger = "load"
@@ -196,15 +159,6 @@ source = "src/tabs.rs:2563"
 state = "done"
 spec_hash = "ac7f8a5083f8"
 evidence = "§4 查询标签标题；query_tab_title 递增计数器与 tooltip_for"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "ac7f8a5083f8"
-note = "标签名 `查询 N`、`*`（编辑器内容 ≠ 执行那一刻的内容，v0.1 没有「保存查询」）、上限 8 已落地（§7.1 #172）；标签 tooltip 里的库 / 连接 / 会话三段 §7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.strip.tab.close"
@@ -258,15 +212,6 @@ state = "done"
 spec_hash = "6255d75d243d"
 evidence = "§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "6255d75d243d"
-note = "`Ctrl+W` 关当前页、页面可关闭（IsClosable）已落地；关闭守卫与重复关闭请求 §7.1 未记录（数据页的关页守卫是「状态栏二次提示」，见 §7.1 数据页）。代码位置（锚点）：frontend/windows/Sqarvo.Windows/MainWindow.xaml:24 Ctrl+W 快捷键、frontend/windows/Sqarvo.Windows/Views/ShellView.Data.cs:240/1555 TabCloseRequested；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.strip.new"
 parent = "tabs.strip"
@@ -299,16 +244,6 @@ state = "done"
 spec_hash = "fe7ea1ebdea1"
 evidence = "§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "fe7ea1ebdea1"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:532（TabView.TabStripFooter 的 ＋ 按钮）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:394（IsEnabled=canQuery，与 MenuNewQueryTab 同一谓词）；frontend/windows/Sqarvo.Windows/Views/ShellView.xaml.cs:924（Click → CreateQueryTab）"
-note = "四个入口（工具条「新建查询」/ 标签条 ＋ / Ctrl+T / 菜单「文件 → 新建查询标签」）全部走 CreateQueryTab、同一 canQuery 谓词已落地；＋ 放在 TabView.TabStripFooter，不碰 IsAddTabButtonVisible / TabWidthMode / CanReorderTabs（#170 崩溃边界）。剩余差异：新建后焦点不自动落编辑器（见 tabs.query.editor）、超限提示走状态栏而非对话框（见 tabs.limit）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.limit"
 parent = "tabs"
@@ -323,7 +258,6 @@ impl_notes = [
   "同一段文案不重复弹：连点 ＋ / Ctrl+T 只留一个框，日志里仍每次记一行拒绝原因。",
   "文案不是静默失败：必须同时给出上限、当前已开数量和「先关一个」的建议。",
 ]
-platform_notes.windows = "超限提示走**状态栏**一行文字（§7.1：不弹假对话框），文案与 Linux 同一句「标签上限 8 个（当前已开 N 个）：请先关闭一个标签再新建」；Linux 是 `AdwAlertDialog`。名额也略窄：Windows 数的是查询页（与后端 `QueryClient.MaxConcurrentQueries` 对齐），Linux 数的是全部「有会话标签」（表数据 + 查询）。"
 
 [[component.interaction]]
 trigger = "load"
@@ -341,15 +275,6 @@ source = "src/tabs.rs:2895"
 state = "done"
 spec_hash = "f5202cef321d"
 evidence = "§4 标签上限；limit_message 与 show_limit"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "f5202cef321d"
-note = "上限 8 与同一段文案已落地，但走**状态栏**提示，不弹对话框（§7.1：不弹假对话框）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query"
@@ -373,15 +298,6 @@ impl_notes = [
 state = "done"
 spec_hash = "5e420c7f2c60"
 evidence = "§5.11 版面收敛；SqlPage::new 的组装顺序。库段取服务端真值：日志「新建查询标签 tab-q1：查询 1（tooltip「查询 1 · 标签会话 · 库 未指定 · 连接 catalog-qa」…）」；SQLite 档案下真值取到后为「库 main」，切库后 MariaDB 写成「库 sqarvo_test」（同一刷新路径）。单测 tooltip_uses_the_server_truth_and_never_says_default 断言真值 / 未指定两种文案且不含「默认」。"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "5e420c7f2c60"
-note = "查询页整体在代码里搭（#172，ShellView 一行未改）：动作行 / 编辑器 / 五态 / 表头 / 行区 / 加载更多；分隔线与留白 §7.1 未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query.actions"
@@ -432,15 +348,6 @@ state = "done"
 spec_hash = "6cbef17eba8a"
 evidence = "隔离 AT-SPI：test_03_sql.py 的 test_execute_sql、test_execute_selection、test_whitespace_selection_and_tab_independence、test_execute_selection_ignores_duplicate_requests 和 test_selection_rerun_after_commit 通过。断言全文与选区结果、可访问名切换、空白不提交、重复请求不提交、提交后按上次 SQL 重跑。隔离 XTEST 的 test_execute_selection[mouse-button] 通过，真实鼠标点击仅执行选区。"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "6cbef17eba8a"
-note = "按钮仍为整段执行（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889）；待接入选区范围及标签、可访问名和 tooltip 的动态切换。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.connection_picker"
 parent = "tabs.query"
@@ -480,14 +387,6 @@ source = "src/sql_page.rs:1581、src/tabs.rs:3356"
 state = "done"
 spec_hash = "5d43c4530b81"
 evidence = "真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME；两条连接 qa-mariadb / qa-sqlite 已在注册表里）：① 正向重绑——`expect-connection 1 qa-mariadb` 通过，`connection 1 qa-sqlite` 走下拉同一信号路径，日志「标签 tab-q1 重绑连接：qa-mariadb → qa-sqlite」「重绑成功：qa-sqlite（会话 sess_94b…，驱动 sqlite，请求库已清空 = 不改会话库）」「窗口标题：查询 1 (qa-sqlite)（副标题：已连接 · sqlite）」，随后未限定表名的 `SELECT tag FROM probe;` → `expect-query 1 first=sqlite-probe` 通过（表只在 SQLite 里）。② 反向重绑——`connection 1 qa-mariadb` 后「重绑成功：qa-mariadb（… 驱动 mariadb …）」「库上下文：无默认库」，同一条未限定 SQL 得到 `[mariadb.no_database]`、`expect-query 1 state=error` 通过（没有静默回落）。③ 失败保留——`connection 1 qa-broken`（保存的坏端口）→「重绑失败（保留 qa-mariadb）：[session.not_found] …连接被拒绝」、选择器文字回到「qa-mariadb」、状态行「错误 · 已保留 0 行」，随后 `SELECT VERSION()` 仍得 11.4.13-MariaDB（原连接重新建立、标签可用）。④ 同一条连接——`connection 1 qa-mariadb` 后日志里「重绑连接」0 次、「建立会话」0 次，查询照常。单测 query_binding_keeps_the_old_connection_when_a_rebind_fails、query_binding_treats_the_same_connection_as_a_no_op、connection_picker_selection_follows_the_binding。"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query.database_picker"
@@ -531,14 +430,6 @@ source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1371、src/backe
 state = "done"
 spec_hash = "6b4ee7617fae"
 evidence = "两枚选择器都不带可见文字（改动确认单 #7）：原来那行「库」caption 已从 `CatalogPicker` 删除（`grep -rn Label::new src/` 里没有「库」这一条），可访问名仍是「当前库」。本轮真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME）：MariaDB 无默认库标签上日志「库上下文：无默认库（选择器显示「未指定库」）」；SQLite 标签日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」（整枚不渲染，而连接选择器仍读到「qa-sqlite」）。历史证据：QA 脚本（独立 app id + 隔离 XDG_CONFIG_HOME，无默认库的 MariaDB 档案）：`query-tab` 后 `expect-catalog 1 未指定库` 通过（选择器显示服务端真值「无默认库」）；`catalog 1 sqarvo_test` 走下拉的同一信号路径，日志出现「请求切库：sqarvo_test」与「已切到库 sqarvo_test（服务端真值：sqarvo_test）」；`expect-catalog 1 sqarvo_test` 通过；随后执行未限定表名的 `SELECT DATABASE() AS db;`，`expect-query 1 first=sqarvo_test` 通过（执行前切库生效）。SQLite 档案（驱动未声明 `session_catalog_switch`）日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」——是整枚不渲染，不是灰块。另：对象树里选中 `sqarvo_test` 后新建查询标签，日志「请求库 sqarvo_test」，不碰选择器直接执行 `SELECT DATABASE()` 也得 sqarvo_test（新标签默认请求库 = 树当前选中项所在的库）。单测：supports_catalog_switch、query_catalog_keeps_request_and_truth_separate（cargo test --bin sqarvo-desktop：466 passed）。"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query.editor"
@@ -587,15 +478,6 @@ state = "done"
 spec_hash = "4cb7e941952a"
 evidence = "隔离 AT-SPI：test_03_sql.py 的 test_execute_selection、test_execute_selection_exact_bounds 和 test_whitespace_selection_and_tab_independence 通过。通过原生 menu.popup 打开菜单，点击首项仅返回选中语句的两个结果集；取消选区后没有附加项，纯空白选区时首项禁用。覆盖多行、Unicode、正反选区、部分语句与全文选区。隔离 XTEST 的 test_execute_selection[mouse-menu] 通过：真实右击保留选区边界，反复开关只出现一个附加项，鼠标点击首项只执行选区，取消选区后恢复原生项数。"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "4cb7e941952a"
-note = "Ctrl+Enter 仍执行整段（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889），待接入选区范围及上下文菜单首项；新建标签后焦点仍需手动进入编辑器。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.state"
 parent = "tabs.query"
@@ -630,16 +512,6 @@ platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服�
 state = "done"
 spec_hash = "0252eb126c67"
 evidence = "§5.11 保留的一句话；results.rs set_state 的可见性与 CSS 档"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "0252eb126c67"
-evidence = "frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:512（StateText：五态 + 多语句失败口径 + NoResultSet/Undelivered 两占位态）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:862（MarkFailure 带失败序号）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1501（RenderQuery 统一回写）"
-note = "#190 多语句失败口径「前 N-1 条已执行，第 N 条失败：<错误>」与 Undelivered/NoResultSet 占位态已实现（文案与 Linux results.rs:1152 逐字一致）；真类型探针编译验证（红→绿），未在本机构建/运行 WinUI，运行时文案与交互待 Windows 真机。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query.results"
@@ -704,16 +576,6 @@ state = "done"
 spec_hash = "dffd1104723a"
 evidence = "§5.11 版面收敛；ResultsView::new 的装配（src/results.rs:730）与 `.sqarvo-table-frame`；#189 显隐 src/sql_page.rs:2252（show_results）/ 2265（hide_results）；#231 定稿版式由编排者亲跑 tests/ui/linux/test_03_sql.py 10/10 PASSED（dbus-run-session 私有会话总线 + SQARVO_UI_BIN=worktree debug 二进制 + SQARVO_BACKEND_BIN=backend debug 二进制 + GDK_BACKEND=x11 DISPLAY=:0，隔离 XDG；本次复核再跑一次仍 10/10 PASS）：4 语句脚本可见页签 [\"messages\",\"summary\",\"results\"]、「结果」页签只 1 枚、默认页 results；20 条多行 INSERT 可见页签 [\"messages\",\"summary\"]（没有「结果」）、默认页 messages、窗口外框宽 1400 → 1400（`[layout-audit] 1200x800` 与 `960x640` 均「14 项中 0 项超限」，修复前基线 3472）；AT-SPI 子树每个节点恰好 1 份（换原生 gtk::Stack 后 3 refs / 3 distinct）；单测 cargo test 494 passed / clippy --all-targets -- -D warnings 0 警告 / fmt 通过"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "dffd1104723a"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:631（ResultsArea 容器装配，初始 Collapsed，五行：说明位/状态行/切换行/表头+行区/加载更多）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1279（任何 Execute 响应后显示，HasExecuteResponse 判据）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:401（HasExecuteResponse）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:938（ResetResults 关闭后回隐藏态）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:492（#190 切换行仅多语句渲染）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:512（#190 占位页）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:639（ApplyMultiFirstBatch 每语句独立网格状态）"
-note = "状态行 + 表头 + 行区 + 「加载更多」已落地；#189 显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）与最小高度 query_results_min_height 已实现；#190 语句切换行 + 占位页（无结果集 / 结果未返回）+ 每语句独立网格状态已实现（真类型探针编译验证红→绿，未在本机构建/运行 WinUI）。状态圆点与「导出 ▾」属其它区（data_page / status_bar），§7.1 只记了导出菜单存在。#231 定稿版式未接入，见 Issue #232：说明行内的三枚页签、「结果」页签按有无结果集显隐、默认页规则、结果页内结果集下拉都还没有；Windows 仍是 #190 的**独立切换行**（那条控件待按 tabs.query.results.statements 的 removed 口径清理）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.results.views"
 parent = "tabs.query.results"
@@ -752,15 +614,6 @@ source = "src/results.rs:1377、src/sql_page.rs:886、src/sql_page.rs:1391、src
 state = "done"
 spec_hash = "5b9ac6417e4d"
 evidence = "AT-SPI 只读实测（d781576 换原生容器后复测，本轮定稿版式再验）：1 组 page tab list name='结果视图页签' + 三枚 page tab「消息 / 摘要 / 结果」（selected / pressed 态随当前页），未复现 AdwViewSwitcher 窄/宽两枚同名对象；tests/ui/linux/test_03_sql.py 10/10 PASSED（编排者复跑，跑法见 tabs.query.results evidence）：test_results_view_tabs_exist_and_switch（三页签都在、单语句默认 results、切摘要读到键值、切消息读到完整 SQL + `> OK`、回结果页 3 行）、test_no_results_tab_when_all_writes（全写脚本 page tab 列表恰为 ['消息','摘要']）"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "#232 跟进：Windows 侧三页签未接入。按本条目做：说明区加「消息 / 摘要 / 结果」三枚页签 + 三页容器（点签换页、默认页规则同 tabs.query.results、「结果」页按有无结果集显隐），文案取共享 l10n key tabs.results_tab_* 与 tabs.results_view_switcher_a11y。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query.results.message"
@@ -803,15 +656,6 @@ state = "done"
 spec_hash = "441c830a22b3"
 evidence = "tests/ui/linux/test_03_sql.py::test_message_page_format PASS：4 语句脚本（2 多行 INSERT + 2 SELECT）消息页 4 段 / 17 行，首段逐字『INSERT INTO widgets (name, qty)\\nVALUES ('qa1', 1)\\n> Affected rows: 1\\n> Query Time: 0.008 seconds』；断言「> Affected rows: 1」2 处、「> OK」2 处、「> Query Time:」4 处且全部匹配 `^> Query Time: \\d+\\.\\d{3} seconds$`、段间正好 3 处空行、首段是完整 SQL 且全文无「（预览）」；tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：20 条多行 INSERT → 20 段、20 行「> Affected rows: 1」、20 行耗时全部合规；QA 只读探针 `[qa] 消息页全文：…`；纯函数 message_log_text / seconds_text / split_statements 的单测在 src/statements.rs（cargo test 494 passed，编排者复核）；test_execute_selection 的按钮、快捷键和菜单用例均断言消息页只含实际执行的选中语句。"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "#232 跟进：消息页未接入。按本条目做：只读日志页，逐条语句一段（完整 SQL + `> OK` / `> Affected rows: N` / `> Error: …` + `> Query Time: N.NNN seconds`，段间空行，未测量不写耗时行），文案取 l10n tabs.results_msg_* key，行为与 Linux 一致；耗时字段已由契约 #238（StatementSummary.elapsed_millis）提供。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.results.summary"
 parent = "tabs.query.results"
@@ -845,15 +689,6 @@ state = "done"
 spec_hash = "4019dae23a27"
 evidence = "tests/ui/linux/test_03_sql.py::test_summary_two_columns PASS：4 语句脚本摘要六项 {已执行语句=4, 成功=4, 失败=0, 开始时间=12:08:21, 结束时间=12:08:21, 总耗时=0.017 s}；断言三行计数 4/4/0、开始/结束匹配 `^\\d{2}:\\d{2}:\\d{2}$`、总耗时匹配 `^\\d+\\.\\d{3} s$`，并用可访问性父容器 path 断言「已执行语句/成功/失败」同属一列、「开始时间/结束时间/总耗时」同属另一列（两列不同）；tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：20 条 INSERT → 20 · 20 · 0、结束时间已写、总耗时「N.NNN s」、底部「客户端计时」口径行在；QA 只读探针 `[qa] 摘要取值：…`；纯函数 totals 的单测在 src/statements.rs（cargo test 494 passed，编排者复核）；test_execute_selection 的按钮、快捷键和菜单用例均断言消息页只含实际执行的选中语句。"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "#232 跟进：摘要页未接入。按本条目做：两列三行（左 已执行语句/成功/失败，右 开始时间/结束时间/总耗时）+ 底部口径行，文案取 l10n tabs.results_summary_* key；计数可由既有 QueryModel 逐语句状态组装，计时同为客户端墙钟 + 单调钟口径。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.results.header"
 parent = "tabs.query.results"
@@ -879,16 +714,6 @@ platform_notes.windows = "说明位保留「结果集 K 段」（「只显示第
 state = "done"
 spec_hash = "18ecbccd9284"
 evidence = "§7.1 结果网格的列头口径；results.rs set_columns 的标题拼装"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "18ecbccd9284"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1557（RenderQueryHeader 按当前列重建）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:716（LoadSlot 换入语句列）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:526（MetaText 退役「只显示第 1 段」）"
-note = "#190 表头随选中语句重建已实现；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），GUI 交互与列头观感待 Windows 真机人工确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query.results.grid"
@@ -920,16 +745,6 @@ platform_notes.windows = "列宽固定（`column_width`）、超宽走横向滚�
 state = "done"
 spec_hash = "358a9e1dfa25"
 evidence = "§7.1 结果网格的虚拟化口径；GtkColumnView + RowStore 与 Esc 清选中"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "358a9e1dfa25"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1139；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1166"
-note = "视口内建行 + 上下高度占位 + 表头与行区横向同步都实现了；但结果行不可选中，Esc 清空行选中（含 a11y.tab 那条）没有实现。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.query.results.more"
@@ -964,16 +779,6 @@ state = "done"
 spec_hash = "646be58b5fc1"
 evidence = "§7.1 续拉口径的 Linux 实现（滚动预取 + 单批在飞）；maybe_prefetch"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "646be58b5fc1"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1018（FetchMoreAsync 作用于当前选中语句）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1041（FetchStatementBatchAsync 带 statement_index + 槽 page_token）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1090（MaybePrefetch 滚动预取读选中槽 HasMore）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:287（StatementSlot.HasMore 独立游标）；frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:814（AppendBatch 多语句路由到选中槽）"
-note = "#190 逐语句续拉已实现：每条语句独立 page_token/has_more，切走再切回从各自游标继续；未首拉的结果集语句选中时以空 page_token 发第一批；整查询 Close 等 FetchBatchResponse.complete（#187 语义）。真类型探针编译验证（红→绿），未在本机构建/运行 WinUI。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.results.statements"
 parent = "tabs.query.results"
@@ -996,16 +801,6 @@ impl_notes = [
 state = "removed"
 spec_hash = ""
 evidence = "代码已删：src/statements.rs 现在只剩纯规则（split_statements / entries_from_statements / message_log_text / totals），无 GTK 依赖；`StatementSwitcher` 与 results.rs 的切换控件槽位一并移除。tests/ui/linux/test_03_sql.py::test_multi_statement_does_not_widen_window 断言结果页面板里没有任何列出语句的 combo box（`[A.nm(c) for c in A.query(page, role_in=('combo box',))]` 里没有 INSERT 条目），且页签组宽在窗口宽之内"
-
-[component.sync.windows]
-state = "present"
-spec_hash = ""
-note = "还留着（待清理）：#190 的语句切换行仍在代码里——frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:492（多语句才装配）、:1591（RenderStatementSwitcher 条目文案/选中态）、:1697（OnStatementEntryClicked 换入换出），frontend/windows/Sqarvo.Windows/Workspace/QueryModel.cs:748（SelectStatement）。按本单口径应随 #232 的三页签一起删掉这一行，逐语句信息改由消息页承载。"
-
-[component.sync.macos]
-state = "na"
-spec_hash = ""
-note = "macOS 前端未接入，本就没有这一项。"
 
 [[component]]
 id = "tabs.query.results.result_picker"
@@ -1049,15 +844,6 @@ state = "done"
 spec_hash = "53cd71c6e1d7"
 evidence = "tests/ui/linux/test_03_sql.py::test_result_picker_folds_multiple_result_sets PASS（4 语句脚本 = 2 INSERT + 2 SELECT）：结果页出现 combo box「结果 1」，弹层条目恰为 ['结果 1', '结果 2']，默认结果 1 网格 1 行；切到「结果 2」后下拉 name='结果 2'、网格 2 行；切回「结果 1」仍只有它自己那 1 行（各自网格状态保留）。test_results_view_tabs_exist_and_switch 另断言单个结果集时没有这枚下拉。QA 只读探针 `[qa] 结果区版式：… 结果集下拉=True（2 项，选中 Some(1)）…`；AT-SPI 实测 name=选中条目文本、description 为空、combo box 无 action（换条目靠弹层 list 的 Selection + default.activate），定位口径与偏差见 impl_notes 与契约 §9.1"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "#232 跟进：Windows 侧结果集折叠未接入。按本条目做：结果页内顶部一枚下拉（条目「结果 {number}」、N<2 不出现、切换换入换出各自网格状态、续拉跟选中结果集），文案取 l10n tabs.results_result_picker_* key；接入时连同删掉 #190 的独立切换行（tabs.query.results.statements 已 removed）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.splitter"
 parent = "tabs.query"
@@ -1098,16 +884,6 @@ state = "done"
 spec_hash = "d3fd6c4b01ed"
 evidence = "src/sql_page.rs:259-299（GtkPaned 装配，本轮未改）/ 383（拖动回写）/ 1856-1870（比例应用与日志）；src/theme.rs:905（把手 CSS，确认单 #1：普通模式 background: transparent、HC @sqarvo_separator，min-height=query_splitter_width 热区不变）；单测 theme::tests::query_splitter_is_invisible_except_in_high_contrast 通过（cargo test 479/479）；#189 隔离 QA 日志「分隔位置应用 position=239（页高 603，占比 0.40）」+ AT-SPI 只读遍历（分栏容器 role=generic 暴露 CurrentValue、把手 role=separator）；热区拖动为本机 GUI 实测（逻辑未改，显示由单测断言）"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "d3fd6c4b01ed"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:654-677（把手装配：Height 读 query_splitter_width、Rectangle 按 ThemeService.HighContrast 显隐、初始 Collapsed）；ShellView.Query.cs:1328（WireQuerySplitter：PointerPressed/Moved/Released，本轮未改）；ShellView.Query.cs:1419（EndQuerySplit：比例回写标签内存态）；ShellView.Query.cs:2200-2212（QuerySplitGrip：SizeNorthSouth 光标）；scripts/xaml_lint.py 0 error 0 warning"
-note = "WinUI 3 无原生 splitter → 自绘 Panel 把手（同 #178 列宽拖拽口径）；两端最小高度与默认比例读生成常量，结果区隐藏时一并 Collapsed。确认单 #1：普通模式 1px 线 Collapsed、仅 HC 显示；运行期切 HC 重启生效（SystemAppearanceChanged 链路只重设 RequestedTheme）。本轮改动未在本机构建/运行 WinUI（Linux 主机无 Windows SDK），仅 xaml_lint 门禁 + 类型核对（ThemeService.HighContrast 为既有 public static bool）；拖动手感 / 光标观感与 HC 线待 Windows 真机确认；无键盘调节路径（与 Linux 同为 P1）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.query.results.close"
 parent = "tabs.query.results"
@@ -1146,16 +922,6 @@ state = "done"
 spec_hash = "3d357f190844"
 evidence = "src/results.rs:450-457（按钮构造 + a11y）；src/sql_page.rs:1277（执行中置灰）/ 1377（丢弃确认）/ 1424（关闭）；#189 隔离 QA AT-SPI 只读遍历 name='关闭结果区' role=button + 截图 189-04（说明行右端 ×）"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "3d357f190844"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:528（按钮构造：SymbolIcon(Cancel) + AutomationProperties「关闭结果区」+ tooltip）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1443（执行中置灰 + tooltip「查询执行中，请先取消」）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1344（CloseResultsAreaAsync：Close RPC + ResetResults + 隐藏）；frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:1365（脏行丢弃确认，同数据页 ContentDialog 口径）"
-note = "位置在结果说明行右端（Windows 查询页尚无导出入口，§7.1）；关闭 = ReleaseCursorAsync（Close RPC 幂等）+ ResetResults + ApplyQueryLayout，SQL 文本保留。已实现并经 Linux 真类型探针编译验证（0 警告 0 错误）；未在本机构建/运行 WinUI，弹窗 / 置灰观感待人工确认。当前结果网格只读（QueryModel.DirtyRowCount 恒 0），丢弃确认路径已接线但不会被触发。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.close_dialog"
 parent = "tabs"
@@ -1183,15 +949,6 @@ state = "done"
 spec_hash = "a14abd67065e"
 evidence = "§4 关闭对话框；close_prompt 与 present_close_dialog"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录（Windows 的关页守卫是状态栏二次提示，不弹对话框）。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.close_dialog.discard"
 parent = "tabs.close_dialog"
@@ -1214,15 +971,6 @@ source = "src/tabs.rs:2790、src/tabs.rs:2802、src/tabs.rs:2806、src/tabs.rs:2
 state = "done"
 spec_hash = "7e49fa7092d4"
 evidence = "§4 放弃并关闭 / 关闭对话框按钮；answer_close 的 Discard 分支"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "tabs.close_dialog.save"
@@ -1248,15 +996,6 @@ state = "done"
 spec_hash = "a25311d57fb2"
 evidence = "§4 保存并关闭；advance_close 的两段相位与失败保留"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "tabs.close_dialog.cancel"
 parent = "tabs.close_dialog"
@@ -1279,12 +1018,3 @@ source = "src/tabs.rs:2790、src/tabs.rs:2799、src/tabs.rs:2713"
 state = "done"
 spec_hash = "5c3e35d4ccc2"
 evidence = "§4 取消；answer_close 的 Cancel 分支与 finish_close_page(false)"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""

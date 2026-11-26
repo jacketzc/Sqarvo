@@ -11,11 +11,11 @@
 | M3 凭据与 MariaDB | S3 | 系统凭据存储 + MariaDB 驱动 | v0.2 | 已完成（#20–#25；TLS 握手 2026-11-06 逐档验证，见「M3 凭据与 MariaDB（实际完成）」备注） |
 | M4 元数据与事务 | S4 | 对象树、列信息、DDL、显式事务（跨驱动） | v0.2.1 / v0.2.2 | 已完成（v0.2.1：事务 / 元数据最小子集 / 表数据；v0.2.2：逐层对象树 / 跨库 / DDL / 搜索，2026-11-06） |
 | M5 第二网络驱动与一致性 | S5 | PostgreSQL 驱动 + 三驱动一致性矩阵 | v0.2.4 | 未开始 |
-| M6 前端接入与硬化 | S6 | 三端接入、性能、安全、跨平台构建 | v0.2 起持续 | 进行中（Linux 首端接入完成；Windows / macOS 未验证） |
+| M6 前端接入与硬化 | S6 | Active 前端接入、性能、安全、受影响平台构建 | v0.2 起持续 | 进行中（Linux 接入完成，待主线硬化验收） |
 | M7 工作区 UI 重构 | S8 | 六区域外壳、多连接对象树、标签工作区（一标签一会话）、表格浏览分页/排序/筛选、对象信息面板 | v0.2.3 | 已完成（2026-11-07，13 条 Issue / 13 个 PR） |
 | M8 导入导出与结构管理 | S7 | 流式导入导出、路径与覆盖保护、结构对比脚本 | v0.2.5 | 未开始 |
 | M9 MCP Server V1 | S9 | 独立 `sqarvo-mcp` stdio 进程：配置与连接授权、SQL 只读策略、工具、资源、协议 E2E、文档 | v0.3 | 代码与文档已交付（2026-11-18：#207–#212 + #220 合入链 `31e13d8`…`313d5be`，Linux 实测；遗留：#218 Windows Rust CI 验证、Cherry Studio 人工验收——里程碑保持 open 至销项） |
-| M10 共享连接档案与 MCP 全局访问 | S10 | 共享存储与迁移、GTK 档案服务、MCP 实时全局策略、CLI、跨组件验收 | v0.4 | 进行中（[#225–#230](https://github.com/jacketzc/Sqarvo/milestone/11)，Windows 前端接入冻结） |
+| M10 共享连接档案与 MCP 全局访问 | S10 | 共享存储与迁移、GTK 档案服务、MCP 实时全局策略、CLI、跨组件验收 | v0.4 | 进行中（[#225–#230](https://github.com/jacketzc/Sqarvo/milestone/11)，旧 Windows v1 数据仍可迁移） |
 | M11 本地 MCP HTTP 与管理中心 | 待排 | 回环 Streamable HTTP、Linux GTK 管理与安全 Agent 接入 | 待发布计划确认 | 执行见 [M11](https://github.com/jacketzc/Sqarvo/milestone/12) |
 | M12 MCP V2 受控写入 | 待排 | 结构化 DML、预览、事务限额和审计，SQLite 与 DBA 管理的 MariaDB | 待发布计划确认 | 执行见 [M12](https://github.com/jacketzc/Sqarvo/milestone/13)，依赖 M11 |
 | M13 MCP V2.1 显式事务 | 待排 | 结构化多次写入、事务所有权、撤权排序、清理与双传输验收 | 待发布计划确认 | 执行见 [M13](https://github.com/jacketzc/Sqarvo/milestone/14)，依赖 M12 |
@@ -192,15 +192,14 @@ CI（两个作业 `后端（Linux）` / `MariaDB 集成测试（服务容器）`
 
 ### M6 前端接入与硬化
 
-- 三端至少一端完成真实连接与查询（其余记录状态）；
+- Active 前端完成真实连接与查询；
 - 启动/内存/大结果集基准可复现；
 - 安全清单通过；
-- Windows / macOS 至少各完成一次真实构建并记录。
+- Active 前端完成真实构建；其他前端重新接入按 [ADR 0043](../decisions/0043-frontend-platform-scope.md)。
 
 ### M6 前端接入与硬化（首端进度）
 
-状态：**进行中**，不标记完成。Linux 首端接入完成（2026-11-04）；Windows / macOS **未构建、
-未验证**；三端接入、跨平台构建与 release 构建基准尚未满足，见本节末尾的剩余条件。
+状态：**进行中**，不标记完成。Linux 首端接入完成（2026-11-04）。现行范围及剩余条件见本节。
 
 Linux 已完成（证据均为 PR / commit / CI run 或可直接执行的命令）：
 
@@ -230,23 +229,17 @@ cd frontend/linux && cargo test          # 192 passed / 0 failed
 cd frontend/linux && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings  # 均 exit 0
 ```
 
-Windows / macOS 现状：`frontend/windows` 与 `frontend/macos` 只有窗口骨架，**未接后端、
-未在本机或 CI 构建、未做任何运行验证**（`.github/workflows/ci.yml` 末尾注明两端待接入后
-再增加构建作业）。M6 的「三端至少一端完成真实连接与查询」由 Linux 满足，但这不等于
-Windows / macOS 可用。
-
 M6 剩余完成条件：
 
-1. Windows、macOS 各完成一次真实构建并接入后端（至少握手 + 一次查询），CI 增加对应构建作业；
-2. 三端连接/执行/取消/结果虚拟化语义一致，差异有记录；
-3. **release 构建**的冷启动与内存基准（当前数值全部来自 debug 构建）；
-4. 安全清单在三端各自复跑（日志脱敏、端点/管道权限、IPC 仅本机）；
-5. 宽表内存分配点定位与客户端结果集上限的计量口径修正（`REQ-RESULT-005` 的已知偏差）。
-6. v0.2.2 新增的搜索与插入 UI 闭环需要在 MariaDB 上各跑一次（本轮 MariaDB 只覆盖对象树/DDL）。
+1. Active 前端的连接、执行、取消与结果虚拟化符合公共语义，已知偏差有记录。
+2. 使用 release 构建复测冷启动与内存。当前数据来自 debug 构建。
+3. 复跑适用安全清单（日志脱敏、端点权限、IPC 仅本机），后端跨操作系统按影响验证。
+4. 定位宽表内存分配点并修正客户端结果集上限的计量（`REQ-RESULT-005`）。
+5. 在 MariaDB 验证新增搜索与插入的 UI 闭环。
 
 ### M6 前端硬化（v0.2.3.1 增量）
 
-状态：**进行中**（本增量关闭 v0.2.3 发布说明里的六条前端已知限制；M6 的跨平台与 release 基准条件不变）。
+状态：**进行中**（本增量关闭 v0.2.3 发布说明里的六条前端已知限制；M6 的发布构建基准待验证）。
 
 | 能力 | 证据 |
 |---|---|
@@ -258,13 +251,11 @@ M6 剩余完成条件：
 | `Objects` 固定页对象概览（与信息面板同一份快照） | #135 / PR #152；四张同对象截图与面板数值一致；两档布局 15 项 0 超限；反证改标题 → 断言报不一致 |
 
 复核（2026-11-08，Linux，main `b11caf2`）：backend 640 passed / frontend 356 passed，
-验收链 139 项断言全过；CI 三作业 success。**M6 完成条件仍以本节上文的五条剩余项为准**
-（Windows / macOS 构建与接入、三端语义一致、release 基准、三端安全清单、宽表内存分配点）。
+验收链 139 项断言全过；CI 三作业 success。M6 完成条件见本节上文。
 
 ### M6 前端硬化（v0.2.3.2 增量）
 
-状态：**进行中**（本增量把界面行为收成一套可移植口径，并补表数据的整表导出；M6 的跨平台与
-release 基准条件不变）。发布说明见 [v0.2.3.2](../releases/v0.2.3.2.md)，决策见 ADR 0022 增量节。
+状态：**进行中**（本增量把界面行为收成一套可移植口径，并补表数据的整表导出；M6 的 release 基准条件不变）。发布说明见 [v0.2.3.2](../releases/v0.2.3.2.md)，决策见 ADR 0022 增量节。
 
 | 能力 | 证据 |
 |---|---|
@@ -345,7 +336,7 @@ frontend `cargo test` **311 passed / 0 failed / 1 ignored**，
 
 - 共享档案并发写入、revision 冲突与失败关闭有测试证据。旧档案迁移保留备份，安全默认值保持关闭访问和开启只读。
 - GTK 经本地 gRPC 读写档案和策略，CLI 管理同一策略。运行中 MCP 在后续请求执行撤销并释放失效会话。
-- 保留 V1 工具、资源与 SQL 只读策略。Windows v1 fixture 由 Rust 迁移测试覆盖，Windows 前端冻结，
+- 保留 V1 工具、资源与 SQL 只读策略。Windows v1 fixture 由 Rust 迁移测试覆盖，旧前端已归档，
   Windows/macOS 实机未验证。
 - 各工作包及验收证据见 [M10](https://github.com/jacketzc/Sqarvo/milestone/11)。
 
@@ -365,7 +356,7 @@ frontend `cargo test` **311 passed / 0 failed / 1 ignored**，
   REQ-A11Y-001），决策记录见 ADR 0021–0023 与
   [workspace-model.md](../ui-specification/workspace-model.md)。
 - 2026-11-05：版本序列整体改标到 0.2 线：v0.3（数据浏览与编辑）→ **v0.2.1**、
-  v0.4（对象管理）→ **v0.2.2**、v0.5（导入导出）→ **v0.2.3**、v1.0（三端/三驱动可用版本）→ **v0.2.4**。
+  v0.4（对象管理）→ **v0.2.2**、v0.5（导入导出）→ **v0.2.3**、v1.0（三端/三驱动可用版本）原拟移入 v0.2.4，现行范围见发布计划。
   各版本范围与退出标准不变；0.2 线改为以 `0.2.x` 增量交付，暂不设 1.0 / 兼容承诺节点。
   M4 对应版本随之改为 v0.2.1 / v0.2.2。同步更新：`release-plan.md`、`roadmap.md`、
   `requirements.md`（`REQ-SQL-004` 再评估时点改记 v0.2.2+）、`development-plan.md`（S5 / S7 版本标注）、

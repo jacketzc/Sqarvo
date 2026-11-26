@@ -1,0 +1,5 @@
+# Frontend development and release scope. Backend OS compatibility is independent.
+[platforms]
+linux = "active"
+windows = "rewriting"
+macos = "planned"

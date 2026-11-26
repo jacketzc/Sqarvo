@@ -2,9 +2,9 @@
 
 ## 状态
 
-界面骨架。**尚未连接后端**。
+[Planned](../platforms.toml) 原型。尚未连接后端，当前不参与主线前端验证。
 
-## 构建
+## 原型构建（明确授权的 macOS 工作）
 
 ```bash
 cd frontend/macos

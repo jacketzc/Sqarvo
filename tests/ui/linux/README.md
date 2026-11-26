@@ -1,6 +1,6 @@
 # UI 功能测试 — Linux（GTK4 / AT-SPI）
 
-三端共同规范见 `../README.md`（伞层）；本文件只写 Linux 端实现与环境限制。
+Active 前端共同规范见 `../README.md`（伞层）；本文件只写 Linux 端实现与环境限制。
 
 用可重复的自动化功能测试替代 agent 反复交互式点界面。只验证**交互与功能**
 （控件响应、状态流转、可访问性名称、真实数据），不做像素/样式/截图断言
@@ -162,7 +162,6 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
 
 用例与组件的对应：每条用例在 docstring 标注对应注册表组件 `id`；改组件先按 `id`
 grep 本目录找现有用例，该端缺失覆盖时**先补用例再验收**（根 AGENTS §13、
-frontend/AGENTS §13）。本框架是三端功能用例库模式的首发实现，Windows（UIA）/
-macOS（XCUITest）建库时以本目录三层结构为参照。
+frontend/AGENTS §13）。
 
 HTTP E2E 中，复制场景验收 GDK 接受内容后的界面反馈；实际复制文本另由 GTK 单测断言。

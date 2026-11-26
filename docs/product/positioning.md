@@ -24,9 +24,9 @@
 
 | 维度 | Sqarvo 的目标 | 说明 |
 |---|---|---|
-| UI 技术 | WinUI 3 / GTK4+libadwaita / SwiftUI | 不使用 Electron、Chromium、WebView |
+| UI 技术 | 原生控件（当前 Linux 使用 GTK4 + libadwaita） | 不使用 Electron、Chromium、WebView |
 | 资源占用 | 快速冷启动、低空闲内存 | 需要基准测试数据后才能对外宣称具体数字 |
-| 数据库能力 | 集中在单个 Rust 后端进程 | 三端共享同一套连接、执行、事务与类型逻辑 |
+| 数据库能力 | 集中在单个 Rust 后端进程 | 各客户端共用同一套连接、执行、事务与类型逻辑 |
 | 类型保真 | NULL ≠ 空串；Decimal 不走浮点；区分有无时区 | 无法映射的类型显式标注，不静默降级 |
 | 大结果集 | 分批拉取、虚拟化、明确上限 | 不靠调大 gRPC 消息上限解决 |
 | 本地安全 | Unix socket 0700/0600 + 每进程 token | 拒绝非回环 TCP；凭据交给系统凭据存储 |

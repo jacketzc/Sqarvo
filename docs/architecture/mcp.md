@@ -300,8 +300,7 @@ SQLite 按自身方言解析并在驱动核对引擎语句边界。配置与方�
 
 ### 10.3 未验证面（诚实清单）
 
-15. **Windows / macOS 未实机验证**：本机只有 Linux。macOS 未进 CI，Windows 只有前端 .NET 作业
-    在 CI 里（Rust 侧 #218 未落）。
+15. **Windows / macOS 未实机验证**：此前在 Linux 实测。Windows Rust CI 验证由 #218 跟踪。
 16. **Cherry Studio GUI 协商 = 人工验收项**：协议层用裸 JSON-RPC 与 Inspector 覆盖，但真实 GUI
     客户端的展示与断连行为需要人工确认。
 17. **真实 OS 密钥环的失败路径 E2E 本机不可用**：没有可用的 Secret Service 会话，改用双断言
@@ -329,7 +328,7 @@ SQLite 按自身方言解析并在驱动核对引擎语句边界。配置与方�
 
 [ADR 0036](../decisions/0036-local-mcp-http.md) 为本页 stdio 流程增加回环路径。无参数启动仍走 stdio。HTTP 子命令启动同一个 `SqarvoMcpServer` 并共享其进程内上下文，SDK 处理 HTTP JSON-RPC、版本协商、会话与 SSE。HTTP 新请求先验证回环 authority、Origin 和 Bearer，数据库工具和资源随后进入既有授权层。令牌轮换与数据库授权撤销分别生效。
 
-GTK 主菜单的 MCP 管理页经本地认证 gRPC 调用 SystemService。Windows 前端保持现状。Linux 伴生后端从自身所在目录定位 `sqarvo-mcp`，监督启动、就绪、停止与回收。实际运行地址来自已绑定的子进程。端口冲突进入 Failed 状态，外部同端口监听保持其自身生命周期。手动启动的 MCP HTTP 进程只响应自己的关闭信号。
+GTK 主菜单的 MCP 管理页经本地认证 gRPC 调用 SystemService。Linux 伴生后端从自身所在目录定位 `sqarvo-mcp`，监督启动、就绪、停止与回收。实际运行地址来自已绑定的子进程。端口冲突进入 Failed 状态，外部同端口监听保持其自身生命周期。手动启动的 MCP HTTP 进程只响应自己的关闭信号。
 
 管理端口配置位于 `AppPaths::config_dir()/mcp-http-port`，缺省 8765，内容为单个十进制端口。地址固定 `127.0.0.1`，路径固定 `/mcp`，启动默认关闭。HTTP 凭据位于 Linux Secret Service 的独立 profile。新版本 stdio 与 HTTP 通过独立审计锁覆盖轮转，旧版本并行使用仍受历史轮转限制。
 

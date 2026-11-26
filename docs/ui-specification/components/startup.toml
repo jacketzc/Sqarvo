@@ -40,15 +40,6 @@ spec_hash = "4609e5ded0f3"
 commit = "7436cd5"
 evidence = "§1.1 应用启动；startup.rs 全模块为启动态唯一实现"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录启动态（握手成功、未连接数据库）外壳；只记录六区域外壳存在。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "startup.loading"
 parent = "startup"
@@ -75,15 +66,6 @@ spec_hash = "537f9eb0440e"
 commit = "7436cd5"
 evidence = "§1.1 应用启动（先 Loading）；show_loading 组装 StatusPage + spinner"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "startup.loading.spinner"
 parent = "startup.loading"
@@ -109,15 +91,6 @@ spec_hash = "ccc3a5d0e62f"
 commit = "7436cd5"
 evidence = "show_loading 的 GtkSpinner + set_size_request(spinner_px) + start()"
 
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "startup.loading.stage"
 parent = "startup.loading"
@@ -142,15 +115,6 @@ state = "done"
 spec_hash = "464b9fe809d3"
 commit = "7436cd5"
 evidence = "Event::Stage 带枚举、显示边界按 `startup.stage_*` 取文案（zh 六条逐字节同迁移前）；supervisor 夹具断言照旧；cargo test 494 passed；`--lang=en --qa-layout-audit --screenshot` 960×640、1200×800 均 14 项 0 超限"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "startup.workspace"
@@ -201,12 +165,3 @@ state = "done"
 spec_hash = "aa4bea3dac40"
 commit = "7436cd5"
 evidence = "§1.1 应用启动（落地工作区）+ §7 状态栏行 2；show_startup_workspace 与 StartupWorkspace::new"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录启动态外壳；只记录六区域外壳与固定 Objects 页存在。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""

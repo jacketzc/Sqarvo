@@ -37,15 +37,6 @@ state = "done"
 spec_hash = "2a572b7612b9"
 evidence = "§3 页面结构逐条对照 tabs.rs（ObjectsPage::new 的 root 只有 title + stack）"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "2a572b7612b9"
-note = "§7.1 记录「固定 Objects 页 + 三列表格 + 状态行 + 加载更多…」的存在；页内标题、无作用域说明行的版面与页内距未逐条记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "objects_page.tab"
 parent = "objects_page"
@@ -95,15 +86,6 @@ source = "src/tabs.rs:1393、src/tabs.rs:2684"
 state = "done"
 spec_hash = "e641a40a25b4"
 evidence = "§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "e641a40a25b4"
-note = "§7.1 记录「Objects 固定页仍钉在首位、IsClosable=false，不占标签名额」与「宽 objects_min_width、不可关闭」；紧凑只显示图标、图标 view-grid-symbolic 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.xaml:762 固定页注释、:753 ObjectsTab IsClosable=False；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "objects_page.table"
@@ -200,15 +182,6 @@ state = "done"
 spec_hash = "074178bf4b32"
 evidence = "test_15_refresh_regressions.py 经 SQL 编辑器提交 CREATE、ALTER RENAME、DROP 后重入，另测外部 DDL、主动刷新、单选与空态；按 Objects 和对象树独立请求计数核对"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "074178bf4b32"
-note = "§7.1 记录三列表格、行号宽 row_number_width、同库同组不重发 ListNodes；第二列表头写「名称」（Linux「表名」），「类型」列宽 120 与行高 row_height_data 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:717 表头行、:747 AddObjectsRow；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "objects_page.table.row"
 parent = "objects_page.table"
@@ -249,15 +222,6 @@ state = "done"
 spec_hash = "16c105e563c1"
 evidence = "§3 单击行 / 双击回车行 + theme.stylesheet 的行状态规则"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "16c105e563c1"
-note = "§7.1 只记录 ↑ / ↓ 移动、Enter 打开（同步信息面板、不反写树的选中）；双击打开与悬停 / 选中底色未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "objects_page.table.row.number"
 parent = "objects_page.table.row"
@@ -275,15 +239,6 @@ impl_notes = [
 state = "done"
 spec_hash = "01eff810f7aa"
 evidence = "§3 行内容（行号列）；number_factory 的 bind 与 tooltip"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "01eff810f7aa"
-note = "§7.1 记录行号宽 row_number_width、右对齐、等宽字体；「第 N 行」tooltip 与 11px 字号未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:720 行号列「行号」头、:764 行可访问名；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "objects_page.table.row.name"
@@ -309,15 +264,6 @@ state = "done"
 spec_hash = "bd97742e6370"
 evidence = "§3 行内容（表名列：图标 + 名称 + tooltip）；name_factory 的 bind"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "bd97742e6370"
-note = "§7.1 记录第二列为「名称」（宽 column_width）；表头文案写「名称」、种类图标与 tooltip 文案未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:721 名称列表头（代码写「表名」）、:756 名称单元格；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "objects_page.table.row.kind"
 parent = "objects_page.table.row"
@@ -335,15 +281,6 @@ impl_notes = [
 state = "done"
 spec_hash = "89bf2a26ec68"
 evidence = "§3 行内容（类型列）；kind_factory 的 setup / bind"
-
-[component.sync.windows]
-state = "partial"
-spec_hash = "89bf2a26ec68"
-note = "§7.1 记录「类型」列取值（表 / 视图 / 物化视图）；次要信息弱色与列宽 120 未记录。代码位置（锚点）：frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:722 类型列表头、:756 entry.KindLabel 单元格；dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "objects_page.status"
@@ -395,15 +332,6 @@ state = "done"
 spec_hash = "d7e7b0914b0a"
 evidence = "GTK objects_pagination_preserves_retry_and_discards_stale_responses 分别验证首页与续页错误"
 
-[component.sync.windows]
-state = "partial"
-spec_hash = "d7e7b0914b0a"
-note = "§7.1 记录四种文案，但措辞不同：有结果写「已加载 N 个对象（还有更多）」（Linux「共 N 个对象（还有更多）」）；「这条连接没有浏览会话…」未记录。"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
-
 [[component]]
 id = "objects_page.more"
 parent = "objects_page"
@@ -434,15 +362,6 @@ source = "src/tabs.rs::ObjectsPage::finish_page"
 state = "done"
 spec_hash = "4a2fe11869a5"
 evidence = "GTK objects_pagination_preserves_retry_and_discards_stale_responses 断言在途只提交一次、失败后重试及迟到响应隔离"
-
-[component.sync.windows]
-state = "done"
-spec_hash = "4a2fe11869a5"
-evidence = "frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:673；frontend/windows/Sqarvo.Windows/Views/ShellView.Metadata.cs:882"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""
 
 [[component]]
 id = "objects_page.empty"
@@ -492,12 +411,3 @@ source = "src/tabs.rs:971、src/tabs.rs:1025"
 state = "done"
 spec_hash = "0680adafc61c"
 evidence = "§3 空态文案（连接态 / 启动态）+ Functions / Queries 未实现说明"
-
-[component.sync.windows]
-state = "none"
-spec_hash = ""
-note = "§7.1 未记录（Objects 页的空态页文案与 Functions / Queries 未实现说明）"
-
-[component.sync.macos]
-state = "none"
-spec_hash = ""

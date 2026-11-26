@@ -50,7 +50,7 @@ Product Owner 决定是否调整规划。避免多个 Agent 各自修改开发�
 每个任务对应一个 GitHub Issue，必须包含：
 
 - 所属模块（`backend/crates/*`、`frontend/*`、`proto/*`、`docs/*`）；
-- 所属里程碑（M0–M8，见 `milestones.md`）；
+- 所属里程碑（见 `milestones.md`）；
 - 优先级（P0/P1/P2，与 `requirements.md` 对齐）；
 - 前置依赖（Issue 编号）；
 - 验收标准（可执行、可观察）；
@@ -64,13 +64,18 @@ M8 随 v0.2.3 计划调整建立；Issue 通过原生 Milestone 字段挂载）�
 
 | 项 | 类型 | 说明 |
 |---|---|---|
-| Status | 单选项 | Todo / In Progress / Done；Issue 关闭即视为完成 |
+| Status | 单选项 | Todo / In Progress / Done；仅有交付证据的任务标 Done，撤销任务用 GitHub 的 not planned 原因 |
 | 依赖 | 文本 | 前置 Issue 编号，如 `#1、#5`（表格视图列） |
 | 看板 | 视图 | 按 Status 分列，用于推进 |
 | 任务表 | 视图 | 列含 Status、Milestone、Labels、依赖、Linked pull requests |
 
 路线图（Roadmap）视图需要 Project 日期字段并有值才会渲染，当前没有排期数据，
 因此暂不建立；确定各里程碑日期后再加，避免留一个空视图。
+
+## 平台工作线
+
+主线前端任务按 [平台状态](../../frontend/platforms.toml) 计划。明确授权的非 Active 前端工作使用独立工作线，
+在 GitHub 用平台标签与总任务关联；公共后端与安全任务依原模块追踪。
 
 ## 自动检查
 
@@ -90,7 +95,7 @@ CI 由 `.github/workflows/tracking.yml` 在每日定时、手动触发、Issue �
 
 ## 里程碑与版本
 
-- 里程碑 M0–M8 是开发阶段的稳定锚点，见 `milestones.md`；
+- 里程碑是开发阶段的稳定锚点，见 `milestones.md`；
 - 产品版本 v0.1–v0.2.x 是交付目标，见 `release-plan.md`；
 - 单个任务延期不修改里程碑标准；只有范围或技术前提变化才改。
 

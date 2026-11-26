@@ -12,11 +12,11 @@
 | 版本 | 主题 | 包含能力 | 不包含 |
 |---|---|---|---|
 | v0.1 | 基础架构与数据库连接（后端） | 本地 IPC + token、gRPC 契约、Driver SPI、SQLite 连接/执行/分批/取消 | 前端可用界面、网络数据库（MariaDB/PostgreSQL）、元数据浏览、事务 UI |
-| v0.2 | SQL 编辑器与查询结果 | Linux 前端接入（握手、连接对话框、SQL 执行/取消/结果虚拟化）；凭据存储（Linux Secret Service）；MariaDB 驱动 | Windows/macOS 接入、数据编辑、对象管理、导入导出 |
+| v0.2 | SQL 编辑器与查询结果 | Linux 前端接入（握手、连接对话框、SQL 执行/取消/结果虚拟化）；凭据存储（Linux Secret Service）；MariaDB 驱动 | 数据编辑、对象管理、导入导出 |
 | v0.2.1 | 数据浏览与编辑 | 表数据浏览、安全编辑、事务控制与状态展示 | 对象管理、结构对比、ER 图 |
 | v0.2.2 | 数据库对象管理 | 对象树、列信息、DDL 查看、对象搜索 | 导入导出、结构同步 |
 | v0.2.3 | 工作区 UI 重构 | 六区域外壳、多连接对象树、标签工作区（一标签一会话）、表格排序/筛选/分页、对象信息面板、导出当前结果 CSV | 导入、结构对比与迁移脚本、整表导出、语法高亮 |
-| v0.2.4 | 三端/三驱动可用版本 | 三平台一致、多驱动（SQLite/MariaDB/PostgreSQL）、性能与安全验收、打包 | 远程后端、团队协作 |
+| v0.2.4 | 多驱动与主线硬化 | Active 前端、多驱动（SQLite/MariaDB/PostgreSQL）、性能与安全验收、打包 | 远程后端、团队协作 |
 | v0.2.5 | 导入导出与结构管理 | CSV/JSON/SQL 导入导出、结构对比与迁移脚本 | ER 图、数据同步 |
 
 > 版本内容会随需求评审调整；调整必须同步 `roadmap.md`、`milestones.md` 与本文件。
@@ -257,7 +257,7 @@ CI（`a74ca8f`）三作业 success；`scripts/check-tracking.sh --state all` 无
 
 ### v0.2.4
 
-- 三平台构建、安装与基本查询流程可用（每平台有验证记录）；
+- Active 前端构建、安装与基本查询流程可用（每个 Active 平台有验证记录）；
 - 三驱动能力矩阵完成，未支持项明确标注；
 - 冷启动、空闲内存、大结果集基准数据入库；
 - 安全清单（凭据、日志、IPC、错误信息、路径）全部通过；
@@ -285,8 +285,7 @@ CI（`a74ca8f`）三作业 success；`scripts/check-tracking.sh --state all` 无
 
 1. `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 通过；
 2. 目标平台完成真实构建与启动验证（无法验证的平台明确标注）；
-3. **UI 行为同步门禁**：`scripts/check-ui-sync.sh release-check --release <版本>` 通过 —— 已支持平台
-   （Linux、Windows）的每个 `active` 组件都是 `done`，或 `na` / `blocked` 已说明；该版本要删的组件已清干净。
+3. **UI 行为同步门禁**：`scripts/check-ui-sync.sh release-check --release <版本>` 通过。每个 [Active 前端](../../frontend/platforms.toml)的 `active` / `deprecated` 组件都是 `done`，或 `na` / `blocked` 已说明；该版本要删的组件已清干净。
    未通过时不得发版，除非按 AGENTS.md §14.4 在发布说明里列出「未同步的 UI 行为」并取得维护者批准；
 4. `docs/product/requirements.md` 的状态列与实现一致；
 5. 支持矩阵（数据库 × 能力）更新，未支持项写明错误语义；

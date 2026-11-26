@@ -16,14 +16,6 @@ state = "done"
 spec_hash = "2e0ea2453e57"
 evidence = "tests/ui/linux/test_06_mcp_access.py：两个真实确认框的标题、档案数、取消及确认。"
 
-[component.sync.windows]
-state = "blocked"
-note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入共享档案及 MCP 策略。"
-
 [[component]]
 id = "dialog.mcp_enable_confirm"
 parent = "dialog"
@@ -46,14 +38,6 @@ state = "done"
 spec_hash = "7f4f049c0500"
 evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_access_menu_and_live_status 验证确认和取消。"
 
-[component.sync.windows]
-state = "blocked"
-note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入共享档案及 MCP 策略。"
-
 [[component]]
 id = "dialog.mcp_readonly_disable_confirm"
 parent = "dialog"
@@ -75,11 +59,3 @@ source = "src/mcp_access.rs:226"
 state = "done"
 spec_hash = "3ffb6dc05461"
 evidence = "tests/ui/linux/test_06_mcp_access.py::test_mcp_read_only_confirmation 验证风险提示和取消。"
-
-[component.sync.windows]
-state = "blocked"
-note = "Windows 接入在 I5 冻结。本次只交付共享档案格式、RPC 契约和兼容夹具。见行为契约 §9。"
-
-[component.sync.macos]
-state = "na"
-note = "macOS 前端尚未接入共享档案及 MCP 策略。"
