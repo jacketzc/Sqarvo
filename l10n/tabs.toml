@@ -916,3 +916,15 @@ key = "tabs.results_result_picker_item"
 zh = "结果 {number}"
 en = "Result {number}"
 status = "done"
+
+[[entry]]
+key = "tabs.query_rebind_dirty"
+zh = "请先提交或放弃结果中的未提交更改，再切换连接。"
+en = "Commit or discard pending result changes before switching the connection."
+status = "done"
+
+[[entry]]
+key = "tabs.query_rebind_restore_failed"
+zh = "无法恢复此查询原来的数据库上下文。查询已断开。"
+en = "The original database context could not be restored. The query is disconnected."
+status = "done"

@@ -243,15 +243,19 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_exception_interact(node, call, report):
-    """失败瞬间抓活体诊断（进程还开着才有意义）。"""
+    """保留失败日志，应用仍运行时也保留可访问性树。"""
     try:
-        inst = next((i for i in reversed(_INSTANCES) if i.app_alive()), None)
+        inst = next((i for i in reversed(_INSTANCES) if i.proc is not None), None)
         if inst is None:
             return
         LOGS_DIR.mkdir(exist_ok=True)
-        name = report.nodeid.replace("::", "_")
+        name = report.nodeid.replace("::", "_").replace("/", "_")
         if inst.log_path.is_file():
-            shutil.copyfile(inst.log_path, LOGS_DIR / f"{name}.log")
+            log = LOGS_DIR / f"{name}.log"
+            shutil.copyfile(inst.log_path, log)
+            _FAILURE_CTX[report.nodeid] = str(log)
+        if not inst.app_alive():
+            return
         frame = inst.frame()
         dump = A.dump_tree(frame)
         path = LOGS_DIR / f"{name}.txt"

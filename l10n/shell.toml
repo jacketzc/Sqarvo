@@ -199,14 +199,14 @@ status = "done"
 
 [[entry]]
 key = "shell.tooltip_kind_tables"
-zh = "在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）"
-en = "List the current database's tables on the Objects page (same as selecting the Tables group in the object tree)"
+zh = "在 Objects 页列出目标数据库或 Schema 的表"
+en = "List tables in the target database or schema on the Objects page"
 status = "done"
 
 [[entry]]
 key = "shell.tooltip_kind_views"
-zh = "在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）"
-en = "List the current database's views on the Objects page (same as selecting the Views group in the object tree)"
+zh = "在 Objects 页列出目标数据库或 Schema 的视图"
+en = "List views in the target database or schema on the Objects page"
 status = "done"
 
 [[entry]]
@@ -345,4 +345,16 @@ status = "done"
 key = "shell.recovery_btn_restart"
 zh = "重启 Sqarvo"
 en = "Restart Sqarvo"
+status = "done"
+
+[[entry]]
+key = "shell.menu.clear_selection"
+zh = "清除选择"
+en = "Clear Selection"
+status = "done"
+
+[[entry]]
+key = "shell.title_server_version"
+zh = "服务端版本 {version}"
+en = "Server version {version}"
 status = "done"

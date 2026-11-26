@@ -22,6 +22,7 @@
 | 事务 | Transaction | |
 | 回滚 | Rollback | 按钮用动词 Roll Back 时按条目文本，术语本身 Rollback |
 | 刷新 | Refresh | |
+| 清除选择 | Clear Selection | 导航逻辑选择命令 |
 | 连接 | Connect | 动词（建立会话）；名词（一条连接）用 Connection |
 | 查询 | Query | |
 | 导出 | Export | |

@@ -68,7 +68,7 @@ def frame_of(app, timeout: float = 20):
 def _frame(app):
     from adapter import windows
     for w in windows(app):
-        if role(w) == "frame" and nm(w).startswith("Sqarvo"):
+        if role(w) == "frame" and (nm(w).startswith("Sqarvo") or nm(w).endswith("— Sqarvo")):
             return w
     return None
 

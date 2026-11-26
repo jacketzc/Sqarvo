@@ -45,6 +45,7 @@ mod tree;
 mod ui;
 mod window_size;
 mod window_state;
+mod workspace_context;
 
 use adw::prelude::*;
 

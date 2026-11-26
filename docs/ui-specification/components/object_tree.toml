@@ -35,9 +35,9 @@ source = "src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1462"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c9c1a528b7da"
+spec_hash = "0b1186827e6e"
 commit = "7436cd5"
-evidence = "v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证 F5 后旧资源行移出导航，旧菜单被拒绝；test_15_refresh_regressions.py::test_objects_list_refreshes_on_reentry_and_f5 验证 Objects 原作用域重列。"
 
 [[component]]
 id = "object_tree.tree"
@@ -61,7 +61,7 @@ impl_notes = [
 trigger = "key"
 keys = ["↑", "↓"]
 precondition = "树有焦点"
-result = "移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随）"
+result = "移动选中和更新 Inspector 预览；只有主动 Browse 才改变 Objects 的范围。过滤、折叠、模型重建保持逻辑选择。明确失效的目标保留到重新选择或清除"
 source = "src/tree.rs:1983"
 
 [[component.interaction]]
@@ -79,9 +79,8 @@ source = "src/ui.rs:669"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "9e309bdc79d0"
-commit = "7436cd5"
-evidence = "GTK --qa-startup-workspace 加载 2 个迁移档案；tests/ui/linux/test_06_mcp_access.py 验证损坏时空树和错误态。"
+spec_hash = "bfb54cc8d8ca"
+evidence = "test_15_refresh_regressions.py::test_navigation_selection_survives_projection_without_requests：折叠并恢复已加载路径后选中同一资源，浏览、DDL、列、主键请求次数保持。test_16_workspace_context.py::test_navigation_target_and_clear_selection：折叠或断开后的明确目标仍优先。"
 
 [[component]]
 id = "object_tree.tree.row"
@@ -151,11 +150,11 @@ display_name = "连接行"
 kind = "row"
 status = "active"
 style.icon = ["tree.connection"]
-a11y.name = "（行内容：别名或 用户名@主机:端口/库 + 连接态徽标）"
+a11y.name = "（行内容：连接显示名 + 连接态徽标）"
 impl_notes = [
   "行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。",
-  "行名 = 连接别名；没起别名时回落 用户名@主机:端口/库（文件型驱动是文件路径）。别名只影响显示：不参与身份键、不进连接参数、不改会话显示名。",
-  "tooltip 首行同一个显示名；有别名时另起一行给「连接名：<派生名>」，同别名不同目标也能分辨。",
+  "树、查询连接选择器和窗口共用显示名。优先用别名，其次用主机端口、文件名或内存库友好名。重名用简短目标信息及稳定顺序消歧义。",
+  "tooltip 首行用同一个显示名，补充驱动、可安全显示的端点及连接状态。",
 ]
 
 [[component.interaction]]
@@ -172,9 +171,8 @@ source = "src/tree.rs:2913"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "208a674fae13"
-commit = "7436cd5"
-evidence = "§2.2 / §2.1 连接行；object_activation 与 connect_saved"
+spec_hash = "ed2ab05ad479"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：界面与 Inspector 使用 Peer 档案名；无别名 SQLite 显示文件名。resolved_connection_names_are_safe_and_unique 覆盖重名及异常端点。"
 
 [[component]]
 id = "object_tree.tree.row.catalog"
@@ -184,7 +182,7 @@ kind = "row"
 status = "active"
 style.icon = ["object.catalog", "object.schema"]
 a11y.name = "（行内容：库 / schema 名）"
-impl_notes = ["库与 schema 不合并成一层：驱动给 schema 层就多一层，重名库靠「会话 + 库名」精确匹配。"]
+impl_notes = ["库与 schema 不合并成一层：驱动给 schema 层就多一层，资源按档案、catalog 和 Schema 精确区分，运行时另校验浏览会话。"]
 
 [[component.interaction]]
 trigger = "double_click"
@@ -198,11 +196,16 @@ precondition = "展开库 / schema"
 result = "0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开"
 source = "src/tree.rs:2913"
 
+[[component.interaction]]
+trigger = "click"
+precondition = "主动单击库或 Schema 正文"
+result = "更新逻辑选择并在固定 Objects 页浏览此范围。行箭头只处理展开或折叠"
+source = "src/tree.rs::TreePanel::install_handlers、src/ui.rs::objects_target"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "d22704420de4"
-commit = "7436cd5"
-evidence = "§2.1 展开库 / schema"
+spec_hash = "11a2433a00f6"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：同名 main 精确走 Peer；test_04_tree.py 验证箭头展开 / 折叠；objects_target_follows_the_selected_node_kind 覆盖库与 Schema Scope。"
 
 [[component]]
 id = "object_tree.tree.row.group"
@@ -236,11 +239,16 @@ precondition = "服务端返回空"
 result = "说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」"
 source = "src/tree.rs:360、src/tree.rs:441、src/tree.rs:499"
 
+[[component.interaction]]
+trigger = "click"
+precondition = "主动单击分组正文"
+result = "选择此分组并浏览所属范围。程序化选中和右键菜单不发起列表请求"
+source = "src/tree.rs::TreePanel::update_navigation、src/ui.rs::objects_target"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "e4b508a48b36"
-commit = "7436cd5"
-evidence = "§2.1 分组与空态文案"
+spec_hash = "716e856663f3"
+evidence = "test_15_refresh_regressions.py::test_loaded_rows_survive_tab_switch：单击 Tables 正文切到固定页，再返回数据标签保留 Inspector 行数。"
 
 [[component]]
 id = "object_tree.tree.row.object"
@@ -255,7 +263,7 @@ impl_notes = ["可打开优先于可展开：表虽然有四组子节点，双�
 [[component.interaction]]
 trigger = "double_click"
 precondition = "行可打开"
-result = "打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据）"
+result = "打开表数据标签。档案、catalog、Schema、对象种类和对象身份完全一致时复用已有同类型工作区。只选中对象时预览，Objects 范围保留"
 source = "src/tree.rs:776、src/tabs.rs:1637"
 
 [[component.interaction]]
@@ -266,9 +274,8 @@ source = "src/tree.rs:2733、src/tree.rs:2756"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ab8660f7e7db"
-commit = "7436cd5"
-evidence = "§2.2 双击表 / 视图"
+spec_hash = "836c0f7acb02"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：右键打开同一表复用标签，两条连接的同名表各建独立标签。object_identity_is_exact_and_independent_of_browse_session 单测覆盖 schema、种类和大小写。"
 
 [[component]]
 id = "object_tree.tree.row.field"
@@ -429,6 +436,7 @@ kind = "container"
 status = "active"
 style.slot = "status_bar.left_gutter"
 impl_notes = [
+  "搜索按捕获的档案和浏览会话校验异步结果。定位成功才更新逻辑选择，定位不会发起 Objects 浏览或 Inspector 预览。",
   "结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。",
   "v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。",
   "只出现「连接名命中」或「其中有命中」的连接；命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 Tables 下；祖先行箭头可收起 / 再展开，收起状态按路径记、重新搜索仍生效。",
@@ -482,14 +490,13 @@ impl_notes = [
 [[component.interaction]]
 trigger = "right_click"
 precondition = "非占位行"
-result = "按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空）"
+result = "右键选中此行并捕获菜单目标。点击条目时复核原连接、浏览会话及仍在原模型中的资源路径。失效时关闭菜单并提示。辅助行与无条目的行不出菜单"
 source = "src/tree.rs:3266、src/tree.rs:3388"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "68b63df50825"
-commit = "7436cd5"
-evidence = "§2.3 右键菜单"
+spec_hash = "2fa3e2e43486"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：捕获 B 后改选 A 仍打开 B；B 对象重命名并刷新后原菜单提示目标失效，新名称单独打开。"
 
 [[component]]
 id = "object_tree.ctx_menu.connect_saved"
@@ -526,14 +533,14 @@ impl_notes = ["只关闭该连接的浏览会话（树 / 搜索 / DDL）；数�
 [[component.interaction]]
 trigger = "click"
 precondition = "该连接已连接"
-result = "先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认后才断开"
+result = "先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认时复核原浏览会话；会话失效时提示"
 source = "src/tree.rs:3305、src/ui.rs:2954"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "db48894ab78d"
+spec_hash = "9ea91c17c175"
 commit = "7436cd5"
-evidence = "§2.3 断开连接"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：从具名菜单确认断开 B，A 查询和 B 的独立查询会话均可继续使用。"
 
 [[component]]
 id = "object_tree.ctx_menu.refresh_connection"
@@ -611,6 +618,7 @@ style.metrics = ["font_ui"]
 impl_notes = [
   "密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。",
   "按 saved_key 重建对话框：对已关闭的 AdwDialog 调 present() 是空操作，复用旧实例会让这个条目「点了没反应」（#175）。",
+  "档案不存在或其驱动不可用时提示目标失效，编辑对话框只接收原档案。",
   "编辑期间不留旧会话：配置改动只在下次连接时生效，留着旧标签会让人误以为已经生效。",
 ]
 
@@ -624,7 +632,7 @@ source = "src/ui.rs:3781、src/ui.rs:3826"
 state = "done"
 spec_hash = "b97f99439c9e"
 commit = "7436cd5"
-evidence = "tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证启动菜单打开编辑对话框，保存保留 UUID 并推进 revision。"
+evidence = "test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证启动菜单保存原 UUID 并推进 revision；test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证工作区编辑仍使用捕获档案。"
 
 [[component]]
 id = "object_tree.ctx_menu.edit_connection.confirm"
@@ -644,14 +652,14 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "连接已连接"
-result = "取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框"
+result = "取消：什么都不做；「关闭并编辑」：复核原浏览会话，会话失效时提示，仍有效时关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框"
 source = "src/ui.rs:3781、src/tabs.rs:2921"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "f2c1c4b681d2"
+spec_hash = "6a53acfcc8d4"
 commit = ""
-evidence = "AdwAlertDialog + close_tabs_for_connection + registry.disconnect"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：从已连接档案的原生菜单进入关闭确认，确认原会话仍有效时进入编辑。"
 
 [[component]]
 id = "object_tree.ctx_menu.delete_connection"
@@ -739,8 +747,13 @@ precondition = "刷新被跳过"
 result = "写一行说明（例如「这个分组还没展开：展开时会重新读取」），4 秒后自行收起"
 source = "src/tree.rs:1949"
 
+[[component.interaction]]
+trigger = "load"
+precondition = "工作区命令缺少必要的目标，或明确目标已不可用"
+result = "提示选择所需资源，或重新选择、清除已失效的选择"
+source = "src/tree.rs::TreePanel::show_hint、src/ui.rs::show_objects_for_kind、src/tabs.rs::TabSet::new_query_tab"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "4796458298f7"
-commit = "7436cd5"
-evidence = "§2.3 刷新这一组 / 刷新库的跳过后提示"
+spec_hash = "841a2fd912ff"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：AT-SPI 读到只选连接时选择库的提示，断开及删除后读到目标不可用提示。"

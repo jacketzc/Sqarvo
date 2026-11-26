@@ -104,7 +104,7 @@ a11y.name = "（行内容：<对象名> @ <catalog>）"
 impl_notes = [
   "标题固定是 `<对象名> @ <catalog>`；catalog 为空写「默认」——不编造库名，也不把连接名塞进标签。",
   "tooltip 是 `<标题> · 标签会话`；会话建立后阶段换成 `会话 <id 前 8 位>`。",
-  "窗口标题仍是 `<标签标题> (<连接名>)`（副标题是连接级信息，不随标签改）。",
+  "窗口标题从工作区原始名称生成，连接与库归属从资源身份生成。",
 ]
 
 [[component.interaction]]
@@ -115,20 +115,20 @@ source = "src/tabs.rs:1806、src/tabs.rs:1843、src/tabs.rs:1914、src/tabs.rs:1
 
 [[component.interaction]]
 trigger = "double_click"
-precondition = "已有对象名 + catalog + 连接键三者完全一致的表标签"
+precondition = "已有档案、catalog、Schema、对象种类和对象身份完全一致的表数据工作区"
 result = "只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去"
 source = "src/tabs.rs:1815、src/tabs.rs:128、src/tabs.rs:1599"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "该标签的会话已建立"
-result = "tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里）"
+result = "tooltip 保留原始名、所属库或 Schema 与连接显示名，会话建立后阶段显示「会话 <id 前 8 位>」"
 source = "src/tabs.rs:2563、src/tabs.rs:2273"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "044d086043af"
-evidence = "§4 表数据标签标题 / 打开表 / 复用三行；table_tab_title 与 tooltip_for"
+spec_hash = "26f23165c734"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：本连接重复打开只复用一个标签、跨档案同名表各开一页；完整身份单测覆盖 Schema、种类、catalog 和对象名。"
 
 [[component]]
 id = "tabs.strip.tab.query"
@@ -140,13 +140,13 @@ a11y.name = "（行内容：查询 N）"
 impl_notes = [
   "标题只有「查询 N」：**不带** `@ 库`。序号自 1 起递增、不复用已关闭的序号（关掉「查询 2」后下一个仍是「查询 3」）。",
   "库与连接放 tooltip：`查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`。多连接各自开着「查询 1」时靠 tooltip 区分。",
-  "窗口标题仍是 `<标签标题> (<连接名>)`。",
+  "窗口标题及 tooltip 都采用实际绑定，重绑在途时沿用此前已确认的归属。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "新建查询标签"
-result = "标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」）"
+result = "标题写「查询 N」，序号自 1 起递增。tooltip 只显示已结算的绑定，未确定库时写「未指定」"
 source = "src/tabs.rs:101、src/tabs.rs:1888、src/tabs.rs:1895、src/tabs.rs:2273"
 
 [[component.interaction]]
@@ -157,8 +157,8 @@ source = "src/tabs.rs:2563"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ac7f8a5083f8"
-evidence = "§4 查询标签标题；query_tab_title 递增计数器与 tooltip_for"
+spec_hash = "d50f19604c72"
+evidence = "test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect：真实重绑成功与失败恢复；隔离 GTK qa_query_target_tracks_the_original_tab_session：标题读取已结算的连接，旧库与迟到响应隔离。"
 
 [[component]]
 id = "tabs.strip.tab.close"
@@ -179,7 +179,7 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "非 Objects 页，且没有脏行、没有未提交事务"
-result = "直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect）"
+result = "直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect）。重绑期间关闭时摘除该标签的请求归属，晚到的会话直接释放"
 source = "src/tabs.rs:2656、src/tabs.rs:2673"
 
 [[component.interaction]]
@@ -209,8 +209,8 @@ source = "src/ui.rs:328、src/tabs.rs:2867"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6255d75d243d"
-evidence = "§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current"
+spec_hash = "25529cd9f216"
+evidence = "隔离 GTK qa_query_target_tracks_the_original_tab_session：重绑期间关闭目标标签，后到的成功和失败结果无法恢复已关闭标签。"
 
 [[component]]
 id = "tabs.strip.new"
@@ -229,7 +229,7 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "后端就绪、工作区已建立"
-result = "未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示"
+result = "目标可用且未达上限时新建「查询 N」并聚焦编辑器。导航逻辑选择优先，缺失时用活动工作区。明确不可用时提示且不新建，超限提示沿用 tabs.limit"
 source = "src/tabs.rs:1363、src/tabs.rs:1867、src/tabs.rs:1915、src/ui.rs:263、src/ui.rs:4607"
 
 [[component.interaction]]
@@ -241,8 +241,8 @@ source = "src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1867"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "fe7ea1ebdea1"
-evidence = "§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作"
+spec_hash = "3e8a14be16d4"
+evidence = "test_01_startup.py::test_main_window_accessibility：入口及禁用原因。test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证所有入口所用的新建查询命令解析与失效行为。"
 
 [[component]]
 id = "tabs.limit"
@@ -360,7 +360,7 @@ style.metrics = ["gap_xs", "min_target"]
 impl_notes = [
   "摆放位置是 `tabs.query.actions` 那一行的**最左端**（库选择器之前、会话信息之前）：`parent` 记 `tabs.query` 与 `tabs.query.database_picker` 同一原因（id 已按 `tabs.query.connection_picker` 报备）。",
   "**没有可见文字**（改动确认单 #7）：界面上只有下拉框本身，没有「连接」这类 caption；名字只在可访问名「当前连接」与 tooltip 里。",
-  "列表 = 注册表里**已保存的连接**（连接键 + 显示名），不摆占位项、不编造条目；当前值 = 本标签**实际绑定**的连接（`TabKind::Query.connection_key` 上的覆盖值），由标签写进来，选择器自己不推断。",
+  "列表 = 注册表里**已保存的连接**（连接键 + 公共显示名）；显示名随注册表更新。当前值 = 本标签已结算的连接（`QueryBinding::bound`），由标签写进来。",
   "选中**同一条**连接是 no-op：不重建会话、不发任何 RPC（连点也不会多出会话）。",
   "重绑在途时整枚置灰并在 tooltip 写「正在把本标签的会话切到「<连接名>」…」：连点不会触发两轮 Connect。",
 ]
@@ -374,7 +374,7 @@ source = "src/sql_page.rs:1581、src/sql_page.rs:1699、src/tabs.rs:3356、src/t
 [[component.interaction]]
 trigger = "click"
 precondition = "同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在）"
-result = "**保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」"
+result = "**保留原绑定**并按原连接重新建立会话；结果区给出失败原因。恢复原会话或原库失败时保留原归属并标为失连，禁止执行；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」"
 source = "src/tabs.rs:3399、src/sql_page.rs:766、src/sql_page.rs:1699"
 
 [[component.interaction]]
@@ -383,10 +383,16 @@ precondition = "选中了当前绑定的那条连接"
 result = "no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」"
 source = "src/sql_page.rs:1581、src/tabs.rs:3356"
 
+[[component.interaction]]
+trigger = "click"
+precondition = "有未提交的查询结果行变更时尝试切换连接"
+result = "提示先提交或放弃结果行变更，保留当前会话和已有编辑"
+source = "src/tabs.rs::TabSet::rebind_connection、src/sql_page.rs::SqlPage::has_pending_result_edits"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "5d43c4530b81"
-evidence = "真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME；两条连接 qa-mariadb / qa-sqlite 已在注册表里）：① 正向重绑——`expect-connection 1 qa-mariadb` 通过，`connection 1 qa-sqlite` 走下拉同一信号路径，日志「标签 tab-q1 重绑连接：qa-mariadb → qa-sqlite」「重绑成功：qa-sqlite（会话 sess_94b…，驱动 sqlite，请求库已清空 = 不改会话库）」「窗口标题：查询 1 (qa-sqlite)（副标题：已连接 · sqlite）」，随后未限定表名的 `SELECT tag FROM probe;` → `expect-query 1 first=sqlite-probe` 通过（表只在 SQLite 里）。② 反向重绑——`connection 1 qa-mariadb` 后「重绑成功：qa-mariadb（… 驱动 mariadb …）」「库上下文：无默认库」，同一条未限定 SQL 得到 `[mariadb.no_database]`、`expect-query 1 state=error` 通过（没有静默回落）。③ 失败保留——`connection 1 qa-broken`（保存的坏端口）→「重绑失败（保留 qa-mariadb）：[session.not_found] …连接被拒绝」、选择器文字回到「qa-mariadb」、状态行「错误 · 已保留 0 行」，随后 `SELECT VERSION()` 仍得 11.4.13-MariaDB（原连接重新建立、标签可用）。④ 同一条连接——`connection 1 qa-mariadb` 后日志里「重绑连接」0 次、「建立会话」0 次，查询照常。单测 query_binding_keeps_the_old_connection_when_a_rebind_fails、query_binding_treats_the_same_connection_as_a_no_op、connection_picker_selection_follows_the_binding。"
+spec_hash = "2dfbc588aac7"
+evidence = "test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect：实际重绑 SQLite 成功、失败后保留原标签并恢复原库。隔离 GTK qa_query_target_tracks_the_original_tab_session：在途不可执行、迟到旧响应丢弃、恢复失败标失连、改别名后选择器及标题更新且档案键保持。"
 
 [[component]]
 id = "tabs.query.database_picker"
@@ -411,7 +417,7 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库"
-result = "发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」"
+result = "发 `SetSessionContext`，切换在途期间暂停会话操作并显示此前的实际库。成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」"
 source = "src/sql_page.rs:1207、src/sql_page.rs:1421、src/sql_page.rs:1343、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529"
 
 [[component.interaction]]
@@ -428,8 +434,8 @@ source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1371、src/backe
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6b4ee7617fae"
-evidence = "两枚选择器都不带可见文字（改动确认单 #7）：原来那行「库」caption 已从 `CatalogPicker` 删除（`grep -rn Label::new src/` 里没有「库」这一条），可访问名仍是「当前库」。本轮真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME）：MariaDB 无默认库标签上日志「库上下文：无默认库（选择器显示「未指定库」）」；SQLite 标签日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」（整枚不渲染，而连接选择器仍读到「qa-sqlite」）。历史证据：QA 脚本（独立 app id + 隔离 XDG_CONFIG_HOME，无默认库的 MariaDB 档案）：`query-tab` 后 `expect-catalog 1 未指定库` 通过（选择器显示服务端真值「无默认库」）；`catalog 1 sqarvo_test` 走下拉的同一信号路径，日志出现「请求切库：sqarvo_test」与「已切到库 sqarvo_test（服务端真值：sqarvo_test）」；`expect-catalog 1 sqarvo_test` 通过；随后执行未限定表名的 `SELECT DATABASE() AS db;`，`expect-query 1 first=sqarvo_test` 通过（执行前切库生效）。SQLite 档案（驱动未声明 `session_catalog_switch`）日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」——是整枚不渲染，不是灰块。另：对象树里选中 `sqarvo_test` 后新建查询标签，日志「请求库 sqarvo_test」，不碰选择器直接执行 `SELECT DATABASE()` 也得 sqarvo_test（新标签默认请求库 = 树当前选中项所在的库）。单测：supports_catalog_switch、query_catalog_keeps_request_and_truth_separate（cargo test --bin sqarvo-desktop：466 passed）。"
+spec_hash = "391c4380b55a"
+evidence = "隔离合成 MariaDB 只读用例 test_read_only_catalog_restores_after_rebind_failure：从无默认库切到 demo Schema，SELECT DATABASE() 验证实际库；重绑坏目标后恢复原 Schema，第二次不同结果再次验证。隔离 GTK qa_query_target_tracks_the_original_tab_session 验证旧回执不能覆盖实际上下文。"
 
 [[component]]
 id = "tabs.query.editor"

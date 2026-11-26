@@ -7,7 +7,7 @@
 
 前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：Linux Active、Windows Rewriting、macOS Planned。同步列仅显示 Active 平台。
 
-共 213 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 214 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。
@@ -1067,12 +1067,12 @@ kind `container` · status `active` · parent `inspector`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_sm`、`gap_md`、`gap_lg`
-- 同步：Linux done（§6 选中连接；inspector.rs::connection_facts 与 show_connection）
-- 实现备注：字段行顺序固定：驱动、地址、默认库、用户、TLS、凭据引用、服务端版本、连接延迟、会话数。地址是 host:port 或文件路径，不拼用户名与库名（它们各有独立字段）。服务器型驱动没有默认库时写「未指定」（吞掉整行会像漏了字段）；文件型驱动没有 TLS 一层，这一行整行不出现。凭据引用只写 credential_ref，面板里没有明文密码。
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：活动 A 时预览 B，B 改别名后 Inspector 同步名称、A 的标题保持、元数据请求数不变；test_14_inspector_no_cache.py 验证 Preview 请求隔离。）
+- 实现备注：字段行顺序固定：驱动、地址、默认库、用户、TLS、凭据引用、服务端版本、连接延迟、会话数。地址是 host:port 或文件路径，不拼用户名与库名（它们各有独立字段）。服务器型驱动没有默认库时写「未指定」（吞掉整行会像漏了字段）；文件型驱动没有 TLS 一层，这一行整行不出现。凭据引用只写 credential_ref，面板里没有明文密码。连接别名或显示名消歧义变化时，当前预览按档案 ID 更新名称，不新增元数据请求。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 选中连接行且连接在配置里 | 标题 = 连接名、副标题 = 驱动；字段行给驱动、地址（host:port 或文件路径）、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、连接延迟、会话数；拿不到的字段不出现 | `src/ui.rs:2122、src/inspector.rs:621、src/inspector.rs:133` |
+| load | 选中连接行且连接在配置里 | 标题 = 树与标签共享的连接显示名，副标题 = 驱动。会话数按该档案的浏览会话及本窗口的独立会话统计；字段行给驱动、地址（host:port 或文件路径）、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、连接延迟、会话数；拿不到的字段不出现 | `src/ui.rs:2122、src/inspector.rs:621、src/inspector.rs:133` |
 | load | 选中连接行但连接已不在配置里 | 状态页「连接已不在配置里」+「connections.json 里已经没有这条连接（config.invalid）。刷新对象树后重试。」 | `src/inspector.rs:625` |
 
 ### `inspector.field` 字段行（标签 · 值）
@@ -1089,13 +1089,13 @@ kind `row` · status `active` · parent `inspector`
 kind `container` · status `active` · parent `inspector`
 
 - 样式：槽位 `inspector`；尺寸 `gap_sm`、`gap_md`、`gap_lg`
-- 同步：Linux done（test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect；GTK catalog_counts_require_the_same_browse_session_and_catalog_identity）
+- 同步：Linux done（test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect 两个断开场景：同名库计数不串连接，目标失败后仍是原库。隔离 GTK qa_query_target_tracks_the_original_tab_session 覆盖迟到回答。）
 - 实现备注：字段：名称、表计数、视图计数；计数只来自树里已经展开过的分组层，打开一个库不顺带扫整库。统计按连接的浏览会话与库或 Schema 身份匹配。无法唯一定位或未成功读取的分组省略该字段。该层还有下一页时补一行「计数说明：按已展开的结果统计（该层还有下一页）」，不把当前页当总数。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 选中库 / schema 行 | 标题 = 库名、副标题「库」；字段行给名称与表 / 视图计数，计数只来自已展开的分组层，没展开过的那一行不出现 | `src/ui.rs:2132、src/inspector.rs:644、src/inspector.rs:192` |
-| load | 当前 SQL 标签已确定库上下文，或用户在 SQL 标签里切换连接 | 库视图跟随该标签实际绑定的连接。重绑等待中与失败时保留原归属，成功后按新会话的库上下文更新，同名库也重新匹配统计 | `src/tabs.rs::TabSet::pin_target、src/ui.rs::pin_identity、src/tree.rs::TreePanel::group_counts_by_catalog` |
+| load | 当前 SQL 标签已确定库上下文，或用户在 SQL 标签里切换连接 | 库视图跟随该标签实际绑定的连接。重绑等待中与失败时保留原归属及此前确认的库，成功后按新会话的库上下文更新，同名库也重新匹配统计 | `src/tabs.rs::TabSet::pin_target、src/ui.rs::pin_identity、src/tree.rs::TreePanel::group_counts_by_catalog` |
 | load | 选中的是分组行（Tables / Views / Functions / Queries 等） | 分组行没有对象信息：面板回到空态，标题回到「信息面板」 | `src/ui.rs:2152` |
 
 ### `inspector.object` 表 / 视图视图（标题 · 切换条 · 两页）
@@ -1316,7 +1316,7 @@ kind `control` · status `active` · parent `inspector.object.info`
 kind `area` · status `active`
 
 - 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`sidebar_min`、`sidebar_max`、`row_height_tree`
-- 同步：Linux done（v0.2.5 Linux 客户端；§2.1 逐条对照 tree.rs）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证 F5 后旧资源行移出导航，旧菜单被拒绝；test_15_refresh_regressions.py::test_objects_list_refreshes_on_reentry_and_f5 验证 Objects 原作用域重列。）
 - 实现备注：侧栏只有对象树：没有页脚按钮、没有刷新按钮、没有平铺列表、没有分页统计。搜索框与搜索状态行不画在侧栏里，放在状态栏左边沟（见 object_tree.search），宽度跟随分栏线。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1330,12 +1330,12 @@ kind `container` · status `active` · parent `object_tree`
 - 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`badge_min_height`
 - 无障碍：可访问名「对象树」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkListView
-- 同步：Linux done（GTK --qa-startup-workspace 加载 2 个迁移档案；tests/ui/linux/test_06_mcp_access.py 验证损坏时空树和错误态。）
+- 同步：Linux done（test_15_refresh_regressions.py::test_navigation_selection_survives_projection_without_requests：折叠并恢复已加载路径后选中同一资源，浏览、DDL、列、主键请求次数保持。test_16_workspace_context.py::test_navigation_target_and_clear_selection：折叠或断开后的明确目标仍优先。）
 - 实现备注：GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。折叠后重新展开复用已读内容、不发请求。层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（后端握手后由 ListProfiles 异步填充，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key ↑ / ↓ | 树有焦点 | 移动选中；选中变化与鼠标单击同效（信息面板与 Objects 页跟随） | `src/tree.rs:1983` |
+| key ↑ / ↓ | 树有焦点 | 移动选中和更新 Inspector 预览；只有主动 Browse 才改变 Objects 的范围。过滤、折叠、模型重建保持逻辑选择。明确失效的目标保留到重新选择或清除 | `src/tree.rs:1983` |
 | key Enter | 行有焦点 | 等同于双击（同一回调，走 activate 信号） | `src/tree.rs:2022` |
 | load | 本地后端握手完成 | 异步加载共享连接档案；失败时连接树保持空并在状态栏提示档案加载失败 | `src/ui.rs:669` |
 
@@ -1370,10 +1370,10 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 无障碍：可访问名「（行内容：别名或 用户名@主机:端口/库 + 连接态徽标）」
+- 无障碍：可访问名「（行内容：连接显示名 + 连接态徽标）」
 - 图标：`tree.connection`
-- 同步：Linux done（§2.2 / §2.1 连接行；object_activation 与 connect_saved）
-- 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。行名 = 连接别名；没起别名时回落 用户名@主机:端口/库（文件型驱动是文件路径）。别名只影响显示：不参与身份键、不进连接参数、不改会话显示名。tooltip 首行同一个显示名；有别名时另起一行给「连接名：<派生名>」，同别名不同目标也能分辨。
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：界面与 Inspector 使用 Peer 档案名；无别名 SQLite 显示文件名。resolved_connection_names_are_safe_and_unique 覆盖重名及异常端点。）
+- 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。树、查询连接选择器和窗口共用显示名。优先用别名，其次用主机端口、文件名或内存库友好名。重名用简短目标信息及稳定顺序消歧义。tooltip 首行用同一个显示名，补充驱动、可安全显示的端点及连接状态。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1386,13 +1386,14 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：库 / schema 名）」
 - 图标：`object.catalog`、`object.schema`
-- 同步：Linux done（§2.1 展开库 / schema）
-- 实现备注：库与 schema 不合并成一层：驱动给 schema 层就多一层，重名库靠「会话 + 库名」精确匹配。
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：同名 main 精确走 Peer；test_04_tree.py 验证箭头展开 / 折叠；objects_target_follows_the_selected_node_kind 覆盖库与 Schema Scope。）
+- 实现备注：库与 schema 不合并成一层：驱动给 schema 层就多一层，资源按档案、catalog 和 Schema 精确区分，运行时另校验浏览会话。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | double_click | 行可展开 | 展开 / 收起（展开库只出现分组行，分组仍保持收起） | `src/tree.rs:776` |
 | load | 展开库 / schema | 0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开 | `src/tree.rs:2913` |
+| click | 主动单击库或 Schema 正文 | 更新逻辑选择并在固定 Objects 页浏览此范围。行箭头只处理展开或折叠 | `src/tree.rs::TreePanel::install_handlers、src/ui.rs::objects_target` |
 
 ### `object_tree.tree.row.group` 分组行（Tables / Views / Functions / Queries；表下 Fields / Indexes / Foreign Keys / Triggers）
 
@@ -1400,7 +1401,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：分组名）」
 - 图标：`tree.group.tables`、`tree.group.views`、`tree.group.functions`、`tree.group.queries`、`tree.table_group.fields`、`tree.table_group.indexes`、`tree.table_group.foreign_keys`、`tree.table_group.triggers`
-- 同步：Linux done（§2.1 分组与空态文案）
+- 同步：Linux done（test_15_refresh_regressions.py::test_loaded_rows_survive_tab_switch：单击 Tables 正文切到固定页，再返回数据标签保留 Inspector 行数。）
 - 实现备注：未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。未实现分组展开只写一行说明：「函数列表尚未实现（点开看说明，不发请求）」「已保存的查询尚未实现（点开看说明）」「驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装」。空分组的文案按组不同（这一组没有表 / 视图 / 函数 / 已保存的查询；这张表没有字段 / 索引 / 触发器）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1408,6 +1409,7 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 | double_click | 分组行 | 展开 / 收起 | `src/tree.rs:776` |
 | load | 展开某个分组 | 发一次 ListNodes(filter.kinds=…)，该层有自己的分页 token；Functions / Queries 不请求；Foreign Keys 写 capability.unsupported 说明 | `src/tree.rs:2913、src/tree.rs:371` |
 | load | 服务端返回空 | 说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」 | `src/tree.rs:360、src/tree.rs:441、src/tree.rs:499` |
+| click | 主动单击分组正文 | 选择此分组并浏览所属范围。程序化选中和右键菜单不发起列表请求 | `src/tree.rs::TreePanel::update_navigation、src/ui.rs::objects_target` |
 
 ### `object_tree.tree.row.object` 表 / 视图行
 
@@ -1415,12 +1417,12 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：对象名 + 种类）」
 - 图标：`object.table`、`object.view`
-- 同步：Linux done（§2.2 双击表 / 视图）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：右键打开同一表复用标签，两条连接的同名表各建独立标签。object_identity_is_exact_and_independent_of_browse_session 单测覆盖 schema、种类和大小写。）
 - 实现备注：可打开优先于可展开：表虽然有四组子节点，双击仍是打开数据标签。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 行可打开 | 打开表数据标签（同一张表在对象名 + catalog + 连接键三者一致时复用已有标签，不新建会话、不重载数据） | `src/tree.rs:776、src/tabs.rs:1637` |
+| double_click | 行可打开 | 打开表数据标签。档案、catalog、Schema、对象种类和对象身份完全一致时复用已有同类型工作区。只选中对象时预览，Objects 范围保留 | `src/tree.rs:776、src/tabs.rs:1637` |
 | load | 展开表节点 | 0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes | `src/tree.rs:2733、src/tree.rs:2756` |
 
 ### `object_tree.tree.row.field` 列 / 索引 / 触发器行
@@ -1496,7 +1498,7 @@ kind `container` · status `active` · parent `object_tree.search`
 
 - 样式：槽位 `status_bar.left_gutter`
 - 同步：Linux done（§2.4 结果行点击语义）
-- 实现备注：结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。只出现「连接名命中」或「其中有命中」的连接；命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 Tables 下；祖先行箭头可收起 / 再展开，收起状态按路径记、重新搜索仍生效。
+- 实现备注：搜索按捕获的档案和浏览会话校验异步结果。定位成功才更新逻辑选择，定位不会发起 Objects 浏览或 Inspector 预览。结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。只出现「连接名命中」或「其中有命中」的连接；命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 Tables 下；祖先行箭头可收起 / 再展开，收起状态按路径记、重新搜索仍生效。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1511,12 +1513,12 @@ kind `container` · status `active` · parent `object_tree`
 
 - 样式：槽位 `overlay`
 - 原生控件：gtk:GtkPopoverMenu
-- 同步：Linux done（§2.3 右键菜单）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：捕获 B 后改选 A 仍打开 B；B 对象重命名并刷新后原菜单提示目标失效，新名称单独打开。）
 - 实现备注：贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。收起时把 popover 的 unparent 推迟到 idle：GtkModelButton 是先 popdown（同步发 closed）再激活动作，closed 里同步摘控件树会让动作名解析不到 —— 表现就是「菜单收起、点了没反应」（#175 实测对照）。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 非占位行 | 按行种类给条目；占位行与列 / 索引 / 触发器行直接返回（menu_items 为空） | `src/tree.rs:3266、src/tree.rs:3388` |
+| right_click | 非占位行 | 右键选中此行并捕获菜单目标。点击条目时复核原连接、浏览会话及仍在原模型中的资源路径。失效时关闭菜单并提示。辅助行与无条目的行不出菜单 | `src/tree.rs:3266、src/tree.rs:3388` |
 
 ### `object_tree.ctx_menu.connect_saved` 「连接（使用已保存的凭据）」
 
@@ -1537,12 +1539,12 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「断开连接」
-- 同步：Linux done（§2.3 断开连接）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：从具名菜单确认断开 B，A 查询和 B 的独立查询会话均可继续使用。）
 - 实现备注：只关闭该连接的浏览会话（树 / 搜索 / DDL）；数据页用另一条会话，已加载数据仍可查看；其它连接的浏览会话不受影响。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 该连接已连接 | 先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认后才断开 | `src/tree.rs:3305、src/ui.rs:2954` |
+| click | 该连接已连接 | 先确认「断开连接？」（说明影响范围；按钮 取消 / 断开连接，破坏性默认取消），确认时复核原浏览会话；会话失效时提示 | `src/tree.rs:3305、src/ui.rs:2954` |
 
 ### `object_tree.ctx_menu.refresh_connection` 「刷新连接」
 
@@ -1588,8 +1590,8 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「编辑连接…」
-- 同步：Linux done（tests/ui/linux/test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证启动菜单打开编辑对话框，保存保留 UUID 并推进 revision。）
-- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。按 saved_key 重建对话框：对已关闭的 AdwDialog 调 present() 是空操作，复用旧实例会让这个条目「点了没反应」（#175）。编辑期间不留旧会话：配置改动只在下次连接时生效，留着旧标签会让人误以为已经生效。
+- 同步：Linux done（test_06_mcp_access.py::test_edit_profile_preserves_id_and_increments_revision 验证启动菜单保存原 UUID 并推进 revision；test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证工作区编辑仍使用捕获档案。）
+- 实现备注：密码永不回显：已有 credential_ref 时密码行留空、复用引用；不会自动连接。按 saved_key 重建对话框：对已关闭的 AdwDialog 调 present() 是空操作，复用旧实例会让这个条目「点了没反应」（#175）。档案不存在或其驱动不可用时提示目标失效，编辑对话框只接收原档案。编辑期间不留旧会话：配置改动只在下次连接时生效，留着旧标签会让人误以为已经生效。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1602,12 +1604,12 @@ kind `container` · status `active` · parent `object_tree.ctx_menu.edit_connect
 - 样式：槽位 `overlay`
 - 无障碍：可访问名「编辑连接？」
 - 原生控件：gtk:AdwAlertDialog
-- 同步：Linux done（AdwAlertDialog + close_tabs_for_connection + registry.disconnect）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：从已连接档案的原生菜单进入关闭确认，确认原会话仍有效时进入编辑。）
 - 实现备注：只在连接**已连接**时弹：没有会话、没有标签可关的条目直接进编辑，不多一次点击。正文两句，第二句单独一行：「未提交的更改会一并丢弃。」；有脏行时换成「其中 N 个标签有未提交的更改，确认后一并丢弃。」；确认后才关标签、断连接，然后打开对话框；取消则连接与标签保持原样。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接已连接 | 取消：什么都不做；「关闭并编辑」：关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框 | `src/ui.rs:3781、src/tabs.rs:2921` |
+| click | 连接已连接 | 取消：什么都不做；「关闭并编辑」：复核原浏览会话，会话失效时提示，仍有效时关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框 | `src/ui.rs:3781、src/tabs.rs:2921` |
 
 ### `object_tree.ctx_menu.delete_connection` 「删除连接」
 
@@ -1653,16 +1655,17 @@ kind `control` · status `active` · parent `object_tree`
 
 - 样式：槽位 `sidebar`；尺寸 `font_status`、`gap_xs`
 - 无障碍：可访问名「侧栏提示」
-- 同步：Linux done（§2.3 刷新这一组 / 刷新库的跳过后提示）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：AT-SPI 读到只选连接时选择库的提示，断开及删除后读到目标不可用提示。）
 - 实现备注：只用于「刷新这一组 / 刷新库 / 刷新连接」的跳过后说明；4 秒后自行收起。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 刷新被跳过 | 写一行说明（例如「这个分组还没展开：展开时会重新读取」），4 秒后自行收起 | `src/tree.rs:1949` |
+| load | 工作区命令缺少必要的目标，或明确目标已不可用 | 提示选择所需资源，或重新选择、清除已失效的选择 | `src/tree.rs::TreePanel::show_hint、src/ui.rs::show_objects_for_kind、src/tabs.rs::TabSet::new_query_tab` |
 
 ## Objects 固定页（`objects_page`）
 
-工作区最左侧的固定页：标题「Objects」+ 三列表格（行号 · 表名 · 类型）+ 状态行 +「加载更多…」。列表内容跟着对象树的选中换作用域，页面自己发 ListNodes 并持有自己的分页 token；不新建会话、不反写树的选中。
+工作区最左侧的固定页：标题「Objects」+ 三列表格（行号 · 表名 · 类型）+ 状态行 +「加载更多…」。列表内容由主动 Browse 命令改变作用域，页面自己发 ListNodes 并持有自己的分页 token；不新建会话、不反写树的选中。
 
 | 组件 | 名称 | kind | 状态 | Linux |
 |---|---|---|---|---|
@@ -1693,8 +1696,8 @@ kind `control` · status `active` · parent `objects_page`
 - 样式：槽位 `workspace.tabstrip`；尺寸 `objects_min_width`、`tab_strip_height`
 - 无障碍：可访问名「Objects」；Tab 可聚焦；固定在标签条首位
 - 图标：`tab.objects`
-- 同步：Linux done（§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支）
-- 实现备注：AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；唯一权威作用域同时服务分页与刷新，真实空态 / 不支持页会清空它，不恢复历史列表。同一作用域已有在飞请求时，树选中与重复「加载更多」都不叠加请求。
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_scope_survives_connection_selection：普通标签往返恢复原范围；启动与关闭回归覆盖固定页。）
+- 实现备注：固定页独立持有已确认的浏览范围和当前请求范围。普通标签激活和树的被动选择不会改动浏览范围。AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；当前请求范围服务分页与刷新，只有匹配的成功响应才能确认范围。空态或不支持页会清空范围，不恢复历史列表。同一作用域已有在飞请求时，树选中与重复「加载更多」都不叠加请求。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1711,18 +1714,18 @@ kind `container` · status `active` · parent `objects_page`
 - 无障碍：可访问名「对象列表」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkColumnView
 - 自绘：WinUI 3 没有等价的列式表格控件：GridView 不支持「虚拟化 + 可拖列宽 + 行号列」三者组合，ItemsControl 的虚拟化不带列宽状态；这里按 Linux 同口径自绘虚拟化三列表格（§7.1）。
-- 同步：Linux done（test_15_refresh_regressions.py 经 SQL 编辑器提交 CREATE、ALTER RENAME、DROP 后重入，另测外部 DDL、主动刷新、单选与空态；按 Objects 和对象树独立请求计数核对）
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_scope_survives_connection_selection：只选连接保留范围与数据。test_15_refresh_regressions.py::test_navigation_selection_survives_projection_without_requests：模型恢复不发被动 RPC。test_16_workspace_context.py::test_navigation_target_and_clear_selection：分类操作使用 Peer。）
 - 实现备注：GtkColumnView + GtkSingleSelection：autoselect(false)、can_unselect(true) —— 进页不自动选中首行，选中是用户的动作、也是信息面板的输入。列序固定「行号 → 表名 → 类型」，set_reorderable(false)：拖不乱；表头文本就是这三个词，单行。行号列 fixed_width 取 row_number_width 且 resizable(false)（不可拖）；表名列 expand + 可拖，初值 column_width；「类型」列 fixed_width 120 是代码常量 OBJECTS_KIND_COLUMN_WIDTH，未进 metrics.toml（P1 补齐）。行高 row_height_data，行 / 列分隔线由 GTK 画（颜色同源 @sqarvo_separator）；外框挂在 ScrolledWindow 上（.sqarvo-table-frame：frame_border_width + radius_md，overflow hidden 裁首末行底色），行与单元格不加整线。横竖滚动条常驻可见（overlay_scrolling(false)）：把「表名」拖宽后仍能滚回行号列。换密度档时只重设行号 / 表名两列宽度（reapply_tier），不重建列表、不重发请求。整个表格与数据网格逐像素同口径：行高、表头高度、悬停 / 选中底色、外框都是同一组选择器（theme.stylesheet 里 .sqarvo-grid 与 .sqarvo-objects 并列）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | key ↑ / ↓ | 表格有焦点且已有行 | 移动选中（SingleSelection 默认行为）；选中变化与单击同效 —— 同步右侧信息面板 | `src/tabs.rs:680、src/tabs.rs:917` |
 | key Enter | 有选中行 | 等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签） | `src/tabs.rs:938、src/tabs.rs:1779` |
-| load | 树里选中库 / 它下面的 Tables 分组 / 表内分组（Fields 等）/ 某张表 | 列出该库的表（filter.kinds=[TABLE]）；页面自己请求，树没展开过也能看到完整列表 | `src/ui.rs:1346、src/ui.rs:1357、src/ui.rs:2093` |
-| load | 树里选中 Views 分组 / 某个视图 | 列出该库的视图（[VIEW, MATERIALIZED_VIEW]） | `src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366` |
-| load | 树里选中 Functions / Queries 分组 | 不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token | `src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984` |
-| load | 树里选中连接行 / 占位行（没有作用域） | 回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉 | `src/ui.rs:1377、src/tabs.rs:1016` |
-| load | 树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表） | 不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览） | `src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050` |
+| load | 单击库、Schema 或表分类正文，或主动点击 Tables 入口 | 列出该库的表（filter.kinds=[TABLE]）；页面自己请求，树没展开过也能看到完整列表 | `src/ui.rs:1346、src/ui.rs:1357、src/ui.rs:2093` |
+| load | 单击 Views 分组正文，或主动点击 Views 入口 | 列出该库的视图（[VIEW, MATERIALIZED_VIEW]） | `src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366` |
+| load | 主动单击 Functions / Queries 分组正文或对应工具条入口 | 不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token | `src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984` |
+| load | 只选择连接、具体对象、辅助行或显式清除选择 | 维持已有的 Objects 浏览范围。单纯选择、程序化定位或重建不派发列表请求 | `src/ui.rs:1377、src/tabs.rs:1016` |
+| load | 重复主动浏览已加载的同一个库或 Schema 及分类 | 不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览） | `src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050` |
 | load | 从别的标签切回本页 | 清掉行选中，并按当前有效作用域从第一页重新查询列表；右侧信息面板按当前标签目标更新，不复用上一次进入时的列表 | `src/tabs.rs:2090、src/tabs.rs:2099` |
 | key F5 | 当前页是 Objects | 强制重新查询当前作用域第一页；保留对象树刷新职责，旧分页响应按 generation 丢弃，树事件不会因同作用域在飞请求再发一份 | `src/ui.rs:2846、src/tabs.rs:2099` |
 
@@ -1833,6 +1836,7 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.menu` | 　主菜单 | control | active | done |
 | `shell.menu.new_connection` | 　　文件 → 新建连接 | item | active | done |
 | `shell.menu.new_tab` | 　　文件 → 新建查询标签 | item | active | done |
+| `shell.menu.clear_selection` | 　　视图 → 清除选择 | item | active | done |
 | `shell.menu.quit` | 　　文件 → 退出 | item | active | done |
 | `shell.menu.export_csv` | 　　表 → 导出 CSV | item | removed | 已清 |
 | `shell.menu.about` | 　　帮助 → 关于 Squarvo | item | active | done |
@@ -1896,15 +1900,15 @@ kind `control` · status `active` · parent `shell`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「窗口标题」
-- 同步：Linux done（§1.1 六条标题 / 副标题规则；show_startup_workspace / show_workspace / TabSet::refresh_current）
-- 实现备注：由 AdwWindowTitle 承载：字号随窗口继承 font_ui，字重由 Adwaita 的内部样式决定，`.sqarvo-title` 类只用在页内标题上。标题跟着**当前标签**变，副标题是连接级信息、不随标签改 —— 这是两条不同的刷新路径。
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：树选 B 时系统标题保留 A；同名表标签及 Objects 分别显示实际档案。隔离 GTK qa_query_target_tracks_the_original_tab_session：在途、失败与迟到响应不改实际标题。）
+- 实现备注：由 AdwWindowTitle 承载：字号随窗口继承 font_ui，字重由 Adwaita 的内部样式决定，`.sqarvo-title` 类只用在页内标题上。标题、副标题和 tooltip 读取活动工作区的实际绑定。查询重绑的目标只用于建立会话。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 握手成功且还没有数据库连接 | 标题「Sqarvo」、副标题「未连接」 | `src/ui.rs:1561` |
-| load | 连接数据库成功 | 标题「<连接名> - <驱动显示名>」；副标题「已连接 · <显示名>（<driver_id>）· <服务端版本>」，版本缺失时写「未知（后端未返回）」 | `src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770` |
-| load | 切换标签 | 标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息） | `src/tabs.rs:2292、src/tabs.rs:2310、src/tabs.rs:135` |
-| load | 后端断开 | 标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连 | `src/ui.rs:587、src/tabs.rs:2632` |
+| load | 连接数据库成功 | Objects 还没有成功浏览的范围时，标题是「Sqarvo」，副标题为空 | `src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770` |
+| load | 切换标签 | 主标题用工作区原始名称与连接显示名组成「<工作区名> @ <连接名>」。副标题显示驱动显示名和实际数据库或 Schema，缺失项省略。系统窗口标题加「— Sqarvo」。tooltip 补充可安全显示的目标详情。选中树资源和在途重绑都不改归属 | `src/tabs.rs:2292、src/tabs.rs:2310、src/tabs.rs:135` |
+| load | 后端断开 | 存续的普通标签保留实际归属及已加载结果，业务区域显示失连。无工作区时展示外壳的断开状态 | `src/ui.rs:587、src/tabs.rs:2632` |
 | load | 后端握手失败 | 标题回到「Sqarvo」、副标题「连接失败」 | `src/ui.rs:567、src/ui.rs:3774` |
 | load | 用户选择「重启 Sqarvo」 | 副标题「正在重启…」，标题「Sqarvo」 | `src/ui.rs:1420` |
 
@@ -1916,12 +1920,12 @@ kind `control` · status `active` · parent `shell`
 - 无障碍：可访问名「主菜单（文件 / 视图 / MCP / 帮助）」；Tab 可聚焦；Enter / Space 展开菜单，Esc 收起
 - 图标：`menu.open`
 - 原生控件：gtk:MenuButton(GMenu → PopoverMenu)
-- 同步：Linux done（GTK 单测 mcp_management_has_a_top_level_menu_item 检查菜单模型，AT-SPI test_06_mcp_access.py 验证菜单、权限动作与回读。）
+- 同步：Linux done（GTK 菜单模型单测验证视图 → 清除选择绑定 win.clear-selection；test_16_workspace_context.py::test_navigation_target_and_clear_selection 通过该公开动作验证清除后回退工作区。）
 - 实现备注：图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / MCP / 帮助）」。「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。外壳区条目文字与 tooltip 自 #199 起经 `l10n/shell.toml` 生成 catalog（`l10n::t`）取值：zh 与登记的中文原文逐字节相同，英文界面显示对应译文；「视图 → 语言」的条目文字在英文界面下仍按自译名显示（简体中文 / English）。弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选） | `src/ui.rs:4945、src/ui.rs:321` |
+| click | 窗口存在 | 展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（清除选择 / 深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选） | `src/ui.rs:4945、src/ui.rs:321` |
 
 ### `shell.menu.new_connection` 文件 → 新建连接
 
@@ -1943,13 +1947,25 @@ kind `item` · status `active` · parent `shell.menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「新建查询标签」
-- 同步：Linux done（§1.4 文件 → 新建查询标签；set_workspace_ready 与 new-tab 接线）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：win.new-tab 对失效、删除目标提示并保持标签数。test_03_sql.py 验证独立查询与执行。）
 - 实现备注：与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同一条 `TabSet::new_query_tab`。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应） | `src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859` |
+| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。目标缺失或不可用时在侧栏提示，成功时聚焦编辑器。后端未就绪或工作区未建立时入口禁用 | `src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859` |
 | key Ctrl+T | 后端已握手且工作区存在 | 与菜单项同一个动作 `win.new-tab` | `src/ui.rs:327` |
+
+### `shell.menu.clear_selection` 视图 → 清除选择
+
+kind `item` · status `active` · parent `shell.menu`
+
+- 样式：尺寸 `font_ui`
+- 无障碍：可访问名「清除选择」
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：失效导航阻止查询，win.clear-selection 后新查询从活动 A 读到合成数据。GTK 菜单模型断言该条目及动作。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 主菜单的视图子菜单可用 | 清除树的逻辑与可见选择，保留活动标签和 Objects 范围。下一次全局命令可以使用活动工作区。 | `src/ui.rs::install_window_actions、src/tree.rs::TreePanel::clear_selection` |
 
 ### `shell.menu.quit` 文件 → 退出
 
@@ -2026,12 +2042,12 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`
 - 无障碍：可访问名「新建查询」
-- 同步：Linux done（§1.2「新建查询」；apply_new_query 的两条件与三段 tooltip）
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：直接点新建查询在两条同名 main 的独立会话读到 A/B；清除后跟随活动页。test_01_startup.py 断言未连接时可访问的禁用原因。）
 - 实现备注：两个独立条件同时满足才可点：后端已握手 **且** 已连接数据库（工作区存在）；两者正交，任一不满足都禁用。tooltip 三态：启用「新建查询标签（Ctrl+T）」；未连接「尚未连接数据库：先连接再新建查询标签」；后端未就绪「后端尚未就绪：握手完成且连接数据库后才能新建查询标签」。与标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」同一条 `TabSet::new_query_tab`。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在 | 新建查询标签并聚焦编辑器；工作区不存在时只写日志「尚未连接数据库：先连接再新建查询标签」 | `src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859` |
+| click | 后端已握手且工作区存在 | 按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。目标缺失或不可用时在侧栏提示，成功时聚焦编辑器。后端未就绪或工作区未建立时入口禁用 | `src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859` |
 
 ### `shell.toolbar.tables` 种类入口「Tables」
 
@@ -2040,13 +2056,13 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Tables」
 - 图标：`tree.group.tables`
-- 同步：Linux done（§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮）
-- 实现备注：纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。tooltip：就绪「在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：只选 B 连接时提示选择库；选中 B 的 main 时列出 peer_only。）
+- 实现备注：纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的表；未就绪提示等待握手。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且树里能定位到库 | 在树里**一次选中**该库的 `Tables` 分组行（库未展开先展开），切到 `Objects` 页并按 `filter.kinds=[TABLE]` 拉第一页；信息面板随树选中切换；工具条高亮 `Tables` | `src/ui.rs:1078、src/ui.rs:1909、src/shell.rs:958` |
-| click | 树里定位不到库（尚未连接 / 树里没有库） | 只写日志「种类入口「Tables」无法定位库：…」，界面不变化（§9 已知偏差）；启动态则把固定 `Objects` 页摆到前面并**保持空态**，日志「尚未连接数据库，Objects 页保持空态」 | `src/ui.rs:1942、src/startup.rs:298` |
+| click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页，按解析出的目标数据库或 Schema 列出 Tables，高亮来自 Objects 当前种类。树逻辑选择保留 | `src/ui.rs:1078、src/ui.rs:1909、src/shell.rs:958` |
+| click | 工作区没有可用数据库或 Schema，或目标已失效 | 连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈 | `src/ui.rs:1942、src/startup.rs:298` |
 
 ### `shell.toolbar.views` 种类入口「Views」
 
@@ -2055,13 +2071,13 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Views」
 - 图标：`tree.group.views`
-- 同步：Linux done（§1.3 点 Views；KindGroup::Views 与 kinds 组合）
-- 实现备注：与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。tooltip：就绪「在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）」；未就绪「后端尚未就绪：握手完成后可用」。
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：过同一目标解析路径从 B 的 main 列出 peer_view。）
+- 实现备注：与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的视图；未就绪提示等待握手。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且树里能定位到库 | 在树里一次选中该库的 `Views` 分组行，切到 `Objects` 页并按 `filter.kinds=[VIEW, MATERIALIZED_VIEW]` 拉第一页；信息面板随树选中切换；工具条高亮 `Views` | `src/ui.rs:1078、src/ui.rs:1904、src/ui.rs:1920` |
-| click | 树里定位不到库（尚未连接 / 树里没有库） | 只写日志，界面不变化（与 `Tables` 同一条分支）；启动态把固定 `Objects` 页摆到前面并保持空态 | `src/ui.rs:1942、src/startup.rs:298` |
+| click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页，按解析出的目标数据库或 Schema 列出 Views，高亮来自 Objects 当前种类。树逻辑选择保留 | `src/ui.rs:1078、src/ui.rs:1904、src/ui.rs:1920` |
+| click | 工作区没有可用数据库或 Schema，或目标已失效 | 连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈 | `src/ui.rs:1942、src/startup.rs:298` |
 
 ### `shell.toolbar.functions` 种类入口「Functions」
 
@@ -2070,13 +2086,13 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Functions」
 - 图标：`tree.group.functions`
-- 同步：Linux done（§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文）
-- 实现备注：有入口、没有列表能力：点了照样联动（树里选中分组行），页面如实说明原因，不摆假数据。tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_unsupported_kind_survives_reentry_and_f5[Functions]：未实现说明在重入、F5 后保留，Objects 请求次数不增加。）
+- 实现备注：沿用当前阶段的未实现说明页，保留树逻辑选择。tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且树里能定位到库 | 树里照样选中 `Functions` 分组行（联动两向都要通）；`Objects` 页写「函数列表尚未实现」+「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；**0 次 RPC**；工具条高亮 `Functions` | `src/ui.rs:1931、src/tabs.rs:518、src/ui.rs:1928` |
-| click | 树里定位不到库 | 仍然切到 `Objects` 页并显示未实现说明（不静默、不留空白页） | `src/ui.rs:1948` |
+| click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页并显示 Functions 尚未实现的说明。零列表 RPC，树逻辑选择保留 | `src/ui.rs:1931、src/tabs.rs:518、src/ui.rs:1928` |
+| click | 工作区没有可用数据库或 Schema，或目标已失效 | 连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈 | `src/ui.rs:1948` |
 
 ### `shell.toolbar.queries` 种类入口「Queries」
 
@@ -2085,13 +2101,13 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Queries」
 - 图标：`tree.group.queries`
-- 同步：Linux done（§1.3 点 Queries；unavailable_copy 的 Queries 原文）
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_unsupported_kind_survives_reentry_and_f5[Queries]：未实现说明在重入、F5 后保留，Objects 请求次数不增加。）
 - 实现备注：与 `Functions` 同构：有入口、0 次 RPC、页面如实说明。tooltip：就绪「已保存的查询：尚未实现（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且树里能定位到库 | 树里选中 `Queries` 分组行；`Objects` 页写「已保存的查询尚未实现」+「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」；**0 次 RPC**；工具条高亮 `Queries` | `src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928` |
-| click | 树里定位不到库 | 仍然切到 `Objects` 页并显示未实现说明（与 Functions 同一条分支） | `src/ui.rs:1948` |
+| click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页并显示 Queries 尚未实现的说明。零列表 RPC，树逻辑选择保留 | `src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928` |
+| click | 工作区没有可用数据库或 Schema，或目标已失效 | 连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈 | `src/ui.rs:1948` |
 
 ### `shell.theme` 深色模式（跟随系统 / 浅色 / 深色）
 
@@ -2716,26 +2732,26 @@ kind `row` · status `active` · parent `tabs.strip`
 kind `item` · status `active` · parent `tabs.strip.tab`
 
 - 无障碍：可访问名「（行内容：<对象名> @ <catalog>）」
-- 同步：Linux done（§4 表数据标签标题 / 打开表 / 复用三行；table_tab_title 与 tooltip_for）
-- 实现备注：标题固定是 `<对象名> @ <catalog>`；catalog 为空写「默认」——不编造库名，也不把连接名塞进标签。tooltip 是 `<标题> · 标签会话`；会话建立后阶段换成 `会话 <id 前 8 位>`。窗口标题仍是 `<标签标题> (<连接名>)`（副标题是连接级信息，不随标签改）。
+- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：本连接重复打开只复用一个标签、跨档案同名表各开一页；完整身份单测覆盖 Schema、种类、catalog 和对象名。）
+- 实现备注：标题固定是 `<对象名> @ <catalog>`；catalog 为空写「默认」——不编造库名，也不把连接名塞进标签。tooltip 是 `<标题> · 标签会话`；会话建立后阶段换成 `会话 <id 前 8 位>`。窗口标题从工作区原始名称生成，连接与库归属从资源身份生成。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | double_click | 在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限 | 新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签 | `src/tabs.rs:1806、src/tabs.rs:1843、src/tabs.rs:1914、src/tabs.rs:1947` |
-| double_click | 已有对象名 + catalog + 连接键三者完全一致的表标签 | 只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:1815、src/tabs.rs:128、src/tabs.rs:1599` |
-| load | 该标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」；表标签的 tooltip 不写库名（库已经在标题里） | `src/tabs.rs:2563、src/tabs.rs:2273` |
+| double_click | 已有档案、catalog、Schema、对象种类和对象身份完全一致的表数据工作区 | 只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:1815、src/tabs.rs:128、src/tabs.rs:1599` |
+| load | 该标签的会话已建立 | tooltip 保留原始名、所属库或 Schema 与连接显示名，会话建立后阶段显示「会话 <id 前 8 位>」 | `src/tabs.rs:2563、src/tabs.rs:2273` |
 
 ### `tabs.strip.tab.query` 查询标签（标题与 tooltip）
 
 kind `item` · status `active` · parent `tabs.strip.tab`
 
 - 无障碍：可访问名「（行内容：查询 N）」
-- 同步：Linux done（§4 查询标签标题；query_tab_title 递增计数器与 tooltip_for）
-- 实现备注：标题只有「查询 N」：**不带** `@ 库`。序号自 1 起递增、不复用已关闭的序号（关掉「查询 2」后下一个仍是「查询 3」）。库与连接放 tooltip：`查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`。多连接各自开着「查询 1」时靠 tooltip 区分。窗口标题仍是 `<标签标题> (<连接名>)`。
+- 同步：Linux done（test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect：真实重绑成功与失败恢复；隔离 GTK qa_query_target_tracks_the_original_tab_session：标题读取已结算的连接，旧库与迟到响应隔离。）
+- 实现备注：标题只有「查询 N」：**不带** `@ 库`。序号自 1 起递增、不复用已关闭的序号（关掉「查询 2」后下一个仍是「查询 3」）。库与连接放 tooltip：`查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`。多连接各自开着「查询 1」时靠 tooltip 区分。窗口标题及 tooltip 都采用实际绑定，重绑在途时沿用此前已确认的归属。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 新建查询标签 | 标题写「查询 N」，序号自 1 起递增且不复用已关闭的序号；tooltip 写「查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>」（catalog 空写「默认」） | `src/tabs.rs:101、src/tabs.rs:1888、src/tabs.rs:1895、src/tabs.rs:2273` |
+| load | 新建查询标签 | 标题写「查询 N」，序号自 1 起递增。tooltip 只显示已结算的绑定，未确定库时写「未指定」 | `src/tabs.rs:101、src/tabs.rs:1888、src/tabs.rs:1895、src/tabs.rs:2273` |
 | load | 该查询标签的会话已建立 | tooltip 的阶段换成「会话 <id 前 8 位>」，库与连接仍在后两段 | `src/tabs.rs:2563` |
 
 ### `tabs.strip.tab.close` 标签关闭按钮（×）
@@ -2745,12 +2761,12 @@ kind `control` · status `active` · parent `tabs.strip.tab`
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「关闭标签」
 - 图标：`action.close_tab`
-- 同步：Linux done（§4 关闭标签（× / Ctrl+W）与重复关闭请求；on_close_page 与 close_current）
+- 同步：Linux done（隔离 GTK qa_query_target_tracks_the_original_tab_session：重绑期间关闭目标标签，后到的成功和失败结果无法恢复已关闭标签。）
 - 实现备注：× 与 `Ctrl+W` 走同一条 `close-page`：只有这一条关闭入口，没有第二套旁路。`Objects` 固定页的 × 点了也不关：on_close_page 拒绝并记一行日志（AdwTabPage 没有「不可关闭」属性）。确认框已在显示时再点 × 只记日志，不叠第二个框。菜单里已不列「关闭标签」：入口只有标签上的 × 与 `Ctrl+W`，没有第三条旁路（菜单裁剪口径见契约 §1.4）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 非 Objects 页，且没有脏行、没有未提交事务 | 直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect） | `src/tabs.rs:2656、src/tabs.rs:2673` |
+| click | 非 Objects 页，且没有脏行、没有未提交事务 | 直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect）。重绑期间关闭时摘除该标签的请求归属，晚到的会话直接释放 | `src/tabs.rs:2656、src/tabs.rs:2673` |
 | click | 非 Objects 页，且有脏行或有未提交事务 | 先拦下这次关闭并弹三选确认框（tabs.close_dialog）；在用户答完之前标签不收场 | `src/tabs.rs:2673、src/tabs.rs:2688、src/tabs.rs:2692` |
 | click | 该标签的确认框已在显示 | 忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹 | `src/tabs.rs:2685` |
 | click | 该标签是固定 `Objects` 页 | 不关闭，记一行「Objects 页固定存在，不可关闭」 | `src/tabs.rs:2668` |
@@ -2763,12 +2779,12 @@ kind `control` · status `active` · parent `tabs.strip`
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「新建查询标签」
 - 图标：`action.new_query`
-- 同步：Linux done（§4 新建查询标签（四个入口）；＋ 按钮接线与 win.new-tab 动作）
+- 同步：Linux done（test_01_startup.py::test_main_window_accessibility：入口及禁用原因。test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证所有入口所用的新建查询命令解析与失效行为。）
 - 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。超限时不新建、只弹 tabs.limit（同一段文案不重复弹）；连点 ＋ 不会堆一摞对话框。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端就绪、工作区已建立 | 未达上限 → 新建「查询 N」并聚焦编辑器；已达上限 → 不新建，弹 tabs.limit 的「无法新建标签」提示 | `src/tabs.rs:1363、src/tabs.rs:1867、src/tabs.rs:1915、src/ui.rs:263、src/ui.rs:4607` |
+| click | 后端就绪、工作区已建立 | 目标可用且未达上限时新建「查询 N」并聚焦编辑器。导航逻辑选择优先，缺失时用活动工作区。明确不可用时提示且不新建，超限提示沿用 tabs.limit | `src/tabs.rs:1363、src/tabs.rs:1867、src/tabs.rs:1915、src/ui.rs:263、src/ui.rs:4607` |
 | key Ctrl+T | 后端就绪、工作区已建立 | 与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；超限时同样只弹提示 | `src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1867` |
 
 ### `tabs.limit` 「无法新建标签」提示
@@ -2816,14 +2832,15 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_xs`、`min_target`
 - 无障碍：可访问名「当前连接」
 - 原生控件：gtk:GtkDropDown
-- 同步：Linux done（真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME；两条连接 qa-mariadb / qa-sqlite 已在注册表里）：① 正向重绑——`expect-connection 1 qa-mariadb` 通过，`connection 1 qa-sqlite` 走下拉同一信号路径，日志「标签 tab-q1 重绑连接：qa-mariadb → qa-sqlite」「重绑成功：qa-sqlite（会话 sess_94b…，驱动 sqlite，请求库已清空 = 不改会话库）」「窗口标题：查询 1 (qa-sqlite)（副标题：已连接 · sqlite）」，随后未限定表名的 `SELECT tag FROM probe;` → `expect-query 1 first=sqlite-probe` 通过（表只在 SQLite 里）。② 反向重绑——`connection 1 qa-mariadb` 后「重绑成功：qa-mariadb（… 驱动 mariadb …）」「库上下文：无默认库」，同一条未限定 SQL 得到 `[mariadb.no_database]`、`expect-query 1 state=error` 通过（没有静默回落）。③ 失败保留——`connection 1 qa-broken`（保存的坏端口）→「重绑失败（保留 qa-mariadb）：[session.not_found] …连接被拒绝」、选择器文字回到「qa-mariadb」、状态行「错误 · 已保留 0 行」，随后 `SELECT VERSION()` 仍得 11.4.13-MariaDB（原连接重新建立、标签可用）。④ 同一条连接——`connection 1 qa-mariadb` 后日志里「重绑连接」0 次、「建立会话」0 次，查询照常。单测 query_binding_keeps_the_old_connection_when_a_rebind_fails、query_binding_treats_the_same_connection_as_a_no_op、connection_picker_selection_follows_the_binding。）
-- 实现备注：摆放位置是 `tabs.query.actions` 那一行的**最左端**（库选择器之前、会话信息之前）：`parent` 记 `tabs.query` 与 `tabs.query.database_picker` 同一原因（id 已按 `tabs.query.connection_picker` 报备）。**没有可见文字**（改动确认单 #7）：界面上只有下拉框本身，没有「连接」这类 caption；名字只在可访问名「当前连接」与 tooltip 里。列表 = 注册表里**已保存的连接**（连接键 + 显示名），不摆占位项、不编造条目；当前值 = 本标签**实际绑定**的连接（`TabKind::Query.connection_key` 上的覆盖值），由标签写进来，选择器自己不推断。选中**同一条**连接是 no-op：不重建会话、不发任何 RPC（连点也不会多出会话）。重绑在途时整枚置灰并在 tooltip 写「正在把本标签的会话切到「<连接名>」…」：连点不会触发两轮 Connect。
+- 同步：Linux done（test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect：实际重绑 SQLite 成功、失败后保留原标签并恢复原库。隔离 GTK qa_query_target_tracks_the_original_tab_session：在途不可执行、迟到旧响应丢弃、恢复失败标失连、改别名后选择器及标题更新且档案键保持。）
+- 实现备注：摆放位置是 `tabs.query.actions` 那一行的**最左端**（库选择器之前、会话信息之前）：`parent` 记 `tabs.query` 与 `tabs.query.database_picker` 同一原因（id 已按 `tabs.query.connection_picker` 报备）。**没有可见文字**（改动确认单 #7）：界面上只有下拉框本身，没有「连接」这类 caption；名字只在可访问名「当前连接」与 tooltip 里。列表 = 注册表里**已保存的连接**（连接键 + 公共显示名）；显示名随注册表更新。当前值 = 本标签已结算的连接（`QueryBinding::bound`），由标签写进来。选中**同一条**连接是 no-op：不重建会话、不发任何 RPC（连点也不会多出会话）。重绑在途时整枚置灰并在 tooltip 写「正在把本标签的会话切到「<连接名>」…」：连点不会触发两轮 Connect。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 当前标签是查询标签，且选中了**另一条**已保存的连接 | 重绑本标签的会话，顺序固定：取消在途查询（与 Esc 同一个方法）→ 关游标（Close）→ 断开旧会话（Disconnect）→ 用目标连接参数 Connect（与新建标签同一条 `open_tab_session` 路径）。成功后刷新 `GetSessionContext`、把标签请求库**清空**（= 不改会话库）、tooltip 与窗口标题跟随新连接、库下拉候选按目标连接重新取；日志「[tabs] 标签 tab-q1 重绑连接：<旧名> → <新名>」「[tabs] 标签 tab-q1 重绑成功：…」 | `src/sql_page.rs:1581、src/sql_page.rs:1699、src/tabs.rs:3356、src/tabs.rs:2998、src/tabs.rs:563` |
-| click | 同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在） | **保留原绑定**并按原连接重新建立会话；结果区状态行给出失败原因（查询页既有失败路径，带后端错误码）；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」 | `src/tabs.rs:3399、src/sql_page.rs:766、src/sql_page.rs:1699` |
+| click | 同上，但目标连接的 Connect 失败（凭据缺失 / 连不上 / 驱动不存在） | **保留原绑定**并按原连接重新建立会话；结果区给出失败原因。恢复原会话或原库失败时保留原归属并标为失连，禁止执行；日志「[tabs] 标签 tab-q1 重绑失败（保留 <旧名>）：<code>」 | `src/tabs.rs:3399、src/sql_page.rs:766、src/sql_page.rs:1699` |
 | click | 选中了当前绑定的那条连接 | no-op：不重建会话、不发 RPC，显示回写到绑定值；日志「[tabs] 标签 tab-q1 的连接选择器选中「<名>」= 当前绑定：不重建会话」 | `src/sql_page.rs:1581、src/tabs.rs:3356` |
+| click | 有未提交的查询结果行变更时尝试切换连接 | 提示先提交或放弃结果行变更，保留当前会话和已有编辑 | `src/tabs.rs::TabSet::rebind_connection、src/sql_page.rs::SqlPage::has_pending_result_edits` |
 
 ### `tabs.query.database_picker` 查询标签的库选择器
 
@@ -2832,12 +2849,12 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_xs`、`min_target`
 - 无障碍：可访问名「当前库」
 - 原生控件：gtk:GtkDropDown
-- 同步：Linux done（两枚选择器都不带可见文字（改动确认单 #7）：原来那行「库」caption 已从 `CatalogPicker` 删除（`grep -rn Label::new src/` 里没有「库」这一条），可访问名仍是「当前库」。本轮真机 QA（独立 app id + 隔离 XDG_CONFIG_HOME）：MariaDB 无默认库标签上日志「库上下文：无默认库（选择器显示「未指定库」）」；SQLite 标签日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」（整枚不渲染，而连接选择器仍读到「qa-sqlite」）。历史证据：QA 脚本（独立 app id + 隔离 XDG_CONFIG_HOME，无默认库的 MariaDB 档案）：`query-tab` 后 `expect-catalog 1 未指定库` 通过（选择器显示服务端真值「无默认库」）；`catalog 1 sqarvo_test` 走下拉的同一信号路径，日志出现「请求切库：sqarvo_test」与「已切到库 sqarvo_test（服务端真值：sqarvo_test）」；`expect-catalog 1 sqarvo_test` 通过；随后执行未限定表名的 `SELECT DATABASE() AS db;`，`expect-query 1 first=sqarvo_test` 通过（执行前切库生效）。SQLite 档案（驱动未声明 `session_catalog_switch`）日志「标签 tab-q1 的驱动 sqlite 未声明 session_catalog_switch：不显示库选择器」——是整枚不渲染，不是灰块。另：对象树里选中 `sqarvo_test` 后新建查询标签，日志「请求库 sqarvo_test」，不碰选择器直接执行 `SELECT DATABASE()` 也得 sqarvo_test（新标签默认请求库 = 树当前选中项所在的库）。单测：supports_catalog_switch、query_catalog_keeps_request_and_truth_separate（cargo test --bin sqarvo-desktop：466 passed）。）
+- 同步：Linux done（隔离合成 MariaDB 只读用例 test_read_only_catalog_restores_after_rebind_failure：从无默认库切到 demo Schema，SELECT DATABASE() 验证实际库；重绑坏目标后恢复原 Schema，第二次不同结果再次验证。隔离 GTK qa_query_target_tracks_the_original_tab_session 验证旧回执不能覆盖实际上下文。）
 - 实现备注：摆放位置是 `tabs.query.actions` 那一行的左端、**连接选择器之后**（会话信息之前）：`parent` 记 `tabs.query` 是因为 id 的层级规则要求 `tabs.query.actions.*` 前缀，而本组件的 id 已按 `tabs.query.database_picker` 报备、不再改名。**没有可见文字**（改动确认单 #7）：原来那行「库」caption 已删，界面上只有下拉框本身；层名（库 / Schema）只出现在 tooltip 与可访问名「当前库」里。真值只有一个来源：`ConnectionService.GetSessionContext`。显示 = 服务端实际生效的库；没有默认库时显示「未指定库」，**不得**用连接配置里的 `database` 顶替（ADR 0030 §7）。会话就绪后发一次，执行成功后与切换成功后各回读一次；刷新真值只改显示，不改写标签请求用的 catalog（§8）。能力级不可用：驱动未在 `ConnectResponse.capabilities` 里声明 `session_catalog_switch` 时**整枚不渲染**（SQLite 的 main / temp / ATTACH 没有「切当前库」这个概念）——不是灰块、不是禁用，是根本没有这枚控件。会话未就绪 / 有未提交事务时**可见但禁用**，并用 tooltip 说明原因（「会话尚未建立：等标签会话就绪后才能切换库」/「事务已打开：先提交或回滚，再切换库」）。事务中切库由服务端返回 FAILED_PRECONDITION（`mariadb.catalog_switch_in_transaction`）。选中后走 `SetSessionContext`，用返回的上下文回读真值并刷新选择器与标签 tooltip；失败走查询页既有的失败提示路径，并把选择器恢复原值——切库失败时语句是按旧库跑的，绝不假装切成功（§6）。列表项 = 可见库，来源于既有 `MetadataService.ListNodes`（目录层：`parent.kind = CATALOG` 且不带名字，一页 500），首次需要时取一次并**按连接键**缓存（同一条连接的多个查询标签共用一份）。取不到时浮层里只给一行说明，不编造条目。标签 tooltip 的库段同步改成真值（无真值写「未指定」），不再写死「默认」；库名不进状态栏（v0.2.3.3）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`；成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1207、src/sql_page.rs:1421、src/sql_page.rs:1343、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529` |
+| click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`，切换在途期间暂停会话操作并显示此前的实际库。成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1207、src/sql_page.rs:1421、src/sql_page.rs:1343、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529` |
 | click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3076、src/sql_page.rs:1411、src/sql_page.rs:982` |
 | click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1371、src/backend/metadata.rs:545` |
 

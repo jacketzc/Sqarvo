@@ -373,6 +373,8 @@ pub struct Inspector {
     epoch: Rc<LoadEpoch>,
     /// 当前展示目标的会话归属，用于影响范围明确的断连清理。
     owner_session: RefCell<Option<String>>,
+    /// Stable owner of a connection preview, including when it has no browse session.
+    connection_profile: RefCell<Option<String>>,
     /// 列节点的父表（主动刷新列页时要用它重发 `GetColumns`）。
     parent: RefCell<Option<NodeView>>,
     /// 表 / 视图页内选择的记忆（键：标签 ID，或 `tree` 表示还没有标签）。
@@ -623,6 +625,7 @@ impl Inspector {
             hub_of: RefCell::new(None),
             epoch,
             owner_session: RefCell::new(None),
+            connection_profile: RefCell::new(None),
             parent: RefCell::new(None),
             pane_memory: RefCell::new(HashMap::new()),
             page: RefCell::new("empty".to_owned()),
@@ -688,6 +691,7 @@ impl Inspector {
     fn clear_target(&self, session: Option<&str>) {
         self.owner_session
             .replace(session.filter(|id| !id.is_empty()).map(str::to_owned));
+        self.connection_profile.replace(None);
         self.object.replace(None);
         self.parent.replace(None);
         self.column.replace(None);
@@ -732,6 +736,7 @@ impl Inspector {
     pub fn show_connection(
         &self,
         saved: Option<&SavedConnection>,
+        display_name: &str,
         live: &ConnectionLive,
         session: Option<&str>,
     ) {
@@ -748,11 +753,25 @@ impl Inspector {
             });
             return;
         };
-        self.title.set_text(&saved.name);
+        self.connection_profile.replace(Some(saved.key()));
+        self.title.set_text(display_name);
         self.subtitle.set_text(&saved.driver);
         let facts = connection_facts(saved, live);
         fill_facts(&self.connection_rows, &facts);
         self.set_page("connection");
+    }
+
+    /// Update an open connection preview after an alias or disambiguation change.
+    pub fn refresh_connection_label(&self, label_for: impl FnOnce(&str) -> Option<String>) {
+        if let Some(label) = self
+            .connection_profile
+            .borrow()
+            .as_deref()
+            .and_then(label_for)
+            && self.title.text() != label
+        {
+            self.title.set_text(&label);
+        }
     }
 
     /// 选中一个库 / catalog。计数来自**已展开**的分组层（`None` = 该分组没展开过）。

@@ -63,6 +63,7 @@ use crate::browse::{ConnectionRegistry, ConnectionSnapshot, ConnectionState};
 use crate::l10n;
 use crate::layout::{Gap, gap, metrics};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
+use crate::workspace_context::{ActionTarget, ResourceIdentity, TargetState, object_scope};
 
 /// 搜索防抖窗口。
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -82,6 +83,7 @@ const ARROW_COLLAPSED: &str = "pan-end-symbolic";
 const ARROW_EXPANDED: &str = "pan-down-symbolic";
 /// 行信号处理器在 `GtkListItem` 上的数据键。
 const ROW_HANDLERS_KEY: &str = "sqarvo-row-handlers";
+const TREE_ITEM_KEY: &str = "sqarvo-tree-list-item";
 
 /// 树的整体健康状态（侧栏据此决定要不要提示「换平铺列表」）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +235,8 @@ pub struct TreeCallbacks {
     pub open: Rc<dyn Fn(NodeView)>,
     /// 选中变化（信息面板按它换内容，#119）。占位行与分组行不通知（传 `None`）。
     pub select: Rc<dyn Fn(TreeSelection)>,
+    /// Explicit request to browse a catalog or category in Objects.
+    pub browse: Rc<dyn Fn(TreeSelection)>,
     /// 健康状态变化（侧栏提示用）。
     pub health: Rc<dyn Fn(TreeHealth)>,
     /// 断开一条连接（右键菜单；确认与副作用由调用方负责）。
@@ -277,6 +281,26 @@ pub enum TreeSelection {
     },
     /// 没有选中，或选中的是占位行。
     None,
+}
+
+/// The origin determines which side effects a selection can trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionOrigin {
+    UserSelection,
+    UserBrowse,
+    Activation,
+    ContextMenu,
+    Reveal,
+    Model,
+}
+
+#[derive(Debug)]
+struct NavigationSelection {
+    target: ActionTarget,
+    selection: TreeSelection,
+    session: Option<String>,
+    source: Option<LevelSource>,
+    unavailable: bool,
 }
 
 /// 一个 catalog 下已加载的表 / 视图条数（信息面板的库页）。
@@ -652,23 +676,12 @@ impl Row {
                         snapshot.detail.clone()
                     }
                 };
-                // 别名只是显示名：tooltip 里仍要给出真正的目标与保存名，
-                // 否则两条不同目标起了同名别名就没法分辨。
-                let saved_name = if snapshot.alias.is_empty() {
-                    String::new()
-                } else {
-                    l10n::tf(
-                        "object_tree.tooltip_saved_name",
-                        &[("name", snapshot.name.clone())],
-                    )
-                };
                 l10n::tf(
                     "object_tree.tooltip_connection",
                     &[
                         ("label", snapshot.label().to_owned()),
                         ("driver", snapshot.driver.clone()),
                         ("target", snapshot.target.clone()),
-                        ("saved_name", saved_name),
                         ("state", state),
                         (
                             "active_note",
@@ -749,6 +762,20 @@ enum MenuItem {
 }
 
 impl MenuItem {
+    fn action_id(self) -> &'static str {
+        match self {
+            Self::ConnectSaved => "connect-saved",
+            Self::Disconnect => "disconnect",
+            Self::RefreshConnection => "refresh-connection",
+            Self::EditSaved => "edit-connection",
+            Self::DeleteSaved => "delete-connection",
+            Self::RefreshGroup => "refresh-group",
+            Self::RefreshCatalog => "refresh-catalog",
+            Self::Open => "open-object",
+            Self::DumpTable => "dump-table",
+        }
+    }
+
     /// 菜单文案（`object_tree.ctx_menu.*`；不另加 tooltip）。
     fn label(self) -> &'static str {
         match self {
@@ -803,7 +830,7 @@ mod node_object {
     pub struct NodeObject {
         /// 行数据（构建后不再改变）。
         pub(super) row: RefCell<Option<super::Row>>,
-        /// 占位行所属层的 ID（「加载更多…」靠它找回分页状态）。
+        /// 所属子层的 ID。根连接行没有子层 ID。
         pub(super) level: Cell<Option<u64>>,
     }
 
@@ -835,6 +862,12 @@ impl NodeObject {
             kind,
         }));
         object.imp().level.set(level);
+        object
+    }
+
+    fn in_level(row: Row, level: u64) -> Self {
+        let object = Self::new(row);
+        object.imp().level.set(Some(level));
         object
     }
 
@@ -915,6 +948,7 @@ struct Level {
     id: u64,
     /// 这一层怎么来。
     source: LevelSource,
+    session: Option<String>,
     /// 展开时的展示名（日志用）。
     label: String,
     /// 该层的行。
@@ -932,10 +966,17 @@ struct Level {
 }
 
 impl Level {
-    fn new(id: u64, source: LevelSource, label: String, store: gio::ListStore) -> Self {
+    fn new(
+        id: u64,
+        source: LevelSource,
+        label: String,
+        store: gio::ListStore,
+        session: Option<String>,
+    ) -> Self {
         Self {
             id,
             source,
+            session,
             label,
             store,
             next_token: RefCell::new(String::new()),
@@ -1039,8 +1080,11 @@ pub struct TreePanel {
     last_level_note: RefCell<String>,
     /// 连接层重建已经排队（多次通知合并成一次，避免一次点击里反复重建模型）。
     refresh_scheduled: Cell<bool>,
+    reload_requested: Cell<bool>,
     /// 正在整体重建连接层：这期间的行销毁会发 `expanded=false`，不能当成「用户收起」。
     rebuilding: Cell<bool>,
+    navigation: RefCell<Option<NavigationSelection>>,
+    selection_revision: Cell<u64>,
 }
 
 impl TreePanel {
@@ -1091,7 +1135,7 @@ impl TreePanel {
                 return None;
             }
             let panel = slot_for_factory.borrow().as_ref()?.upgrade()?;
-            Some(panel.level_for(&node).store.clone().upcast())
+            Some(panel.level_for(&node)?.store.clone().upcast())
         });
 
         let selection = gtk::SingleSelection::new(Some(tree_model.clone()));
@@ -1106,62 +1150,40 @@ impl TreePanel {
         // 来决定「有没有箭头」，于是 `GtkTreeListModel` 会为**每个可见行**都调用一次
         // create_func——等于把整层一次性拉下来，与「展开才发请求」的契约相悖。
         // 这里自己画箭头，只有真正展开时才创建子模型。
-        factory.connect_setup({
-            let slot = Rc::clone(&slot);
-            move |_, item| {
-                let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-                    return;
-                };
-                let arrow = gtk::Image::from_icon_name(ARROW_COLLAPSED);
-                let arrow_button = gtk::Button::new();
-                arrow_button.set_child(Some(&arrow));
-                arrow_button.add_css_class("flat");
-                arrow_button.add_css_class("tree-arrow");
-                arrow_button.set_focusable(false);
-                arrow_button.set_valign(gtk::Align::Center);
-                let icon = gtk::Image::new();
-                let name = gtk::Label::new(None);
-                name.set_xalign(0.0);
-                name.set_hexpand(true);
-                name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                let kind = gtk::Label::new(None);
-                kind.add_css_class("dim-label");
-                kind.add_css_class("caption");
-                // 侧栏 237 宽时行尾文字贴着右边界会被切掉半个字：留 6px 行尾留白。
-                kind.set_margin_end(gap(Gap::Sm));
-                let row_box = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
-                row_box.add_css_class("sqarvo-tree-row");
-                row_box.append(&arrow_button);
-                row_box.append(&icon);
-                row_box.append(&name);
-                row_box.append(&kind);
-                row_box.set_margin_top(gap(Gap::Xs));
-                row_box.set_margin_bottom(gap(Gap::Xs));
-                item.set_child(Some(&row_box));
+        factory.connect_setup(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let arrow = gtk::Image::from_icon_name(ARROW_COLLAPSED);
+            let arrow_button = gtk::Button::new();
+            arrow_button.set_child(Some(&arrow));
+            arrow_button.add_css_class("flat");
+            arrow_button.add_css_class("tree-arrow");
+            arrow_button.set_focusable(false);
+            arrow_button.set_valign(gtk::Align::Center);
+            let icon = gtk::Image::new();
+            let name = gtk::Label::new(None);
+            name.set_xalign(0.0);
+            name.set_hexpand(true);
+            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let kind = gtk::Label::new(None);
+            kind.add_css_class("dim-label");
+            kind.add_css_class("caption");
+            // 侧栏 237 宽时行尾文字贴着右边界会被切掉半个字：留 6px 行尾留白。
+            kind.set_margin_end(gap(Gap::Sm));
+            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
+            row_box.add_css_class("sqarvo-tree-row");
+            row_box.append(&arrow_button);
+            row_box.append(&icon);
+            row_box.append(&name);
+            row_box.append(&kind);
+            row_box.set_margin_top(gap(Gap::Xs));
+            row_box.set_margin_bottom(gap(Gap::Xs));
+            item.set_child(Some(&row_box));
 
-                // 右键菜单：每行一个手势（行控件由 ListView 复用，手势只装一次，
-                // 每次点击时按当前 item 解析行数据）。
-                let gesture = gtk::GestureClick::new();
-                gesture.set_button(3);
-                let slot = Rc::clone(&slot);
-                let item_weak = glib::object::ObjectExt::downgrade(item);
-                let anchor = row_box.clone();
-                gesture.connect_pressed(move |gesture, _, x, y| {
-                    let Some(panel) = slot.borrow().as_ref().and_then(std::rc::Weak::upgrade)
-                    else {
-                        return;
-                    };
-                    let Some(item) = item_weak.upgrade() else {
-                        return;
-                    };
-                    let Some(row) = row_of_item(&item) else {
-                        return;
-                    };
-                    let _ = gesture;
-                    panel.show_context_menu(&row, anchor.upcast_ref(), x, y);
-                });
-                row_box.add_controller(gesture);
-            }
+            // SAFETY: the key is private to TreePanel and always contains a weak
+            // reference to the owning list item. GTK can recycle the row and item.
+            unsafe { row_box.set_data(TREE_ITEM_KEY, item.downgrade()) };
         });
         factory.connect_bind({
             let slot = Rc::clone(&slot);
@@ -1271,6 +1293,14 @@ impl TreePanel {
                                 .and_then(std::rc::Weak::upgrade)
                         {
                             panel.remember_collapsed(key, expanded);
+                        }
+                        if expanded
+                            && let Some(panel) = slot_for_click
+                                .borrow()
+                                .as_ref()
+                                .and_then(std::rc::Weak::upgrade)
+                        {
+                            panel.restore_visible_selection();
                         }
                     });
                     let notify_arrow = arrow.clone();
@@ -1414,7 +1444,10 @@ impl TreePanel {
             last_expand_ms: Cell::new(0),
             last_level_note: RefCell::new(String::new()),
             refresh_scheduled: Cell::new(false),
+            reload_requested: Cell::new(false),
             rebuilding: Cell::new(false),
+            navigation: RefCell::new(None),
+            selection_revision: Cell::new(0),
         });
         slot.replace(Some(Rc::downgrade(&panel)));
         panel.install_handlers();
@@ -1464,27 +1497,9 @@ impl TreePanel {
             .unwrap_or_default()
     }
 
-    /// 重新读取连接层（注册表变化与「刷新」都走这里）。
-    ///
-    /// 掉线连接的层被作废（会话 ID 变了，旧分页 token 没有意义）；已连接连接的层
-    /// 保留，避免每刷新一次就重拉整棵树。
+    /// Schedule a tree rebuild so the GTK model drops the invalidated child stores.
     pub fn reload(self: &Rc<Self>) {
-        let connected: Vec<String> = self
-            .registry
-            .borrow()
-            .as_ref()
-            .map(|registry| {
-                registry
-                    .snapshots()
-                    .into_iter()
-                    .filter(|snapshot| snapshot.state.is_connected())
-                    .map(|snapshot| snapshot.key)
-                    .collect()
-            })
-            .unwrap_or_default();
-        for key in &connected {
-            self.purge_levels(key);
-        }
+        self.reload_requested.set(true);
         self.set_health(TreeHealth::Loading);
         self.refresh_connections();
         self.status
@@ -1516,22 +1531,17 @@ impl TreePanel {
             self.mark_unavailable(l10n::t("object_tree.registry_missing"));
             return;
         };
+        let reload = self.reload_requested.replace(false);
         let snapshots = registry.snapshots();
         // 会话不在/已断开的连接：层与分页 token 全部作废。
-        let stale: Vec<String> = self
-            .levels
-            .borrow()
-            .values()
-            .map(|level| level.key().to_owned())
-            .filter(|key| {
-                !snapshots
-                    .iter()
-                    .any(|snapshot| &snapshot.key == key && snapshot.state.is_connected())
-            })
-            .collect();
-        for key in stale {
-            self.purge_levels(&key);
-        }
+        self.purge_levels_where(|level| {
+            reload
+                || !snapshots.iter().any(|snapshot| {
+                    snapshot.key == level.key()
+                        && snapshot.state.is_connected()
+                        && level.session.as_deref() == Some(snapshot.session_id.as_str())
+                })
+        });
 
         if snapshots.is_empty() {
             self.rebuilding.set(true);
@@ -1568,7 +1578,7 @@ impl TreePanel {
             })
             .collect();
         self.rebuilding.set(true);
-        if current == keys {
+        if current == keys && !reload {
             for (index, snapshot) in snapshots.iter().enumerate() {
                 let Some(object) = self
                     .root_store
@@ -1597,6 +1607,7 @@ impl TreePanel {
             }
         }
         self.rebuilding.set(false);
+        self.restore_visible_selection();
         let connected = snapshots
             .iter()
             .filter(|snapshot| snapshot.state.is_connected())
@@ -1816,13 +1827,28 @@ impl TreePanel {
         node.row().node().cloned()
     }
 
-    /// 当前选中（连接 / 对象 / 无），并带上对象的上一层（信息面板用）。
-    ///
-    /// 列节点的引用里没有父表名，而 `GetColumns` 的粒度是表：父表只能从树上取。
+    /// Logical selection for the Inspector. Disconnected objects cannot issue previews.
     pub fn current_selection(&self) -> TreeSelection {
-        let Some(position) = self.selected_position() else {
+        let navigation = self.navigation.borrow();
+        let Some(selected) = navigation.as_ref() else {
             return TreeSelection::None;
         };
+        if matches!(&selected.selection, TreeSelection::Connection(_)) {
+            return self
+                .registry()
+                .and_then(|registry| registry.snapshot(&selected.target.profile_id))
+                .map_or(TreeSelection::None, |snapshot| {
+                    TreeSelection::Connection(Rc::new(snapshot))
+                });
+        }
+        if self.navigation_available(selected) {
+            selected.selection.clone()
+        } else {
+            TreeSelection::None
+        }
+    }
+
+    fn selection_at(&self, position: u32) -> TreeSelection {
         let Some(row) = self
             .tree_model
             .item(position)
@@ -1855,6 +1881,168 @@ impl TreePanel {
                 parent: group.parent,
             },
             Row::Note(_) => TreeSelection::None,
+        }
+    }
+
+    fn navigation_available(&self, selected: &NavigationSelection) -> bool {
+        !selected.unavailable
+            && self
+                .registry()
+                .and_then(|registry| registry.session_for_key(&selected.target.profile_id))
+                .is_some_and(|session| selected.session.as_ref().is_none_or(|old| old == &session))
+    }
+
+    /// Command consumers see hidden and unavailable selections until explicitly cleared.
+    pub fn navigation_target(&self) -> TargetState {
+        self.navigation
+            .borrow()
+            .as_ref()
+            .map_or(TargetState::None, |selected| {
+                TargetState::for_target(
+                    selected.target.clone(),
+                    self.navigation_available(selected),
+                )
+            })
+    }
+
+    /// Visibility is a property of the projected GTK model, independent of the target.
+    pub fn navigation_visible(&self) -> bool {
+        self.visible_page().as_deref() == Some("tree")
+            && self
+                .selected_position()
+                .is_some_and(|position| self.matches_navigation(position))
+    }
+
+    fn matches_navigation(&self, position: u32) -> bool {
+        let navigation = self.navigation.borrow();
+        let Some(selected) = navigation.as_ref() else {
+            return false;
+        };
+        match (self.selection_at(position), &selected.selection) {
+            (TreeSelection::Connection(row), TreeSelection::Connection(_)) => {
+                row.key == selected.target.profile_id
+            }
+            (
+                TreeSelection::Object { node, parent },
+                TreeSelection::Object {
+                    node: want,
+                    parent: want_parent,
+                },
+            ) => {
+                node.reference == want.reference
+                    && parent.as_ref().map(|node| &node.reference)
+                        == want_parent.as_ref().map(|node| &node.reference)
+            }
+            (
+                TreeSelection::Group { group, parent },
+                TreeSelection::Group {
+                    group: want,
+                    parent: want_parent,
+                },
+            ) => group == *want && parent == *want_parent,
+            _ => false,
+        }
+    }
+
+    fn restore_visible_selection(&self) {
+        if self.navigation.borrow().is_none() || self.navigation_visible() {
+            return;
+        }
+        if let Some(position) =
+            (0..self.tree_model.n_items()).find(|&position| self.matches_navigation(position))
+        {
+            self.select_position(position, SelectionOrigin::Model);
+        }
+    }
+
+    /// The first successful connection is an explicit user target for the new workspace.
+    pub fn select_initial_connection(&self, profile_id: &str) {
+        let Some(snapshot) = self
+            .registry()
+            .and_then(|registry| registry.snapshot(profile_id))
+        else {
+            return;
+        };
+        let target = ActionTarget::new(&snapshot.key, None);
+        self.navigation.replace(Some(NavigationSelection {
+            target,
+            selection: TreeSelection::Connection(Rc::new(snapshot)),
+            session: None,
+            source: None,
+            unavailable: false,
+        }));
+    }
+
+    /// Clear the logical target and visible selection while keeping the Objects scope.
+    pub fn clear_selection(&self) {
+        self.selection_revision
+            .set(self.selection_revision.get() + 1);
+        self.navigation.replace(None);
+        self.set_visible_selection(gtk::INVALID_LIST_POSITION);
+        (self.callbacks.select)(TreeSelection::None);
+    }
+
+    fn update_navigation(&self, position: u32, origin: SelectionOrigin) {
+        let selection = self.selection_at(position);
+        let reference = match &selection {
+            TreeSelection::Connection(_) => None,
+            TreeSelection::Object { node, .. } => Some(&node.reference),
+            TreeSelection::Group { parent, .. } => Some(parent),
+            TreeSelection::None => return,
+        };
+        let Some((owner, path)) = self.tree_row(position).and_then(Self::tree_path) else {
+            return;
+        };
+        let key = &owner.key;
+        // The row retains its profile even if the registry has just lost its browse session.
+        let source = path.first().and_then(NodeObject::level).and_then(|id| {
+            self.levels
+                .borrow()
+                .get(&id)
+                .map(|level| level.source.clone())
+        });
+        let same = self.matches_navigation(position);
+        let scope = reference.and_then(object_scope);
+        let session = reference.map(|reference| reference.session_id.clone());
+        let mut target = ActionTarget::new(key, scope.as_ref());
+        if let Some(reference) = reference {
+            target = target.with_resource(ResourceIdentity::new(key, reference));
+        }
+        let unavailable = session.as_ref().is_some_and(|session| {
+            owner.session_id != *session || !self.captured_path_available(&owner, &path)
+        });
+        self.navigation.replace(Some(NavigationSelection {
+            target,
+            selection: selection.clone(),
+            session,
+            source,
+            unavailable,
+        }));
+        self.selection_revision
+            .set(self.selection_revision.get() + 1);
+        if !same
+            && matches!(
+                origin,
+                SelectionOrigin::UserSelection
+                    | SelectionOrigin::UserBrowse
+                    | SelectionOrigin::Activation
+            )
+        {
+            (self.callbacks.select)(if unavailable {
+                TreeSelection::None
+            } else {
+                selection.clone()
+            });
+        }
+        let browse = match &selection {
+            TreeSelection::Group { .. } => true,
+            TreeSelection::Object { node, .. } => {
+                matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema)
+            }
+            _ => false,
+        };
+        if origin == SelectionOrigin::UserBrowse && browse && !unavailable {
+            (self.callbacks.browse)(selection);
         }
     }
 
@@ -1990,7 +2178,7 @@ impl TreePanel {
     /// 用来给「点了但确实什么都没发生」的操作一个可见交代（例如未展开分组上的
     /// 刷新）。不常驻：隐藏的标签不占高度，侧栏布局不因它改变；新提示直接覆盖
     /// 旧的，并取消旧的收起定时器，不会出现「后来的提示被前一个定时器提前抹掉」。
-    fn show_hint(self: &Rc<Self>, text: &str) {
+    pub fn show_hint(self: &Rc<Self>, text: &str) {
         self.hint.set_text(text);
         self.hint.set_visible(true);
         if let Some(timer) = self.hint_timer.borrow_mut().take() {
@@ -2020,11 +2208,73 @@ impl TreePanel {
 
     // -- 交互 ---------------------------------------------------------------
 
+    /// Browse only through this exact profile's current metadata session.
+    pub fn browse_session_for(&self, profile_id: &str) -> Option<String> {
+        self.registry()?.session_for_key(profile_id)
+    }
+
     fn registry(&self) -> Option<Rc<ConnectionRegistry>> {
         self.registry.borrow().clone()
     }
 
+    fn pointer_row(&self, x: f64, y: f64) -> Option<(gtk::ListItem, bool)> {
+        let mut widget = self.list_view.pick(x, y, gtk::PickFlags::NON_TARGETABLE)?;
+        let mut on_arrow = false;
+        loop {
+            on_arrow |= widget.is::<gtk::Button>();
+            let row = if widget.has_css_class("sqarvo-tree-row") {
+                Some(widget.clone())
+            } else {
+                // GTK can pick the native list item itself over the margins of its child.
+                widget
+                    .first_child()
+                    .filter(|child| child.has_css_class("sqarvo-tree-row"))
+            };
+            if let Some(row) = row {
+                // SAFETY: TreePanel::new stores this weak reference under the private key.
+                let item = unsafe {
+                    row.data::<glib::WeakRef<gtk::ListItem>>(TREE_ITEM_KEY)?
+                        .as_ref()
+                        .upgrade()
+                }?;
+                return Some((item, on_arrow));
+            }
+            widget = widget.parent()?;
+        }
+    }
+
     fn install_handlers(self: &Rc<Self>) {
+        let browse = gtk::GestureClick::new();
+        browse.set_button(1);
+        browse.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let panel = Rc::downgrade(self);
+        browse.connect_pressed(move |_, presses, x, y| {
+            if presses == 1
+                && let Some(panel) = panel.upgrade()
+                && let Some((item, false)) = panel.pointer_row(x, y)
+            {
+                panel.update_navigation(item.position(), SelectionOrigin::UserBrowse);
+            }
+        });
+        self.list_view.add_controller(browse);
+
+        let context = gtk::GestureClick::new();
+        context.set_button(3);
+        context.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let panel = Rc::downgrade(self);
+        context.connect_released(move |gesture, _, x, y| {
+            if let Some(panel) = panel.upgrade()
+                && let Some((item, _)) = panel.pointer_row(x, y)
+                && let Some(tree_row) = panel.tree_row(item.position())
+                && let Some(row) = panel.row_of(&tree_row)
+                && !Self::menu_items(&row).is_empty()
+            {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                panel.select_position(item.position(), SelectionOrigin::ContextMenu);
+                panel.show_context_menu(&tree_row, panel.list_view.upcast_ref(), x, y);
+            }
+        });
+        self.list_view.add_controller(context);
         // 选中变化 → 信息面板（#119）。单击只走到这里（不再激活/展开/打开）。
         // 「加载更多…」是占位行，不该为了一个分页动作要求双击：选中它就继续拉下一页。
         if let Some(selection) = self
@@ -2033,8 +2283,14 @@ impl TreePanel {
             .and_then(|model| model.downcast::<gtk::SingleSelection>().ok())
         {
             let weak = Rc::downgrade(self);
-            selection.connect_selected_notify(move |_| {
+            selection.connect_selected_item_notify(move |_| {
                 let Some(panel) = weak.upgrade() else {
+                    return;
+                };
+                if panel.rebuilding.get() {
+                    return;
+                }
+                let Some(position) = panel.selected_position() else {
                     return;
                 };
                 if let Some((kind, level)) = panel.selected_note() {
@@ -2045,27 +2301,7 @@ impl TreePanel {
                     }
                     return;
                 }
-                let selection = panel.current_selection();
-                // 连接行替换会自动取消其子行选中。断连由会话归属处理，不把这次
-                // 模型通知当成用户选择，避免清掉其它连接的 Inspector 或 Objects。
-                if panel.rebuilding.get() && matches!(selection, TreeSelection::None) {
-                    return;
-                }
-                match &selection {
-                    TreeSelection::Connection(snapshot) => {
-                        eprintln!("[tree] 选中连接：{}", snapshot.name);
-                    }
-                    TreeSelection::Object { node, .. } => eprintln!(
-                        "[tree] 选中对象：{}（{}）",
-                        node.display_name,
-                        kind_label(node.kind)
-                    ),
-                    TreeSelection::Group { group, parent } => {
-                        eprintln!("[tree] 选中分组：{}（{}）", group.label(), parent.catalog)
-                    }
-                    TreeSelection::None => eprintln!("[tree] 选中已清空（占位行）"),
-                }
-                (panel.callbacks.select)(selection);
+                panel.update_navigation(position, SelectionOrigin::UserSelection);
             });
         }
         self.list_view.connect_activate({
@@ -2092,6 +2328,7 @@ impl TreePanel {
                 else {
                     return;
                 };
+                panel.select_position(position, SelectionOrigin::Activation);
                 match node.row() {
                     Row::Note(note) => {
                         if note.kind == NoteKind::More
@@ -2316,7 +2553,8 @@ impl TreePanel {
             for snapshot in &snapshots {
                 // 别名与连接名都参与匹配；结果行显示与树行同一个名字（别名优先）。
                 let name_hit = contains_ignore_case(&snapshot.name, query)
-                    || contains_ignore_case(&snapshot.alias, query);
+                    || contains_ignore_case(&snapshot.alias, query)
+                    || contains_ignore_case(snapshot.label(), query);
                 if name_hit {
                     name_hits += 1;
                 }
@@ -2369,9 +2607,16 @@ impl TreePanel {
             let weak = Rc::downgrade(self);
             let key_for = key.clone();
             let query_owned = query.to_owned();
+            let expected_session = session_id.clone();
             let sink: PageSink = Rc::new(move |result| {
                 if let Some(panel) = weak.upgrade() {
-                    panel.finish_catalog_list(&key_for, &query_owned, generation, result);
+                    panel.finish_catalog_list(
+                        &key_for,
+                        &expected_session,
+                        &query_owned,
+                        generation,
+                        result,
+                    );
                 }
             });
             hub.request_children(Some(catalog_layer_parent(&session_id)), "", sink);
@@ -2382,12 +2627,17 @@ impl TreePanel {
     fn finish_catalog_list(
         self: &Rc<Self>,
         key: &str,
+        session_id: &str,
         query: &str,
         generation: u64,
         result: Result<NodePage, MetadataError>,
     ) {
         if generation != self.search_generation.get() {
             eprintln!("[tree] 丢弃过期目录层响应：{query}");
+            return;
+        }
+        if self.browse_session_for(key).as_deref() != Some(session_id) {
+            self.complete_search_request(query);
             return;
         }
         let catalogs: Vec<NodeView> = match result {
@@ -2427,7 +2677,7 @@ impl TreePanel {
                 .is_some_and(|run| {
                     run.catalogs
                         .iter()
-                        .any(|item| item.catalog.display_name == catalog.display_name)
+                        .any(|item| item.catalog.reference == catalog.reference)
                 })
             {
                 continue;
@@ -2447,11 +2697,9 @@ impl TreePanel {
             }
         }
         // 逐库搜索：每个库一次请求，各自带自己的分页 token（这里只取第一页）。
-        let hub = self.registry().and_then(|registry| {
-            registry
-                .snapshot(key)
-                .and_then(|snapshot| registry.hub_for_session(&snapshot.session_id))
-        });
+        let hub = self
+            .registry()
+            .and_then(|registry| registry.hub_for_session(session_id));
         if let Some(hub) = hub {
             for catalog in catalogs {
                 self.search_pending.set(self.search_pending.get() + 1);
@@ -2473,11 +2721,7 @@ impl TreePanel {
                 hub.request_search_in(catalog.reference.clone(), query, "", sink);
             }
         }
-        self.search_pending
-            .set(self.search_pending.get().saturating_sub(1));
-        if self.search_pending.get() == 0 {
-            self.finish_search_all(query);
-        }
+        self.complete_search_request(query);
     }
 
     /// 某个库的搜索结果：命中项挂到该库下，由结果树统一构造行。
@@ -2493,6 +2737,10 @@ impl TreePanel {
             eprintln!("[tree] 丢弃过期搜索响应：{query}");
             return;
         }
+        if self.browse_session_for(key).as_deref() != Some(catalog.reference.session_id.as_str()) {
+            self.complete_search_request(query);
+            return;
+        }
         match result {
             Ok(page) => {
                 eprintln!(
@@ -2506,10 +2754,10 @@ impl TreePanel {
                     .borrow_mut()
                     .iter_mut()
                     .find(|run| run.key == key)
-                    && let Some(item) = run.catalogs.iter_mut().find(|item| {
-                        item.catalog.display_name == catalog.display_name
-                            && item.catalog.reference.catalog == catalog.reference.catalog
-                    })
+                    && let Some(item) = run
+                        .catalogs
+                        .iter_mut()
+                        .find(|item| item.catalog.reference == catalog.reference)
                 {
                     item.objects.extend(page.nodes);
                 }
@@ -2529,6 +2777,10 @@ impl TreePanel {
                 ));
             }
         }
+        self.complete_search_request(query);
+    }
+
+    fn complete_search_request(self: &Rc<Self>, query: &str) {
         self.search_pending
             .set(self.search_pending.get().saturating_sub(1));
         if self.search_pending.get() == 0 {
@@ -2551,6 +2803,7 @@ impl TreePanel {
         self.clear_search_rows();
         self.search_state.set(SearchState::Idle);
         self.stack.set_visible_child_name("tree");
+        self.restore_visible_selection();
     }
 
     fn clear_search_rows(&self) {
@@ -2781,7 +3034,7 @@ impl TreePanel {
     /// 一直缓存；折叠后重新展开会再调一次 create_func，这里直接复用已加载的页
     /// （不重复拉取）。要让服务端的数据变化可见，走连接 / 库节点的右键「刷新连接 /
     /// 刷新库」，或 `F5`（当前标签不是表数据页时才重建整棵树）。
-    fn level_for(self: &Rc<Self>, row: &Row) -> Rc<Level> {
+    fn level_for(self: &Rc<Self>, row: &Row) -> Option<Rc<Level>> {
         let source = match row {
             Row::Connection(snapshot) => LevelSource::Catalogs {
                 key: snapshot.key.clone(),
@@ -2793,7 +3046,9 @@ impl TreePanel {
             },
             Row::Object(node) => {
                 // 层的键是**连接键**（不是会话 ID）：断开/重连时按连接统一作废。
-                let key = self.connection_key_for_session(&node.reference.session_id);
+                let key = self
+                    .registry()?
+                    .key_for_session(&node.reference.session_id)?;
                 if node.kind == ObjectKind::Catalog {
                     // 目录层下的子节点是**静态分组行**：这里不发 RPC，
                     // 展开分组时才按种类各发一次（RPC 次数 = 分组数）。
@@ -2826,7 +3081,7 @@ impl TreePanel {
             .values()
             .find(|level| level.source == source)
         {
-            return Rc::clone(existing);
+            return Some(Rc::clone(existing));
         }
         let label = match row {
             Row::Connection(snapshot) => l10n::tf(
@@ -2859,11 +3114,14 @@ impl TreePanel {
                 // 双击库之后用户注意力在 `Objects` 页（那里已经列出表），树里的分组保持
                 // 收起，点哪一组才发那一次的 `filter.kinds`。
                 for group in KindGroup::ALL {
-                    level.store.append(&NodeObject::new(Row::Group(GroupRow {
-                        key: level.key().to_owned(),
-                        parent: parent.clone(),
-                        group: RowGroup::Catalog(group),
-                    })));
+                    level.store.append(&NodeObject::in_level(
+                        Row::Group(GroupRow {
+                            key: level.key().to_owned(),
+                            parent: parent.clone(),
+                            group: RowGroup::Catalog(group),
+                        }),
+                        level.id,
+                    ));
                 }
                 level.exhausted.set(true);
                 eprintln!(
@@ -2876,11 +3134,14 @@ impl TreePanel {
             LevelSource::TableGroups { parent, .. } => {
                 // 表下的四组同样是静态行：0 次 RPC，展开某一行才拉那一组。
                 for group in TableGroup::ALL {
-                    level.store.append(&NodeObject::new(Row::Group(GroupRow {
-                        key: level.key().to_owned(),
-                        parent: parent.clone(),
-                        group: RowGroup::Table(group),
-                    })));
+                    level.store.append(&NodeObject::in_level(
+                        Row::Group(GroupRow {
+                            key: level.key().to_owned(),
+                            parent: parent.clone(),
+                            group: RowGroup::Table(group),
+                        }),
+                        level.id,
+                    ));
                 }
                 level.exhausted.set(true);
                 eprintln!(
@@ -2914,30 +3175,18 @@ impl TreePanel {
                 self.load_page(level_id, String::new());
             }
         }
-        level
-    }
-
-    /// 会话 ID → 连接键（找不到时退回会话 ID 本身：那条连接可能已经断开）。
-    fn connection_key_for_session(&self, session_id: &str) -> String {
-        self.registry()
-            .and_then(|registry| registry.key_for_session(session_id))
-            .unwrap_or_else(|| session_id.to_owned())
+        Some(level)
     }
 
     fn new_level(&self, source: LevelSource, label: &str, store: gio::ListStore) -> u64 {
         let id = self.next_level_id.get();
         self.next_level_id.set(id + 1);
-        let level = Rc::new(Level::new(id, source, label.to_owned(), store));
+        let session = self
+            .registry()
+            .and_then(|registry| registry.session_for_key(source.key()));
+        let level = Rc::new(Level::new(id, source, label.to_owned(), store, session));
         self.levels.borrow_mut().insert(id, level);
         id
-    }
-
-    /// 作废某条连接下的全部层（断开 / 刷新用）。
-    fn purge_levels(&self, key: &str) {
-        let removed = self.purge_levels_where(|level| level.key() == key);
-        if removed > 0 {
-            eprintln!("[tree] 作废连接 {key} 的 {removed} 个层");
-        }
     }
 
     /// 作废满足条件的层，返回作废数量（连接 / 库节点的刷新共用）。
@@ -2984,12 +3233,13 @@ impl TreePanel {
             return;
         };
         // 层的键是连接键；解析成该连接当前的浏览会话（断开后为空 = 这一层读不了）。
-        let session_id = registry
-            .snapshot(level.key())
-            .map(|snapshot| snapshot.session_id)
-            .filter(|session| !session.is_empty())
-            .unwrap_or_else(|| level.key().to_owned());
-        let Some(hub) = registry.hub_for_session(&session_id) else {
+        let Some((session_id, hub)) = registry
+            .session_for_key(level.key())
+            .filter(|session| {
+                level_parent(&level.source).is_none_or(|parent| &parent.session_id == session)
+            })
+            .and_then(|session| registry.hub_for_session(&session).map(|hub| (session, hub)))
+        else {
             level.loading.set(false);
             self.fail_level(&level, l10n::t("object_tree.fail_no_session"));
             return;
@@ -3089,6 +3339,13 @@ impl TreePanel {
         let Some(level) = self.levels.borrow().get(&level_id).cloned() else {
             return;
         };
+        if self
+            .registry()
+            .and_then(|registry| registry.session_for_key(level.key()))
+            != level.session
+        {
+            return;
+        }
         level.loading.set(false);
         self.remove_trailing_notes(&level);
         let elapsed_ms = level.started.take().map_or(0, |started| {
@@ -3100,14 +3357,17 @@ impl TreePanel {
             Ok(page) => {
                 let count = page.nodes.len();
                 for node in &page.nodes {
-                    level
-                        .store
-                        .append(&NodeObject::new(Row::Object(node.clone())));
+                    let row = NodeObject::in_level(Row::Object(node.clone()), level_id);
+                    level.store.append(&row);
                 }
                 level.loaded.set(level.loaded.get() + count);
                 level.next_token.replace(page.next_page_token.clone());
                 let has_more = page.has_more();
                 level.exhausted.set(!has_more);
+                if !has_more && !page.truncated {
+                    self.reconcile_navigation(&level);
+                }
+                self.restore_visible_selection();
                 if has_more {
                     level.store.append(&NodeObject::note(
                         &l10n::tf(
@@ -3172,6 +3432,17 @@ impl TreePanel {
                 }
             }
             Err(error) => {
+                if matches!(
+                    error,
+                    MetadataError::NotFound { .. }
+                        | MetadataError::PermissionDenied { .. }
+                        | MetadataError::SessionLost { .. }
+                ) && let Some(selected) = self.navigation.borrow_mut().as_mut()
+                    && selected.source.as_ref() == Some(&level.source)
+                    && selected.session == level.session
+                {
+                    selected.unavailable = true;
+                }
                 // 分页 token / 快照失效：必须从第一页重读，不能拿旧 token 继续拼。
                 if !first_page && error.needs_first_page() {
                     eprintln!("[tree] 分页状态失效（{}），从第一页重读", error.code());
@@ -3202,6 +3473,43 @@ impl TreePanel {
                 }
             }
         }
+    }
+
+    /// Absence is authoritative only after the resource's own layer returns a complete listing.
+    fn reconcile_navigation(&self, level: &Level) {
+        let mut navigation = self.navigation.borrow_mut();
+        let Some(selected) = navigation.as_mut() else {
+            return;
+        };
+        if level.key() != selected.target.profile_id || !self.navigation_available(selected) {
+            return;
+        }
+        let wanted = if selected.source.as_ref() == Some(&level.source) {
+            selected.target.resource.clone()
+        } else if matches!(level.source, LevelSource::Catalogs { .. }) {
+            selected
+                .target
+                .scope
+                .as_ref()
+                .filter(|scope| scope.kind == ObjectKind::Catalog as i32)
+                .map(|scope| ResourceIdentity::new(level.key(), scope))
+        } else {
+            None
+        };
+        let Some(wanted) = wanted else {
+            return;
+        };
+        selected.unavailable = !(0..level.store.n_items()).any(|index| {
+            level
+                .store
+                .item(index)
+                .and_then(|row| row.downcast::<NodeObject>().ok())
+                .is_some_and(|row| {
+                    row.row().node().is_some_and(|node| {
+                        ResourceIdentity::new(level.key(), &node.reference) == wanted
+                    })
+                })
+        });
     }
 
     /// 目录层返回：这条连接的树可以用了（健康状态跟随数据页绑定的那条连接）。
@@ -3436,10 +3744,20 @@ impl TreePanel {
     }
 
     /// 按行种类显示右键菜单（workspace-model §4：行内不放工具按钮）。
-    fn show_context_menu(self: &Rc<Self>, row: &Row, anchor: &gtk::Widget, x: f64, y: f64) {
-        if row.is_note() {
+    fn show_context_menu(
+        self: &Rc<Self>,
+        tree_row: &gtk::TreeListRow,
+        anchor: &gtk::Widget,
+        x: f64,
+        y: f64,
+    ) {
+        let Some(row) = self.row_of(tree_row) else {
             return;
-        }
+        };
+        let Some((owner, path)) = Self::tree_path(tree_row.clone()) else {
+            return;
+        };
+        let path = Rc::new(path);
         // 先把槽位让出来再 popdown：`take()` 的临时借用不能活到 popdown 里，
         // 否则 `closed` 处理器回填时会把 RefCell 二次借用（#175 的 abort）。
         // 摘控件树由 `ContextMenu` 自己在 idle 里做，这里不碰。
@@ -3449,15 +3767,37 @@ impl TreePanel {
         }
         // 原生 `GtkPopoverMenu`：与系统右键菜单（SQL 编辑器那一套）同一外观与键盘操作。
         // 条目动作挂在本模块现建的 action group 上（`context_menu` 模块里解释过为什么）。
-        let entries: Vec<crate::context_menu::Entry> = Self::menu_items(row)
+        let entries: Vec<crate::context_menu::Entry> = Self::menu_items(&row)
             .into_iter()
             .map(|item| {
                 let label = item.label();
-                let action = self.menu_action(item, row);
-                crate::context_menu::Entry::action(label, true, action)
+                let action = self.menu_action(item, &row);
+                let owner = Rc::clone(&owner);
+                let path = Rc::clone(&path);
+                let panel = Rc::downgrade(self);
+                crate::context_menu::Entry::action(
+                    label,
+                    true,
+                    Rc::new(move || {
+                        let Some(panel) = panel.upgrade() else {
+                            return;
+                        };
+                        let menu = panel.context_menu.borrow().as_ref().cloned();
+                        if let Some(menu) = menu {
+                            menu.popdown();
+                        }
+                        if panel.captured_path_available(&owner, &path) {
+                            action();
+                        } else {
+                            panel.show_hint(l10n::t("object_tree.target_unavailable"));
+                        }
+                    }),
+                )
+                .with_id(item.action_id())
             })
             .collect();
         let menu = crate::context_menu::ContextMenu::popup(anchor, x, y, entries);
+        eprintln!("[tree] 已打开资源菜单");
         {
             // 只清自己那一份：`closed` 是异步派发的，新菜单可能已经装进字段了。
             let panel = Rc::clone(self);
@@ -3473,6 +3813,25 @@ impl TreePanel {
             });
         }
         self.context_menu.replace(Some(menu));
+    }
+
+    fn captured_path_available(&self, owner: &ConnectionSnapshot, path: &[NodeObject]) -> bool {
+        let Some(current) = self.registry().and_then(|r| r.snapshot(&owner.key)) else {
+            return false;
+        };
+        if current.state != owner.state || current.session_id != owner.session_id {
+            return false;
+        }
+        let levels = self.levels.borrow();
+        path.iter().all(|node| {
+            node.level()
+                .and_then(|id| levels.get(&id))
+                .is_some_and(|level| {
+                    level.key() == owner.key
+                        && level.session.as_deref() == Some(owner.session_id.as_str())
+                        && level.store.find(node).is_some()
+                })
+        })
     }
 
     /// 重读某个分组的第一页（右键「刷新这一组」）。
@@ -3570,7 +3929,13 @@ impl TreePanel {
     /// 分组都收起着（层还没建立）时只清掉这一层的缓存：下次展开按正常路径重读，
     /// 不提前替用户发请求。
     fn reload_container(self: &Rc<Self>, node: &NodeView) {
-        let key = self.connection_key_for_session(&node.reference.session_id);
+        let Some(key) = self
+            .registry()
+            .and_then(|registry| registry.key_for_session(&node.reference.session_id))
+        else {
+            self.show_hint(l10n::t("object_tree.target_unavailable"));
+            return;
+        };
         let ids: Vec<u64> = self
             .levels
             .borrow()
@@ -3608,14 +3973,24 @@ impl TreePanel {
 
     /// 在树里定位一个对象：逐层展开祖先，然后选中（必要时滚动到可见）。
     fn reveal(self: &Rc<Self>, key: &str, target: NodeView) {
-        self.stack.set_visible_child_name("tree");
         let attempts = Rc::new(Cell::new(0u32));
         let weak = Rc::downgrade(self);
         let key = key.to_owned();
+        let revision = self.selection_revision.get() + 1;
+        self.selection_revision.set(revision);
         glib::timeout_add_local(Duration::from_millis(120), move || {
             let Some(panel) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
+            if panel.selection_revision.get() != revision
+                || panel
+                    .registry()
+                    .and_then(|r| r.session_for_key(&key))
+                    .as_deref()
+                    != Some(target.reference.session_id.as_str())
+            {
+                return glib::ControlFlow::Break;
+            }
             if panel.reveal_step(&key, &target) {
                 panel.status.set_text(&l10n::tf(
                     "object_tree.status_revealed",
@@ -3665,7 +4040,8 @@ impl TreePanel {
             if let Some(node) = view.node()
                 && node.same_object(target)
             {
-                self.select_position(position);
+                self.stack.set_visible_child_name("tree");
+                self.select_position(position, SelectionOrigin::Reveal);
                 return true;
             }
             // 用行自己的 `expandable` 判断，**不要**调 `row.is_expandable()`：
@@ -3688,6 +4064,19 @@ impl TreePanel {
             .item(position)?
             .downcast::<gtk::TreeListRow>()
             .ok()
+    }
+
+    /// Capture the stable owner and the nodes below it, from the target to its ancestors.
+    fn tree_path(mut row: gtk::TreeListRow) -> Option<(Rc<ConnectionSnapshot>, Vec<NodeObject>)> {
+        let mut path = Vec::new();
+        loop {
+            let node = row.item()?.downcast::<NodeObject>().ok()?;
+            if let Row::Connection(owner) = node.row() {
+                return Some((owner, path));
+            }
+            path.push(node);
+            row = row.parent()?;
+        }
     }
 
     fn row_of(&self, row: &gtk::TreeListRow) -> Option<Row> {
@@ -3716,177 +4105,30 @@ impl TreePanel {
         }
     }
 
-    fn select_position(&self, position: u32) {
+    fn set_visible_selection(&self, position: u32) {
         if let Some(selection) = self
             .list_view
             .model()
             .and_then(|model| model.downcast::<gtk::SingleSelection>().ok())
         {
+            let was_rebuilding = self.rebuilding.replace(true);
             selection.set_selected(position);
-        }
-        self.list_view
-            .scroll_to(position, gtk::ListScrollFlags::NONE, None);
-    }
-
-    // -- 主工具条的种类入口（v0.2.3.3） -------------------------------------
-
-    /// 当前选中项所在的库（选中库 / 表 / 视图 / 分组都能给出；连接与占位行返回 `None`）。
-    ///
-    /// 工具条「表 / 视图」用它决定该列哪个库——不能用连接的默认库：用户可能在树里选了
-    /// 另一个库（每条连接都有多个 catalog），点按钮必须跟着**眼前这个库**走。
-    #[must_use]
-    pub fn selected_catalog(&self) -> Option<ObjectRef> {
-        let position = self.selected_position()?;
-        let row = self.tree_row(position)?;
-        match self.row_of(&row)? {
-            Row::Object(node) => {
-                if matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
-                    Some(node.reference.clone())
-                } else {
-                    catalog_ref(&node.reference)
-                }
-            }
-            Row::Group(group) => match group.group {
-                RowGroup::Catalog(_) => Some(group.parent.clone()),
-                RowGroup::Table(_) => catalog_ref(&group.parent),
-            },
-            Row::Connection(_) | Row::Note(_) => None,
+            self.rebuilding.set(was_rebuilding);
         }
     }
 
-    /// 选中与「表 / 视图」入口等价的**分组行**（与用户点分组行同一条路径）。
-    ///
-    /// 一次到位：先定位目标库（只解析、**不选中**——先选中库会让高亮在库节点上闪一下，
-    /// 用户看到的就是「跳一下」），需要时展开它（分组行才会出现），等分组行出现后
-    /// 只选中一次。返回该库的引用，调用方用它把 `Objects` 页切到同一作用域。
-    pub fn select_kind(
-        self: &Rc<Self>,
-        target: Option<&ObjectRef>,
-        group: KindGroup,
-    ) -> Result<ObjectRef, String> {
-        let Some((position, catalog)) = self.catalog_row(target) else {
-            return Err("对象树里还没有可用的库：先展开连接".to_owned());
-        };
-        let Some(row) = self.tree_row(position) else {
-            return Err("对象树里找不到这个库的行".to_owned());
-        };
-        if !row.is_expanded() {
-            row.set_expanded(true);
-        }
-        self.select_group_when_ready(catalog.clone(), group, position);
-        Ok(catalog)
-    }
-
-    /// 解析目标库的行（**不改选中**）。
-    ///
-    /// 优先按 `target`（当前选中项所在的库）的 `session_id + 库名` 精确命中：多连接下
-    /// 同名库很常见（每条 SQLite 连接都有 `main`），只按名字会跳到别的连接；退一步只按
-    /// 库名，最后退回活动连接里的第一个库。
-    fn catalog_row(&self, target: Option<&ObjectRef>) -> Option<(u32, ObjectRef)> {
-        if let Some(want) = target {
-            let name = if want.catalog.is_empty() {
-                want.name.as_str()
-            } else {
-                want.catalog.as_str()
-            };
-            for require_session in [true, false] {
-                for position in 0..self.tree_model.n_items() {
-                    let Some(row) = self.tree_row(position) else {
-                        continue;
-                    };
-                    let Some(Row::Object(node)) = self.row_of(&row) else {
-                        continue;
-                    };
-                    if !matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
-                        continue;
-                    }
-                    if node.display_name != name && node.reference.catalog != name {
-                        continue;
-                    }
-                    if require_session && node.reference.session_id != want.session_id {
-                        continue;
-                    }
-                    return Some((position, node.reference.clone()));
-                }
+    fn select_position(&self, position: u32, origin: SelectionOrigin) {
+        self.set_visible_selection(position);
+        if origin != SelectionOrigin::Model {
+            self.update_navigation(position, origin);
+            if !matches!(
+                origin,
+                SelectionOrigin::ContextMenu | SelectionOrigin::Activation
+            ) {
+                self.list_view
+                    .scroll_to(position, gtk::ListScrollFlags::NONE, None);
             }
         }
-        let active = self.registry().and_then(|registry| registry.active_key());
-        let mut fallback: Option<(u32, ObjectRef)> = None;
-        for position in 0..self.tree_model.n_items() {
-            let Some(row) = self.tree_row(position) else {
-                continue;
-            };
-            let Some(Row::Object(node)) = self.row_of(&row) else {
-                continue;
-            };
-            if !matches!(node.kind, ObjectKind::Catalog | ObjectKind::Schema) {
-                continue;
-            }
-            let in_active = match &active {
-                Some(key) => {
-                    self.registry()
-                        .and_then(|registry| registry.key_for_session(&node.reference.session_id))
-                        .as_deref()
-                        == Some(key.as_str())
-                }
-                None => true,
-            };
-            if in_active {
-                return Some((position, node.reference.clone()));
-            }
-            if fallback.is_none() {
-                fallback = Some((position, node.reference.clone()));
-            }
-        }
-        fallback
-    }
-
-    /// 等库的分组行出现后选中它（最多 ~1 秒）。
-    ///
-    /// 已经在目标分组上就什么都不做——重复选中会再触发一次滚动，看起来又是一跳。
-    /// 分组行始终没出现时退回选中库节点，至少让用户看到落点。
-    fn select_group_when_ready(
-        self: &Rc<Self>,
-        parent: ObjectRef,
-        group: KindGroup,
-        fallback: u32,
-    ) {
-        let attempts = Rc::new(Cell::new(0u32));
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local(Duration::from_millis(40), move || {
-            let Some(panel) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            for position in 0..panel.tree_model.n_items() {
-                let Some(row) = panel.tree_row(position) else {
-                    continue;
-                };
-                let Some(Row::Group(group_row)) = panel.row_of(&row) else {
-                    continue;
-                };
-                if group_row.parent != parent || group_row.group != RowGroup::Catalog(group) {
-                    continue;
-                }
-                if panel.selected_position() != Some(position) {
-                    panel.select_position(position);
-                }
-                return glib::ControlFlow::Break;
-            }
-            let tick = attempts.get() + 1;
-            attempts.set(tick);
-            if tick >= 25 {
-                eprintln!(
-                    "[tree] 种类入口：{} 的 {} 分组没有出现（选中库节点）",
-                    parent.catalog,
-                    group.label()
-                );
-                if panel.selected_position() != Some(fallback) {
-                    panel.select_position(fallback);
-                }
-                return glib::ControlFlow::Break;
-            }
-            glib::ControlFlow::Continue
-        });
     }
 
     // -- QA（无人值守驱动用，全部走用户同一条路径） --------------------------
@@ -4035,7 +4277,7 @@ impl TreePanel {
             if !is_browsable(node.kind) {
                 return Err(format!("{name} 不是表 / 视图，不能打开数据页"));
             }
-            self.select_position(position);
+            self.select_position(position, SelectionOrigin::UserSelection);
             (self.callbacks.open)(node.clone());
             return Ok(node.clone());
         }
@@ -4062,7 +4304,7 @@ impl TreePanel {
             if node.display_name != name {
                 continue;
             }
-            self.select_position(position);
+            self.select_position(position, SelectionOrigin::UserSelection);
             self.list_view.emit_by_name::<()>("activate", &[&position]);
             return Ok(format!(
                 "激活 {}（双击 / 回车同一条 activate 信号）",
@@ -4093,7 +4335,7 @@ impl TreePanel {
             if !is_browsable(node.kind) {
                 return Err(format!("{name} 不是表 / 视图，不能打开数据页"));
             }
-            self.select_position(position);
+            self.select_position(position, SelectionOrigin::UserSelection);
             (self.callbacks.open)(node.clone());
             return Ok(node.clone());
         }
@@ -4145,7 +4387,7 @@ impl TreePanel {
             if node.display_name != name {
                 continue;
             }
-            self.select_position(position);
+            self.select_position(position, SelectionOrigin::UserSelection);
             return Ok(node.clone());
         }
         let opened = self.expand_available_groups();
@@ -4167,7 +4409,7 @@ impl TreePanel {
             if group_row.group != RowGroup::Catalog(group) {
                 continue;
             }
-            self.select_position(position);
+            self.select_position(position, SelectionOrigin::UserBrowse);
             return Ok(format!(
                 "选中分组 {}（{}）",
                 group.label(),
@@ -4197,13 +4439,8 @@ impl TreePanel {
                 continue;
             }
             let expanded = row.is_expanded();
-            self.select_position(position);
-            self.show_context_menu(
-                &Row::Group(view.clone()),
-                self.list_view.upcast_ref::<gtk::Widget>(),
-                0.0,
-                0.0,
-            );
+            self.select_position(position, SelectionOrigin::ContextMenu);
+            self.show_context_menu(&row, self.list_view.upcast_ref::<gtk::Widget>(), 0.0, 0.0);
             return Ok(format!(
                 "在分组「{}」上打开右键菜单（展开状态：{}）",
                 view.group.label(),
@@ -4251,7 +4488,7 @@ impl TreePanel {
             if snapshot.name != name {
                 continue;
             }
-            self.select_position(position);
+            self.select_position(position, SelectionOrigin::UserSelection);
             return Ok(());
         }
         Err(format!("树里找不到连接节点 {name}"))
@@ -4276,7 +4513,7 @@ impl TreePanel {
                 continue;
             }
             eprintln!("[qa] 启动态侧栏激活已保存连接「{name}」");
-            self.select_position(position);
+            self.select_position(position, SelectionOrigin::UserSelection);
             self.list_view.emit_by_name::<()>("activate", &[&position]);
             return Ok(format!("激活连接「{name}」（activate 信号）"));
         }
@@ -4297,19 +4534,14 @@ impl TreePanel {
                 continue;
             };
             if snapshot.name == name {
-                target = Some(snapshot.clone());
+                target = Some(row);
                 break;
             }
         }
-        let Some(snapshot) = target else {
+        let Some(row) = target else {
             return Err(format!("树里没有可点开右键菜单的连接「{name}」"));
         };
-        self.show_context_menu(
-            &Row::Connection(snapshot),
-            self.list_view.upcast_ref::<gtk::Widget>(),
-            0.0,
-            0.0,
-        );
+        self.show_context_menu(&row, self.list_view.upcast_ref::<gtk::Widget>(), 0.0, 0.0);
         Ok(())
     }
 
@@ -4514,26 +4746,6 @@ fn level_parent(source: &LevelSource) -> Option<&ObjectRef> {
         LevelSource::Group { parent, .. } | LevelSource::Children { parent, .. } => Some(parent),
         _ => None,
     }
-}
-
-/// 由任意对象引用合成它所在的库引用（`kind = Catalog`、`name = catalog`）。
-///
-/// 引用里没有 catalog（根层直接给对象）时返回 `None`——调用方自己决定退回哪个库。
-fn catalog_ref(reference: &ObjectRef) -> Option<ObjectRef> {
-    if reference.catalog.is_empty() {
-        return None;
-    }
-    let mut catalog = reference.clone();
-    catalog.kind = ObjectKind::Catalog as i32;
-    catalog.name = reference.catalog.clone();
-    Some(catalog)
-}
-
-/// `GtkListItem` 当前绑定的行（bind 之后可用）。
-fn row_of_item(item: &gtk::ListItem) -> Option<Row> {
-    let list_row = item.item()?.downcast::<gtk::TreeListRow>().ok()?;
-    let object = list_row.item()?.downcast::<NodeObject>().ok()?;
-    Some(object.row())
 }
 
 // 树的 CSS：箭头按钮要小，否则每行都被撑高、可视行数变少。
@@ -4842,6 +5054,7 @@ mod tests {
             let panel = TreePanel::new(TreeCallbacks {
                 open: Rc::new(|_| {}),
                 select: Rc::new(|_| {}),
+                browse: Rc::new(|_| {}),
                 health: Rc::new(|_| {}),
                 disconnect: Rc::new(|_| {}),
                 connect_saved: Rc::new(|_| {}),
@@ -4976,10 +5189,11 @@ mod tests {
         let base = ConnectionSnapshot {
             key: "k1".to_owned(),
             name: "kdev@127.0.0.1:3308/kdev".to_owned(),
-            label: "kdev@127.0.0.1:3308/kdev".to_owned(),
+            label: "127.0.0.1:3308".to_owned(),
             alias: String::new(),
             driver: "mariadb".to_owned(),
-            target: "kdev@127.0.0.1:3308/kdev".to_owned(),
+            server_version: String::new(),
+            target: "127.0.0.1:3308".to_owned(),
             state: ConnectionState::Disconnected,
             session_id: String::new(),
             detail: String::new(),
@@ -4988,8 +5202,8 @@ mod tests {
         let plain = Row::Connection(Rc::new(base.clone()));
         assert_eq!(
             plain.display_name(),
-            "kdev@127.0.0.1:3308/kdev",
-            "没别名时回落 用户名@主机:端口/库"
+            "127.0.0.1:3308",
+            "没别名时显示主机与端口"
         );
 
         let mut named = base;
@@ -5003,8 +5217,8 @@ mod tests {
             "tooltip 首行用同一个显示名：{tooltip}"
         );
         assert!(
-            tooltip.contains("连接名：kdev@127.0.0.1:3308/kdev"),
-            "有别名时 tooltip 仍要给出保存的连接名：{tooltip}"
+            tooltip.contains("127.0.0.1:3308") && !tooltip.contains("kdev@"),
+            "tooltip 提供端点且省略完整连接串：{tooltip}"
         );
     }
 
@@ -5017,6 +5231,7 @@ mod tests {
             label: "/tmp/a.sqlite".to_owned(),
             alias: String::new(),
             driver: "sqlite".to_owned(),
+            server_version: String::new(),
             target: "/tmp/a.sqlite".to_owned(),
             state: ConnectionState::Connected,
             session_id: "sess".to_owned(),
@@ -5172,6 +5387,7 @@ mod tests {
             label: "/tmp/a.sqlite".to_owned(),
             alias: String::new(),
             driver: "sqlite".to_owned(),
+            server_version: String::new(),
             target: "/tmp/a.sqlite".to_owned(),
             state,
             session_id: "sess".to_owned(),

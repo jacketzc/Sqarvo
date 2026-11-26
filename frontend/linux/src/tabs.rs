@@ -56,6 +56,10 @@ use crate::browse::ConnectionRegistry;
 use crate::data_page::{DataCallbacks, DataPage, RowOpsState, StatusSnapshot};
 use crate::layout::{Gap, gap};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
+use crate::workspace_context::{ActionTarget, ResourceIdentity, TargetState, object_scope};
+
+static NEXT_SESSION_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 use crate::qa;
 use crate::sql_page::{SqlPage, SqlPageCallbacks};
 
@@ -97,6 +101,13 @@ pub fn table_tab_title(object: &str, catalog: &str) -> String {
     format!("{object} @ {catalog}")
 }
 
+fn scope_label(reference: &ObjectRef) -> String {
+    match (reference.catalog.as_str(), reference.schema.as_str()) {
+        (catalog, "") | ("", catalog) => catalog.to_owned(),
+        (catalog, schema) => format!("{catalog}.{schema}"),
+    }
+}
+
 /// 查询标签名 `查询 N`（workspace-model §3 / ui-behavior-contract §4）。
 ///
 /// 不带 `@ <catalog>`：查询标签的库与连接信息在 tooltip 里（见
@@ -122,30 +133,13 @@ pub fn wrap_position(current: u32, delta: i32, count: u32) -> Option<u32> {
     u32::try_from(next).ok()
 }
 
-/// 这个标签是不是「同一张表」：对象名 + catalog + 连接键三者完全一致。
-///
-/// 用于**复用已有表标签**（workspace-model §3）：同一张表重复打开时切过去，而不是
-/// 再开第二个会话。`catalog` 必须是 `open_table` 里算出来的那个（空库名已经回退到
-/// 连接级 catalog），否则同一张表会因为一边空串、一边实名而匹配不上。
-///
-/// 名字按原样比较（不折叠大小写）：不同驱动对标识符大小写的语义不同，前端不替它们
-/// 猜——`Items` 与 `items` 交给服务端与驱动判断，这里只认完全相同的字符串。
-#[must_use]
-pub fn matches_table(kind: &TabKind, name: &str, catalog: &str, connection_key: &str) -> bool {
-    match kind {
-        TabKind::Table {
-            name: tab_name,
-            catalog: tab_catalog,
-            connection_key: tab_key,
-        } => tab_name == name && tab_catalog == catalog && tab_key == connection_key,
-        TabKind::Objects | TabKind::Query { .. } => false,
+/// Window titles use the workspace's raw name once, plus its actual connection.
+pub fn window_title_for(raw_name: &str, connection_name: &str) -> String {
+    if connection_name.is_empty() {
+        raw_name.to_owned()
+    } else {
+        format!("{raw_name} @ {connection_name}")
     }
-}
-
-/// 窗口标题（workspace-model §5.1）：`<当前标签对象> @ <catalog> (<连接名>)`。
-#[must_use]
-pub fn window_title_for(tab_title: &str, connection_name: &str) -> String {
-    format!("{tab_title} ({connection_name})")
 }
 
 /// tooltip 里「库」那一段（纯函数，单测覆盖真值 / 未指定两种文案）。
@@ -216,6 +210,8 @@ pub struct QueryCatalog {
     truth: RefCell<Option<String>>,
     kind: Cell<CatalogKind>,
     switchable: Cell<bool>,
+    revision: Cell<u64>,
+    switching: Cell<bool>,
 }
 
 impl QueryCatalog {
@@ -227,6 +223,8 @@ impl QueryCatalog {
             truth: RefCell::new(None),
             kind: Cell::new(CatalogKind::Unknown),
             switchable: Cell::new(false),
+            revision: Cell::new(0),
+            switching: Cell::new(false),
         }
     }
 
@@ -375,18 +373,14 @@ pub enum TabKind {
     Table {
         /// 对象名。
         name: String,
-        /// 所属 catalog。
-        catalog: String,
-        /// 连接键（关闭后重新打开用）。
-        connection_key: String,
+        /// Stable object identity including profile, catalog, schema, and kind.
+        resource: ResourceIdentity,
     },
     /// 查询标签（一个会话）。
     Query {
         /// 序号（`查询 N`）。
         number: u32,
-        /// 所属 catalog。
-        catalog: String,
-        /// 连接键。
+        /// Initial requested connection. QueryBinding owns the live binding.
         connection_key: String,
     },
 }
@@ -403,9 +397,8 @@ impl TabKind {
     pub fn connection_key(&self) -> Option<&str> {
         match self {
             Self::Objects => None,
-            Self::Table { connection_key, .. } | Self::Query { connection_key, .. } => {
-                Some(connection_key)
-            }
+            Self::Table { resource, .. } => Some(&resource.profile_id),
+            Self::Query { connection_key, .. } => Some(connection_key),
         }
     }
 
@@ -419,12 +412,19 @@ impl TabKind {
         }
     }
 
+    pub fn raw_name(&self) -> String {
+        match self {
+            Self::Table { name, .. } => name.clone(),
+            _ => self.title(),
+        }
+    }
+
     /// 标签标题。
     #[must_use]
     pub fn title(&self) -> String {
         match self {
             Self::Objects => "Objects".to_owned(),
-            Self::Table { name, catalog, .. } => table_tab_title(name, catalog),
+            Self::Table { name, resource } => table_tab_title(name, &scope_label(&resource.object)),
             Self::Query { number, .. } => query_tab_title(*number),
         }
     }
@@ -567,6 +567,9 @@ pub struct TabHandle {
     pending_open: RefCell<Option<TableEntry>>,
     /// 「保存并关闭」的进度（脏行 → 事务 → 关标签）。
     close_phase: Cell<ClosePhase>,
+    session_attempt: Cell<Option<u64>>,
+    binding_settled: Cell<bool>,
+    connection_label: RefCell<Option<String>>,
     /// 查询标签最近一次摘要（状态栏行 2 左段）。
     sql_summary: RefCell<Option<String>>,
     /// 查询标签上一次执行的开始时刻（用于算耗时）。
@@ -590,17 +593,19 @@ impl TabHandle {
         self.session.borrow().clone()
     }
 
-    /// 这条标签**实际绑定**的连接键：查询标签取连接覆盖值（重绑在途时取目标连接），
-    /// 其余等于 `TabKind` 里的键。
-    ///
-    /// 会话建立、库列表缓存、tooltip、窗口标题都必须读它——读 `TabKind` 会让重绑后的
-    /// 标签继续按旧连接说话；只读 `QueryBinding::bound` 则会让重绑的 Connect 连回旧连接。
-    #[must_use]
+    /// Settled connection identity for titles, labels, and workspace affinity.
     pub fn bound_connection(&self) -> String {
         match &self.kind {
-            TabKind::Query { .. } => self.binding.effective(),
+            TabKind::Query { .. } => self.binding.bound(),
             kind => kind.connection_key().unwrap_or_default().to_owned(),
         }
+    }
+
+    fn query_ready(&self) -> bool {
+        self.session().is_some()
+            && self.close_phase.get() == ClosePhase::Idle
+            && self.binding.pending().is_none()
+            && !self.catalog.switching.get()
     }
 
     fn set_session(&self, session: String) {
@@ -645,7 +650,8 @@ const TRACE_LIMIT: usize = 64;
 pub type TableResolver = Rc<dyn Fn(&str) -> Option<TableEntry>>;
 
 /// 窗口标题接线：(标题, 副标题)。
-pub type TitleSink = Rc<dyn Fn(&str, &str)>;
+pub type DriverName = Rc<dyn Fn(&str) -> Option<String>>;
+pub type TitleSink = Rc<dyn Fn(&str, &str, &str)>;
 
 /// 标签条要用的外部接线。
 pub struct TabContext {
@@ -655,14 +661,8 @@ pub struct TabContext {
     pub on_column: Rc<dyn Fn(crate::backend::table::TableColumn, Option<TableEntry>, String)>,
     /// 任一数据标签的有效行数变化（分页 / 刷新 / 关闭）→ 信息面板只更新展示，不发元数据 RPC。
     pub on_rows: Rc<dyn Fn(ObjectRef, Option<usize>)>,
-    /// 连接名（窗口标题用）。
-    pub connection_name: String,
-    /// 驱动显示名（`Objects` 页标题用）。
-    pub driver_label: String,
-    /// 标题栏副标题（workspace-model §5.1：已连接 · 驱动 · 服务端版本）。
-    pub subtitle: String,
-    /// 连接级 catalog（查询标签名用）。
-    pub catalog: String,
+    /// Driver display names from the existing ListDrivers snapshot.
+    pub driver_name: DriverName,
     /// 连接注册表（解析标签属于哪条连接、取连接参数）。
     pub registry: Option<Rc<ConnectionRegistry>>,
     /// 后端失效横幅的接线（「重启 Sqarvo / 查看日志」对话框）。
@@ -670,10 +670,8 @@ pub struct TabContext {
     pub backend_failure: Rc<dyn Fn()>,
     /// 按表名解析一个对象（QA 脚本与「打开指定表」共用平铺列表的同一条路径）。
     pub resolve_table: TableResolver,
-    /// 对象树里当前选中项**所在的库**（新查询标签的默认请求库用，ADR 0030）。
-    ///
-    /// 返回连接节点或没有选中时为 `None`；调用方还要确认它属于「这条」连接。
-    pub selected_catalog: Rc<dyn Fn() -> Option<ObjectRef>>,
+    pub navigation_target: Rc<dyn Fn() -> TargetState>,
+    pub command_feedback: Rc<dyn Fn(&str)>,
     /// 当前标签的状态变化（状态栏 / 工具条 / 窗口动作）。
     pub on_status: Rc<dyn Fn(TabStatus)>,
     /// 窗口标题（标题, 副标题）。
@@ -955,6 +953,9 @@ pub struct ObjectsPage {
     ///
     /// 真实空态（选中连接 / 无选中）与不支持的种类会清空它，历史列表不会被恢复。
     scope: RefCell<Option<ObjectsRequest>>,
+    confirmed_scope: RefCell<Option<ObjectsRequest>>,
+    explicit_category: Cell<bool>,
+    scope_settled: RefCell<Option<Rc<dyn Fn()>>>,
     /// 最近一次请求用的元数据通道（同一条浏览会话）。
     hub_slot: RefCell<Option<Rc<MetadataHub>>>,
 }
@@ -1233,6 +1234,9 @@ impl ObjectsPage {
             open: RefCell::new(None),
             select: RefCell::new(None),
             scope: RefCell::new(None),
+            confirmed_scope: RefCell::new(None),
+            explicit_category: Cell::new(false),
+            scope_settled: RefCell::new(None),
             hub_slot: RefCell::new(None),
         });
         {
@@ -1322,6 +1326,7 @@ impl ObjectsPage {
         self.loading.set(false);
         self.token.replace(String::new());
         self.scope.replace(None);
+        self.confirmed_scope.replace(None);
         self.hub_slot.replace(None);
         self.clear_rows();
         self.status.set_text("");
@@ -1352,6 +1357,7 @@ impl ObjectsPage {
         self.loading.set(false);
         self.token.replace(String::new());
         self.scope.replace(None);
+        self.confirmed_scope.replace(None);
         self.hub_slot.replace(None);
         self.clear_rows();
         self.status.set_text("");
@@ -1396,6 +1402,9 @@ impl ObjectsPage {
             );
             return;
         }
+        if !same_scope {
+            self.confirmed_scope.replace(None);
+        }
         self.start_first_page(hub, parent, kinds);
     }
 
@@ -1435,6 +1444,7 @@ impl ObjectsPage {
         let Some(hub) = hub else {
             self.loading.set(false);
             self.scope.replace(None);
+            self.confirmed_scope.replace(None);
             self.status
                 .set_text(crate::l10n::t("objects_page.status_no_session"));
             return;
@@ -1504,6 +1514,12 @@ impl ObjectsPage {
         self.more.set_sensitive(true);
         match result {
             Ok(nodes) => {
+                if !is_continuation {
+                    self.confirmed_scope.replace(self.saved_scope());
+                    if let Some(settled) = self.scope_settled.borrow().as_ref() {
+                        settled();
+                    }
+                }
                 let count = nodes.nodes.len();
                 for node in &nodes.nodes {
                     self.push_row(node);
@@ -1941,7 +1957,7 @@ impl TabSet {
         };
         match &tab.kind {
             TabKind::Objects => TabPin::Tree,
-            TabKind::Table { connection_key, .. } => {
+            TabKind::Table { resource, .. } => {
                 let mut entry = tab
                     .data
                     .as_ref()
@@ -1953,20 +1969,14 @@ impl TabSet {
                         .context
                         .registry
                         .as_ref()
-                        .and_then(|registry| registry.session_for_key(connection_key))
+                        .and_then(|registry| registry.session_for_key(&resource.profile_id))
                 {
                     entry.reference.session_id = session;
                 }
                 TabPin::Table { entry }
             }
             TabKind::Query { .. } => {
-                // 选择的库：服务端真值优先，其次选择器的请求值（真值还没读到时代码
-                // 已发往那个库）；两处都空 = 没有选择库，面板落到空态。
-                let name = tab
-                    .catalog
-                    .truth()
-                    .or_else(|| tab.session().and_then(|_| tab.catalog.request()))
-                    .filter(|name| !name.is_empty());
+                let name = tab.catalog.truth().filter(|name| !name.is_empty());
                 TabPin::QueryCatalog {
                     connection_key: tab.binding.bound(),
                     query_session: tab.session(),
@@ -2013,10 +2023,8 @@ impl TabSet {
             }
             if let Some(catalog) = catalog {
                 let tab_catalog = match &tab.kind {
-                    TabKind::Table { catalog, .. } | TabKind::Query { catalog, .. } => {
-                        catalog.as_str()
-                    }
-                    TabKind::Objects => "",
+                    TabKind::Table { resource, .. } => resource.object.catalog.as_str(),
+                    _ => "",
                 };
                 if !catalog.is_empty() && tab_catalog != catalog {
                     continue;
@@ -2037,21 +2045,81 @@ impl TabSet {
             .cloned()
     }
 
-    /// 找到「同一张表」已经打开的标签（对象名 + catalog + 连接键，见 [`matches_table`]）。
-    ///
-    /// 只认表标签：`Objects` 与查询标签永远不会命中。
-    #[must_use]
-    pub fn find_table_tab(
-        &self,
-        name: &str,
-        catalog: &str,
-        connection_key: &str,
-    ) -> Option<Rc<TabHandle>> {
+    /// Reuse the exact same object, including while opening. A closing instance is excluded.
+    fn find_table_tab(&self, wanted: &ResourceIdentity) -> Option<Rc<TabHandle>> {
         self.tabs
             .borrow()
             .iter()
-            .find(|tab| matches_table(&tab.kind, name, catalog, connection_key))
+            .find(|tab| {
+                tab.close_phase.get() == ClosePhase::Idle
+                    && (tab.session().is_some() || tab.session_attempt.get().is_some())
+                    && matches!(&tab.kind, TabKind::Table { resource, .. } if resource == wanted)
+            })
             .cloned()
+    }
+
+    /// The active workspace's identity is independent of tree selection and query rebinds.
+    pub fn workspace_context(&self) -> TargetState {
+        let Some(tab) = self.current() else {
+            return TargetState::None;
+        };
+        self.context_for(&tab)
+    }
+
+    fn context_for(&self, tab: &TabHandle) -> TargetState {
+        let Some(registry) = self.context.registry.as_ref() else {
+            return TargetState::None;
+        };
+        let (target, available) = match &tab.kind {
+            TabKind::Objects => {
+                let Some((scope, _)) = self
+                    .objects
+                    .borrow()
+                    .as_ref()
+                    .and_then(|page| page.confirmed_scope.borrow().clone())
+                else {
+                    return TargetState::None;
+                };
+                let Some(key) = registry.key_for_session(&scope.session_id) else {
+                    return TargetState::None;
+                };
+                (ActionTarget::new(&key, Some(&scope)), true)
+            }
+            TabKind::Table { resource, .. } => (
+                ActionTarget::new(
+                    &resource.profile_id,
+                    object_scope(&resource.object).as_ref(),
+                ),
+                tab.session().is_some(),
+            ),
+            TabKind::Query { .. } if tab.binding_settled.get() => {
+                let scope = tab.catalog.truth().map(|name| match tab.catalog.kind() {
+                    CatalogKind::Schema => ObjectRef {
+                        schema: name.clone(),
+                        name,
+                        kind: ObjectKind::Schema as i32,
+                        ..Default::default()
+                    },
+                    _ => ObjectRef {
+                        catalog: name.clone(),
+                        name,
+                        kind: ObjectKind::Catalog as i32,
+                        ..Default::default()
+                    },
+                });
+                (
+                    ActionTarget::new(&tab.binding.bound(), scope.as_ref()),
+                    tab.query_ready(),
+                )
+            }
+            TabKind::Query { .. } => return TargetState::None,
+        };
+        let available = available && registry.params_for_key(&target.profile_id).is_some();
+        TargetState::for_target(target, available)
+    }
+
+    pub fn action_context(&self) -> TargetState {
+        TargetState::resolve((self.context.navigation_target)(), self.workspace_context())
     }
 
     /// 连接断开时作废该作用域和在途页。
@@ -2090,6 +2158,20 @@ impl TabSet {
         self.sync_objects_status();
     }
 
+    /// Open a specific Browse scope once. This is distinct from re-entering a saved scope.
+    pub fn browse_objects(&self, parent: ObjectRef, kinds: &[ObjectKind], explicit_category: bool) {
+        if let Some(page) = self.objects.borrow().as_ref() {
+            page.explicit_category.set(explicit_category);
+        }
+        self.show_objects(Some(parent), kinds);
+        if let Some(page) = self.page_at(0) {
+            self.switching.set(true);
+            self.view.set_selected_page(&page);
+            self.switching.set(false);
+            self.refresh_current();
+        }
+    }
+
     /// `Objects` 页换作用域后，把工具条高亮同步一次。
     ///
     /// 只在 `Objects` 页是当前标签时推：停在表标签上时，高亮的含义是「这个标签的表」，
@@ -2098,6 +2180,7 @@ impl TabSet {
         if self.current_id().as_deref() != Some(OBJECTS_TAB_ID) {
             return;
         }
+        self.publish_title();
         (self.context.on_status)(TabStatus::Objects {
             shortcut: self.objects_shortcut(),
         });
@@ -2217,18 +2300,18 @@ impl TabSet {
     ///
     /// 返回实际关掉的标签数（`Objects` 固定页不参与）。
     pub fn close_tabs_for_connection(self: &Rc<Self>, key: &str) -> usize {
-        let indices: Vec<usize> = {
-            let tabs = self.tabs.borrow();
-            tabs.iter()
-                .enumerate()
-                .filter(|(_, tab)| tab.kind.connection_key() == Some(key))
-                .map(|(index, _)| index)
-                .collect()
-        };
+        let targets: Vec<Rc<TabHandle>> = self
+            .tabs
+            .borrow()
+            .iter()
+            .filter(|tab| tab.bound_connection() == key)
+            .cloned()
+            .collect();
         let mut closed = 0;
-        // 从后往前关：`close_tab_at` 用的是下标，删前面的会让后面的下标前移。
-        for index in indices.into_iter().rev() {
-            if self.close_tab_at(index, Some(CloseAnswer::Discard)) {
+        for tab in targets.into_iter().rev() {
+            if self.by_id(&tab.id).is_some()
+                && self.close_tab_handle(&tab, Some(CloseAnswer::Discard))
+            {
                 closed += 1;
             }
         }
@@ -2238,13 +2321,21 @@ impl TabSet {
         closed
     }
 
+    pub fn live_session_count_for(&self, profile_id: &str) -> usize {
+        self.tabs
+            .borrow()
+            .iter()
+            .filter(|tab| tab.bound_connection() == profile_id && tab.session().is_some())
+            .count()
+    }
+
     /// 某条连接名下「有未提交更改」的标签数（编辑连接确认框里那句话用）。
     #[must_use]
     pub fn dirty_tab_count_for_connection(&self, key: &str) -> usize {
         self.tabs
             .borrow()
             .iter()
-            .filter(|tab| tab.kind.connection_key() == Some(key))
+            .filter(|tab| tab.bound_connection() == key)
             .filter(|tab| {
                 tab.data
                     .as_ref()
@@ -2297,6 +2388,16 @@ impl TabSet {
         }
         self.objects.replace(Some(Rc::clone(&objects)));
 
+        objects.scope_settled.replace(Some({
+            let tabs = Rc::downgrade(self);
+            Rc::new(move || {
+                if let Some(tabs) = tabs.upgrade()
+                    && tabs.current_id().as_deref() == Some(OBJECTS_TAB_ID)
+                {
+                    tabs.publish_title();
+                }
+            })
+        }));
         let page = self.view.add_page(objects.widget(), None);
         page.set_title("Objects");
         // `AdwTabPage:pinned`（libadwaita 1.2+）：固定在最左、紧凑（只显示图标）、
@@ -2312,6 +2413,9 @@ impl TabSet {
             session: RefCell::new(None),
             pending_open: RefCell::new(None),
             close_phase: Cell::new(ClosePhase::Idle),
+            session_attempt: Cell::new(None),
+            binding_settled: Cell::new(false),
+            connection_label: RefCell::new(None),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
@@ -2326,7 +2430,7 @@ impl TabSet {
 
     /// 打开表数据标签（树、`Objects` 页与 QA 共用这一条路径）。
     ///
-    /// 同一张表（对象名 + catalog + 连接键）**已经打开过**时不新建标签、不新建会话，
+    /// 同一张表（连接、catalog、schema、种类及对象名）**已经打开过**时不新建标签、不新建会话，
     /// 只切到已有标签（workspace-model §3）：复用是**有意语义**，第二个会话会让同一张表
     /// 出现两份脏行与两条互不可见的事务。
     ///
@@ -2335,16 +2439,18 @@ impl TabSet {
     ///
     /// 返回标签 ID；超限时返回可读原因（调用方负责展示，**不**静默失败）。
     pub fn open_table(self: &Rc<Self>, entry: TableEntry) -> Result<String, String> {
-        // 先按「新建分支」同一段逻辑算出连接键与 catalog，再去找已有标签：
-        // 两处一旦口径不同，空库名的表就会既有标签又新建一个。
-        let connection_key = self.resolve_connection_key(&entry);
-        let catalog = if entry.reference.catalog.trim().is_empty() {
-            self.catalog_for(&connection_key)
-        } else {
-            entry.reference.catalog.clone()
+        let Some(connection_key) = self
+            .context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.key_for_session(&entry.reference.session_id))
+        else {
+            let reason = crate::l10n::t("object_tree.target_unavailable");
+            (self.context.command_feedback)(reason);
+            return Err(reason.to_owned());
         };
-        if let Some(existing) = self.find_table_tab(&entry.display_name, &catalog, &connection_key)
-        {
+        let resource = ResourceIdentity::new(&connection_key, &entry.reference);
+        if let Some(existing) = self.find_table_tab(&resource) {
             let title = existing.kind.title();
             eprintln!("[tabs] 复用已有表标签 {}：{title}", existing.id);
             // 只切页面：不碰会话、不发 BrowseTable、不丢脏行 / 事务状态。
@@ -2363,8 +2469,7 @@ impl TabSet {
         let binding = QueryBinding::new(&connection_key);
         let kind = TabKind::Table {
             name: entry.display_name.clone(),
-            catalog,
-            connection_key: connection_key.clone(),
+            resource,
         };
         let title = kind.title();
         let data = self.build_data_page(&tab_id, &connection_key);
@@ -2381,6 +2486,9 @@ impl TabSet {
             session: RefCell::new(None),
             pending_open: RefCell::new(Some(entry)),
             close_phase: Cell::new(ClosePhase::Idle),
+            session_attempt: Cell::new(None),
+            binding_settled: Cell::new(false),
+            connection_label: RefCell::new(None),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
@@ -2401,6 +2509,19 @@ impl TabSet {
 
     /// 新建查询标签（工具条「新建查询」、`＋`、Ctrl+T 共用这一条路径）。
     pub fn new_query_tab(self: &Rc<Self>) -> Result<String, String> {
+        let target = match self.action_context() {
+            TargetState::Available(target) => target,
+            state => {
+                let key = if matches!(state, TargetState::None) {
+                    "object_tree.target_connection_required"
+                } else {
+                    "object_tree.target_unavailable"
+                };
+                let reason = crate::l10n::t(key);
+                (self.context.command_feedback)(reason);
+                return Err(reason.to_owned());
+            }
+        };
         if self.session_tab_count() >= MAX_TABS {
             let message = limit_message(self.session_tab_count());
             eprintln!("[tabs] 拒绝新建查询标签：{message}");
@@ -2410,21 +2531,11 @@ impl TabSet {
         let number = self.next_query_number.get();
         self.next_query_number.set(number + 1);
         let tab_id = format!("tab-q{number}");
-        let connection_key = self
-            .context
-            .registry
-            .as_ref()
-            .and_then(|registry| registry.active_key())
-            .unwrap_or_default();
-        // 默认请求库：对象树里当前选中项所在的库（属于这条连接时）；否则为空 =
-        // 不改变会话当前库。保留 `catalog_for` 作为兜底（例如没有树选中时）。见
-        // [`Self::default_query_catalog`]。
-        let request_catalog = self.default_query_catalog(&connection_key);
-        let binding = QueryBinding::new(&connection_key);
+        let request_catalog = target.scope_name().map(str::to_owned);
+        let binding = QueryBinding::new(&target.profile_id);
         let kind = TabKind::Query {
             number,
-            catalog: self.catalog_for(&connection_key),
-            connection_key,
+            connection_key: target.profile_id,
         };
         let title = kind.title();
 
@@ -2440,6 +2551,9 @@ impl TabSet {
             session: RefCell::new(None),
             pending_open: RefCell::new(None),
             close_phase: Cell::new(ClosePhase::Idle),
+            session_attempt: Cell::new(None),
+            binding_settled: Cell::new(false),
+            connection_label: RefCell::new(None),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
@@ -2473,7 +2587,7 @@ impl TabSet {
                 registry
                     .snapshots()
                     .into_iter()
-                    .map(|snapshot| (snapshot.key, snapshot.name))
+                    .map(|snapshot| (snapshot.key, snapshot.label))
                     .filter(|(key, _)| !key.is_empty())
                     .collect()
             })
@@ -2491,77 +2605,24 @@ impl TabSet {
         let choices = self.connection_choices();
         sql.connection_picker().set_items(&choices);
         sql.connection_picker().set_current(&bound);
-        sql.set_connection_pending(tab.binding.pending().is_some());
-    }
-
-    /// 新查询标签的默认请求库：对象树里**当前选中项所在的库**，且必须属于这条连接。
-    ///
-    /// 属于别的连接时不借用（会切错库）；连接节点 / 没有选中时返回 `None`（空 = 不改变
-    /// 会话当前库，完全等于既有行为）。`catalog_for` 仍是兜底：调用方用它填 `TabKind`。
-    fn default_query_catalog(&self, connection_key: &str) -> Option<String> {
-        let selected = (self.context.selected_catalog)()?;
-        let name = if !selected.name.trim().is_empty() {
-            selected.name.clone()
-        } else if !selected.catalog.trim().is_empty() {
-            selected.catalog.clone()
+        if tab.session_attempt.get().is_some() {
+            self.show_connection_attempt(&tab);
         } else {
-            return None;
-        };
-        if connection_key.is_empty() {
-            return None;
-        }
-        // 选中项属于哪条连接：用它的会话反查，反查不到就不借用。
-        let belongs = self
-            .context
-            .registry
-            .as_ref()
-            .and_then(|registry| registry.key_for_session(&selected.session_id))
-            .is_some_and(|key| key == connection_key);
-        if belongs {
-            eprintln!("[tabs] 新查询标签的默认请求库：{name}（对象树当前选中项）");
-            Some(name)
-        } else {
-            None
+            sql.set_connection_pending(None);
         }
     }
 
-    /// UI 入口：`＋` 与菜单都走这里；超限时对话框已经由 [`Self::new_query_tab`] 弹出。
+    /// UI entry shared with tool bar and window action.
     fn new_query_tab_from_ui(self: &Rc<Self>) {
         let _ = self.new_query_tab();
     }
 
-    /// 解析对象属于哪条连接：优先用它自己的会话所属连接，其次用当前活动连接。
-    fn resolve_connection_key(&self, entry: &TableEntry) -> String {
-        let Some(registry) = self.context.registry.as_ref() else {
-            return String::new();
-        };
-        let session = entry.reference.session_id.as_str();
-        if !session.is_empty()
-            && let Some(key) = registry.key_for_session(session)
-        {
-            return key;
-        }
-        registry.active_key().unwrap_or_default()
-    }
-
-    /// 连接级 catalog（查询标签名与缺省表标签名用）。
-    fn catalog_for(&self, key: &str) -> String {
-        match self.context.registry.as_ref() {
-            Some(registry) if !key.is_empty() => registry.catalog_for_key(key),
-            _ => self.context.catalog.clone(),
-        }
-    }
-
-    /// 一条连接的显示名（tooltip / 窗口标题 / 重绑日志用）。
-    ///
-    /// 注册表里查不到（连接已被删掉 / 没有注册表）时退回窗口自己的连接名——
-    /// 那是真实存在的名字，不是编造的占位。
     fn connection_name_for(&self, key: &str) -> String {
         self.context
             .registry
             .as_ref()
-            .and_then(|registry| registry.name_for_key(key))
-            .unwrap_or_else(|| self.context.connection_name.clone())
+            .and_then(|registry| registry.label_for_key(key))
+            .unwrap_or_else(|| crate::l10n::t("object_tree.connection_unnamed").to_owned())
     }
 
     /// 为标签请求一条会话（worker 负责 `Connect`；同参数的「保存并连接」会话会被领养）。
@@ -2575,52 +2636,43 @@ impl TabSet {
         if !tab.kind.has_session() {
             return;
         }
-        let key = tab.bound_connection();
+        let attempt = NEXT_SESSION_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tab.session_attempt.set(Some(attempt));
+        self.show_connection_attempt(&tab);
+        self.publish_tab_tooltip(&tab);
+        let key = match &tab.kind {
+            TabKind::Query { .. } => tab.binding.effective(),
+            _ => tab.bound_connection(),
+        };
         let params = self
             .context
             .registry
             .as_ref()
             .and_then(|registry| registry.params_for_key(&key));
-        let Some(params) = params else {
-            let message = "找不到该标签所属的连接参数：无法建立会话";
-            eprintln!("[tabs] 标签 {tab_id} {message}");
-            if tab.binding.pending().is_some() {
-                self.on_session_failed(
-                    tab_id,
-                    &TableFailure::Other {
-                        code: "tab.session_failed".to_owned(),
-                        message: message.to_owned(),
-                    },
-                );
-            } else {
-                self.show_tab_failure(&tab, message);
-            }
+        if let Some(params) = params
+            && self.context.worker.open_tab_session(
+                tab_id,
+                attempt,
+                params,
+                &self.connection_name_for(&key),
+            )
+        {
             return;
-        };
-        let display_name = self
-            .context
-            .registry
-            .as_ref()
-            .and_then(|registry| registry.name_for_key(&key))
-            .unwrap_or_else(|| self.context.connection_name.clone());
-        self.context
-            .worker
-            .open_tab_session(tab_id, params, &display_name);
+        }
+        self.on_session_failed(
+            tab_id,
+            attempt,
+            &TableFailure::Other {
+                code: "tab.session_failed".to_owned(),
+                message: crate::l10n::t("object_tree.target_unavailable").to_owned(),
+            },
+        );
     }
 
-    /// 标签侧的错误提示（不伪造状态：走数据页的失败横幅或查询页的失败态）。
-    fn show_tab_failure(&self, tab: &Rc<TabHandle>, message: &str) {
-        if let Some(data) = tab.data.as_ref() {
-            data.show_failure(&TableFailure::Other {
-                code: "tab.session_failed".to_owned(),
-                message: message.to_owned(),
-            });
-        } else if let Some(sql) = tab.sql.as_ref() {
-            tab.catalog.clear_truth();
-            sql.mark_disconnected(message);
-        }
-        if tab.id == self.current_id().unwrap_or_default() {
-            self.refresh_current();
+    fn show_connection_attempt(&self, tab: &TabHandle) {
+        if let Some(sql) = tab.sql.as_ref() {
+            let target = self.connection_name_for(&tab.binding.effective());
+            sql.set_connection_pending(Some(&target));
         }
     }
 
@@ -2715,7 +2767,16 @@ impl TabSet {
             fetch: {
                 let worker = Rc::clone(&worker);
                 let id = id.clone();
-                Rc::new(move || worker.fetch_next(&id))
+                let set = Rc::downgrade(self);
+                Rc::new(move || {
+                    if set
+                        .upgrade()
+                        .and_then(|set| set.by_id(&id))
+                        .is_some_and(|tab| tab.query_ready())
+                    {
+                        worker.fetch_next(&id);
+                    }
+                })
             },
             close: {
                 let worker = Rc::clone(&worker);
@@ -2725,7 +2786,16 @@ impl TabSet {
             select_statement: {
                 let worker = Rc::clone(&worker);
                 let id = id.clone();
-                Rc::new(move |index: u32| worker.select_statement(&id, index))
+                let set = Rc::downgrade(self);
+                Rc::new(move |index: u32| {
+                    if set
+                        .upgrade()
+                        .and_then(|set| set.by_id(&id))
+                        .is_some_and(|tab| tab.query_ready())
+                    {
+                        worker.select_statement(&id, index);
+                    }
+                })
             },
             sql_summary: {
                 let weak = Rc::downgrade(self);
@@ -2766,7 +2836,18 @@ impl TabSet {
             apply_changes: {
                 let worker = Rc::clone(&worker);
                 let id = id.clone();
+                let set = Rc::downgrade(self);
                 Rc::new(move |object, batch, options| {
+                    if !set
+                        .upgrade()
+                        .and_then(|set| set.by_id(&id))
+                        .is_some_and(|tab| {
+                            tab.query_ready()
+                                && tab.session().as_deref() == Some(object.session_id.as_str())
+                        })
+                    {
+                        return;
+                    }
                     worker.apply_row_changes_for(
                         &id,
                         object,
@@ -2823,36 +2904,19 @@ impl TabSet {
         page
     }
 
-    /// 查询结果的编辑目标：表名 → 该标签会话下的对象引用（v0.2.5）。
-    ///
-    /// `session_id` 必须是**这个标签自己的会话**（事务与提交都走它）；catalog / schema
-    /// 优先取对象树里已加载的节点（那是权威值），树里没有就用连接级 catalog。
+    /// Resolve unqualified editable results only in the owning query session.
     fn edit_object_for(self: &Rc<Self>, tab_id: &str, table: &str) -> Option<ObjectRef> {
-        let tab = self.by_id(tab_id)?;
-        let session_id = tab.session()?.to_owned();
-        let resolved = (self.context.resolve_table)(table);
-        let (catalog, schema, kind) = match resolved.map(|entry| entry.reference) {
-            Some(reference) => (
-                if reference.catalog.is_empty() {
-                    self.context.catalog.clone()
-                } else {
-                    reference.catalog
-                },
-                reference.schema,
-                reference.kind,
-            ),
-            None => (
-                self.context.catalog.clone(),
-                String::new(),
-                ObjectKind::Table as i32,
-            ),
+        let tab = self.by_id(tab_id).filter(|tab| tab.query_ready())?;
+        let (catalog, schema) = match tab.catalog.kind() {
+            CatalogKind::Schema => (String::new(), tab.catalog.truth().unwrap_or_default()),
+            _ => (tab.catalog.truth().unwrap_or_default(), String::new()),
         };
         Some(ObjectRef {
-            session_id,
+            session_id: tab.session()?,
             catalog,
             schema,
             name: table.to_owned(),
-            kind,
+            kind: ObjectKind::Table as i32,
         })
     }
 
@@ -2862,12 +2926,27 @@ impl TabSet {
             eprintln!("[tabs] 忽略执行：标签 {tab_id} 已关闭");
             return;
         };
-        if tab.session().is_none() {
+        if !tab.query_ready() {
             eprintln!("[tabs] 忽略执行：标签 {tab_id} 的会话尚未建立");
             return;
         }
         // 用户意图（选择器 / 打开标签时的默认库）随请求一起走；空 = 不改会话当前库。
-        let catalog = tab.catalog.request();
+        let mut catalog = tab.catalog.request();
+        if !tab.catalog.switchable() && catalog.is_some() {
+            if catalog == tab.catalog.truth() {
+                // The server already confirmed this scope (e.g. SQLite main).
+                catalog = None;
+            } else if tab.catalog.truth().is_none() && !tab.catalog.switching.get() {
+                // The initial read is still in flight. Show feedback without executing elsewhere.
+                if let Some(sql) = tab.sql.as_ref() {
+                    sql.show_failure(&QueryFailure::Other {
+                        code: "tab.context_unavailable".to_owned(),
+                        message: crate::l10n::t("object_tree.target_unavailable").to_owned(),
+                    });
+                }
+                return;
+            }
+        }
         match catalog.as_deref() {
             Some(catalog) => eprintln!("[tabs] 标签 {tab_id} 执行时带库：{catalog}"),
             None => eprintln!("[tabs] 标签 {tab_id} 执行时不带库（不改变会话当前库）"),
@@ -2978,60 +3057,165 @@ impl TabSet {
         line
     }
 
-    /// 标签 tooltip：`<标题> · <阶段>`，查询标签再拼上库（真值）与连接（§4）。
-    ///
-    /// 查询标签标题不再带 `@ 库`，库与连接就落到这里：多连接同时开着各自「查询 1」时，
-    /// hover 能看出属于哪条连接。表数据标签的标题已经含 `@ 库`，这里不重复。
-    fn tooltip_for(&self, tab: &TabHandle, stage: &str) -> String {
-        let title = tab.kind.title();
-        if !matches!(tab.kind, TabKind::Query { .. }) {
-            return format!("{title} · {stage}");
+    fn connection_label(&self, tab: &TabHandle, key: &str) -> Option<String> {
+        if let Some(label) = self
+            .context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.label_for_key(key))
+        {
+            tab.connection_label.replace(Some(label.clone()));
+            Some(label)
+        } else {
+            tab.connection_label.borrow().clone()
         }
-        // 连接段读**实际绑定**的那条：重绑之后 tooltip 必须跟着换，不能继续写旧连接名。
-        let connection = self.connection_name_for(&tab.bound_connection());
-        query_tooltip(
-            &title,
-            stage,
-            tab.catalog.kind(),
-            tab.catalog.truth().as_deref(),
-            Some(connection.as_str()),
-        )
     }
 
-    /// 窗口标题与副标题（§5.1）。
-    ///
-    /// 查询标签重绑到**别的**连接之后：标题里的连接名换成绑定连接的名字，副标题只写这条
-    /// 会话的驱动（版本号是另一条连接的读数，不知道就不写）。表标签仍是连接级口径。
-    fn window_title_and_subtitle(&self, tab: &TabHandle) -> (String, String) {
+    fn tooltip_text(&self, tab: &TabHandle, stage: &str) -> String {
+        let title = tab.kind.title();
         match &tab.kind {
-            TabKind::Objects => (
-                format!(
-                    "{} - {}",
-                    self.context.connection_name, self.context.driver_label
-                ),
-                self.context.subtitle.clone(),
-            ),
-            TabKind::Query { .. } => {
-                let bound = tab.bound_connection();
-                let workspace_key = self
-                    .context
-                    .registry
-                    .as_ref()
-                    .and_then(|registry| registry.active_key());
-                let title = window_title_for(&tab.kind.title(), &self.connection_name_for(&bound));
-                let subtitle = if workspace_key.as_deref() == Some(bound.as_str()) {
-                    self.context.subtitle.clone()
-                } else if let Some(driver) = tab.driver() {
-                    crate::l10n::tf("shell.title_connected_driver", &[("driver", driver)])
-                } else {
-                    crate::l10n::t("shell.title_switching").to_owned()
-                };
-                (title, subtitle)
+            TabKind::Table { resource, .. } => {
+                let connection = self
+                    .connection_label(tab, &resource.profile_id)
+                    .unwrap_or_default();
+                let title = window_title_for(&tab.kind.raw_name(), &connection);
+                let scope = scope_label(&resource.object);
+                [title.as_str(), scope.as_str(), stage]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
             }
-            kind => (
-                window_title_for(&kind.title(), &self.context.connection_name),
-                self.context.subtitle.clone(),
-            ),
+            TabKind::Query { .. } => {
+                let connection = tab
+                    .binding_settled
+                    .get()
+                    .then(|| self.connection_label(tab, &tab.binding.bound()))
+                    .flatten();
+                query_tooltip(
+                    &title,
+                    stage,
+                    tab.catalog.kind(),
+                    tab.catalog.truth().as_deref(),
+                    connection.as_deref(),
+                )
+            }
+            TabKind::Objects => title,
+        }
+    }
+
+    fn tooltip_for(&self, tab: &TabHandle, stage: &str) -> glib::GString {
+        glib::markup_escape_text(&self.tooltip_text(tab, stage))
+    }
+
+    fn window_title_and_subtitle(&self, tab: &TabHandle) -> (String, String, String) {
+        let context = self.context_for(tab);
+        let target = match &context {
+            TargetState::Available(target) | TargetState::Unavailable(target) => target,
+            TargetState::None if matches!(tab.kind, TabKind::Objects) => {
+                return ("Sqarvo".to_owned(), String::new(), String::new());
+            }
+            TargetState::None => return (tab.kind.raw_name(), String::new(), String::new()),
+        };
+        let registry = self.context.registry.as_ref();
+        let snapshot = registry.and_then(|registry| registry.snapshot(&target.profile_id));
+        let connection = self
+            .connection_label(tab, &target.profile_id)
+            .unwrap_or_default();
+        let driver = tab
+            .driver()
+            .or_else(|| snapshot.as_ref().map(|row| row.driver.clone()))
+            .and_then(|driver| (self.context.driver_name)(&driver));
+        let scope = target.scope.as_ref().map(|scope| {
+            let label = scope_label(scope);
+            if label.is_empty() {
+                scope.name.clone()
+            } else {
+                label
+            }
+        });
+        let raw = self
+            .objects_shortcut()
+            .filter(|_| {
+                matches!(tab.kind, TabKind::Objects)
+                    && self
+                        .objects
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|page| page.explicit_category.get())
+            })
+            .map_or_else(|| tab.kind.raw_name(), |kind| kind.label().to_owned());
+        let title = window_title_for(&raw, &connection);
+        let subtitle = [driver.as_deref(), scope.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let mut tooltip = vec![title.clone()];
+        if !subtitle.is_empty() {
+            tooltip.push(subtitle.clone());
+        }
+        if let Some(endpoint) = snapshot
+            .as_ref()
+            .map(|row| row.target.as_str())
+            .filter(|endpoint| !endpoint.is_empty() && *endpoint != connection)
+        {
+            tooltip.push(endpoint.to_owned());
+        }
+        if let Some(version) = snapshot
+            .as_ref()
+            .map(|row| row.server_version.as_str())
+            .filter(|version| !version.trim().is_empty())
+        {
+            tooltip.push(crate::l10n::tf(
+                "shell.title_server_version",
+                &[("version", version.to_owned())],
+            ));
+        }
+        if matches!(context, TargetState::Unavailable(_))
+            && tab.session().is_none()
+            && tab.session_attempt.get().is_none()
+            && tab.binding.pending().is_none()
+        {
+            tooltip.push(crate::l10n::t("shell.title_disconnected").to_owned());
+        }
+        (title, subtitle, tooltip.join("\n"))
+    }
+
+    fn publish_tab_tooltip(&self, tab: &TabHandle) {
+        let stage = if let Some(session) = tab.session() {
+            crate::l10n::tf("tabs.tooltip_session", &[("id", short_id(&session))])
+        } else if tab.session_attempt.get().is_some() || tab.binding.pending().is_some() {
+            crate::l10n::t("tabs.tooltip_stage_tab_session").to_owned()
+        } else {
+            crate::l10n::t("shell.title_disconnected").to_owned()
+        };
+        tab.page.set_tooltip(&self.tooltip_for(tab, &stage));
+    }
+
+    pub fn refresh_connection_labels(&self) {
+        let choices = self.connection_choices();
+        for tab in self
+            .tabs
+            .borrow()
+            .iter()
+            .filter(|tab| tab.kind.has_session())
+        {
+            self.publish_tab_tooltip(tab);
+            if let Some(sql) = tab.sql.as_ref() {
+                sql.connection_picker().set_items(&choices);
+                if tab.session_attempt.get().is_some() {
+                    self.show_connection_attempt(tab);
+                }
+            }
+        }
+        self.publish_title();
+    }
+
+    fn publish_title(&self) {
+        if let Some(tab) = self.current() {
+            let (title, subtitle, tooltip) = self.window_title_and_subtitle(&tab);
+            (self.context.on_title)(&title, &subtitle, &tooltip);
         }
     }
 
@@ -3040,7 +3224,7 @@ impl TabSet {
     /// 数据标签用标签自己的会话；元数据走连接的浏览会话，按连接键转换后再上报，
     /// 这样 A 表的分页事件不会写成 B 表的行数。
     fn rows_reference(&self, tab: &TabHandle, table: &TableEntry) -> Option<ObjectRef> {
-        let TabKind::Table { connection_key, .. } = &tab.kind else {
+        let TabKind::Table { resource, .. } = &tab.kind else {
             return None;
         };
         let mut reference = table.reference.clone();
@@ -3049,7 +3233,7 @@ impl TabSet {
             .context
             .registry
             .as_ref()?
-            .session_for_key(connection_key)?;
+            .session_for_key(&resource.profile_id)?;
         Some(reference)
     }
 
@@ -3083,8 +3267,7 @@ impl TabSet {
             }
         }
         // 标题属于当前标签（§5.1）；副标题是连接级信息，不随标签改。
-        let (title, subtitle) = self.window_title_and_subtitle(&tab);
-        (self.context.on_title)(&title, &subtitle);
+        self.publish_title();
         let status = match (&tab.kind, tab.data.as_ref(), tab.sql.as_ref()) {
             (TabKind::Objects, _, _) => TabStatus::Objects {
                 shortcut: self.objects_shortcut(),
@@ -3218,9 +3401,13 @@ impl TabSet {
     pub fn route_query_edit(
         self: &Rc<Self>,
         tab_id: &str,
+        session_id: &str,
         result: Result<crate::backend::worker::QueryEditMeta, String>,
     ) {
-        let Some(tab) = self.by_id(tab_id) else {
+        let Some(tab) = self
+            .by_id(tab_id)
+            .filter(|tab| tab.query_ready() && tab.session().as_deref() == Some(session_id))
+        else {
             eprintln!("[query] 丢弃编辑元数据：未知标签 {tab_id}");
             return;
         };
@@ -3239,6 +3426,10 @@ impl TabSet {
         };
         if let Delivery::Drop(reason) = routing::route(Some(tab.kind.channel()), Channel::Query) {
             eprintln!("[tabs] {}", reason.log_line(tab_id));
+            return;
+        }
+        if tab.session().is_none() {
+            eprintln!("[query] 丢弃查询事件：标签 {tab_id} 已无原会话");
             return;
         }
         tab.record(event.name());
@@ -3325,7 +3516,7 @@ impl TabSet {
     }
 
     /// 标签会话已建立：表标签接着打开表，查询标签允许执行。
-    pub fn on_session(self: &Rc<Self>, opened: &TabSessionOpened) {
+    pub fn on_session(self: &Rc<Self>, opened: &TabSessionOpened, attempt: u64) {
         let Some(tab) = self.by_id(&opened.tab_id) else {
             eprintln!(
                 "[tabs] 会话已建立但标签已关闭：{}",
@@ -3333,6 +3524,34 @@ impl TabSet {
             );
             return;
         };
+        if tab.session_attempt.get() != Some(attempt) {
+            return;
+        }
+        let key = if tab.sql.is_some() {
+            tab.binding.effective()
+        } else {
+            tab.bound_connection()
+        };
+        if self
+            .context
+            .registry
+            .as_ref()
+            .is_none_or(|registry| registry.params_for_key(&key).is_none())
+        {
+            self.context.worker.close_tab_session(&tab.id);
+            self.on_session_failed(
+                &tab.id,
+                attempt,
+                &TableFailure::Other {
+                    code: "tab.context_unavailable".to_owned(),
+                    message: crate::l10n::t("object_tree.target_unavailable").to_owned(),
+                },
+            );
+            return;
+        }
+        tab.session_attempt.set(None);
+        let restoring = tab.binding_settled.replace(true) && tab.binding.pending().is_none();
+        let restore = restoring.then(|| tab.catalog.truth()).flatten();
         tab.set_session(opened.session_id.clone());
         tab.set_driver(&opened.driver_id);
         // 重绑成功（改动确认单 #7 e）：采纳目标连接、清空标签请求库、解除选择器的
@@ -3342,7 +3561,7 @@ impl TabSet {
             tab.catalog.set_request(None);
             tab.catalog.clear_truth();
             if let Some(sql) = tab.sql.as_ref() {
-                sql.set_connection_pending(false);
+                sql.set_connection_pending(None);
                 sql.connection_picker().set_current(&bound);
             }
             eprintln!(
@@ -3353,16 +3572,10 @@ impl TabSet {
                 opened.driver_id
             );
             // 窗口标题 / 副标题跟着绑定连接走（QA 读这一行取证，不靠截图）。
-            let (title, subtitle) = self.window_title_and_subtitle(&tab);
+            let (title, subtitle, _) = self.window_title_and_subtitle(&tab);
             eprintln!("[tabs] 窗口标题：{title}（副标题：{subtitle}）");
         }
-        tab.page.set_tooltip(&self.tooltip_for(
-            &tab,
-            &crate::l10n::tf(
-                "tabs.tooltip_session",
-                &[("id", short_id(&opened.session_id))],
-            ),
-        ));
+        self.publish_tab_tooltip(&tab);
         eprintln!(
             "[tabs] 标签 {} 会话就绪：{}（连接 {}，领养={}，{} ms，驱动 {}）",
             opened.tab_id,
@@ -3373,6 +3586,10 @@ impl TabSet {
             opened.driver_id
         );
         if let Some(sql) = tab.sql.as_ref() {
+            let recovering = restore
+                .as_ref()
+                .map(|_| self.connection_name_for(&tab.binding.bound()));
+            sql.set_connection_pending(recovering.as_deref());
             sql.set_session_line(&format!(
                 "会话 {} · 驱动 {} · 标签 {}",
                 short_id(&opened.session_id),
@@ -3384,7 +3601,11 @@ impl TabSet {
             // 能力位来自服务端：没声明 `session_catalog_switch` 的驱动，选择器**整枚不渲染**。
             let switchable = supports_catalog_switch(&opened.capabilities);
             tab.catalog.set_switchable(switchable);
-            sql.set_session_ready(true);
+            // Until the old scope is verified on a replacement session it cannot execute SQL.
+            tab.catalog.switching.set(restore.is_some());
+            sql.set_session_ready(
+                restore.is_none() && (switchable || tab.catalog.request().is_none()),
+            );
             sql.catalog_picker().set_capability(switchable);
             if switchable {
                 self.ensure_catalogs(&opened.tab_id);
@@ -3395,7 +3616,7 @@ impl TabSet {
                 );
             }
             // 会话就绪后读一次真值（显示用；不改写请求值，ADR 0030 §8）。
-            self.refresh_catalog_context(&opened.tab_id);
+            self.update_catalog_context(&opened.tab_id, restore);
         }
         if let Some(entry) = tab.pending_open.borrow_mut().take() {
             let mut reference = entry.reference.clone();
@@ -3410,14 +3631,31 @@ impl TabSet {
     ///
     /// 走 oneshot 回执而不是事件泵：回答只属于这一次刷新，不需要按请求 ID 分拣。
     fn refresh_catalog_context(self: &Rc<Self>, tab_id: &str) {
+        self.update_catalog_context(tab_id, None);
+    }
+
+    fn update_catalog_context(self: &Rc<Self>, tab_id: &str, restore: Option<String>) {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
         let Some(session) = tab.session().filter(|_| tab.sql.is_some()) else {
             return;
         };
-        let Some(wait) = self.context.worker.fetch_session_context(tab_id) else {
-            eprintln!("[tabs] 标签 {tab_id} 读库上下文被忽略：worker 已结束");
+        if restore.is_none() && tab.catalog.switching.get() {
+            return;
+        }
+        let revision = tab.catalog.revision.get() + 1;
+        tab.catalog.revision.set(revision);
+        let wait = match restore.as_deref() {
+            Some(catalog) if tab.catalog.switchable() => {
+                self.context.worker.set_session_context(tab_id, catalog)
+            }
+            _ => self.context.worker.fetch_session_context(tab_id),
+        };
+        let Some(wait) = wait else {
+            if restore.is_some() {
+                self.fail_catalog_restore(&tab);
+            }
             return;
         };
         let weak = Rc::downgrade(self);
@@ -3427,33 +3665,42 @@ impl TabSet {
             let Some(set) = weak.upgrade() else {
                 return;
             };
-            let Ok(result) = result else {
-                eprintln!("[tabs] 标签 {id} 读库上下文失败：worker 已结束");
-                return;
-            };
             let Some(tab) = set.by_id(&id) else {
                 return;
             };
-            if tab.session().as_deref() != Some(session.as_str()) {
+            if tab.session().as_deref() != Some(session.as_str())
+                || tab.catalog.revision.get() != revision
+            {
                 return;
             }
+            if let Some(expected) = restore.as_deref() {
+                if !matches!(&result, Ok(Ok(context)) if context.default_catalog.as_deref() == Some(expected))
+                {
+                    set.fail_catalog_restore(&tab);
+                    return;
+                }
+                tab.catalog.switching.set(false);
+            }
             match result {
-                Ok(context) => set.apply_catalog_context(&tab, &context),
-                Err(failure) => {
+                Ok(Ok(context)) => set.apply_catalog_context(&tab, &context),
+                Ok(Err(failure)) => {
                     eprintln!(
                         "[tabs] 标签 {id} 读库上下文失败：[{}] {}",
                         failure.code(),
                         failure.detail()
                     );
                     if let Some(sql) = tab.sql.as_ref() {
-                        sql.set_catalog_failure(&format!(
-                            "读不到会话的库上下文 [{}]：先确认后端已实现 GetSessionContext",
-                            failure.code()
-                        ));
+                        sql.set_catalog_failure(failure.headline());
                     }
                 }
+                Err(_) => eprintln!("[tabs] 标签 {id} 读库上下文失败：worker 已结束"),
             }
         });
+    }
+
+    fn fail_catalog_restore(self: &Rc<Self>, tab: &TabHandle) {
+        self.context.worker.close_tab_session(&tab.id);
+        self.on_tab_lost(&tab.id, crate::l10n::t("tabs.query_rebind_restore_failed"));
     }
 
     /// 把服务端真值落到标签与选择器上（只改显示）。
@@ -3465,6 +3712,8 @@ impl TabSet {
             picker.set_layer(context.catalog_kind);
             picker.set_truth(context.default_catalog.as_deref());
             sql.clear_catalog_failure();
+            sql.set_connection_pending(None);
+            sql.set_session_ready(true);
         }
         let displayed = tab
             .sql
@@ -3475,13 +3724,7 @@ impl TabSet {
             tab.id,
             context.log_note()
         );
-        tab.page.set_tooltip(&self.tooltip_for(
-            tab,
-            &crate::l10n::tf(
-                "tabs.tooltip_session",
-                &[("id", short_id(&tab.session().unwrap_or_default()))],
-            ),
-        ));
+        self.publish_tab_tooltip(tab);
         if self.current_id().as_deref() == Some(tab.id.as_str()) {
             self.refresh_current();
         }
@@ -3638,7 +3881,7 @@ impl TabSet {
             sql.catalog_picker().restore();
             return;
         }
-        let Some(session) = tab.session() else {
+        let Some(session) = tab.session().filter(|_| tab.query_ready()) else {
             sql.catalog_picker().restore();
             return;
         };
@@ -3647,6 +3890,10 @@ impl TabSet {
             sql.catalog_picker().restore();
             return;
         };
+        let revision = tab.catalog.revision.get() + 1;
+        tab.catalog.revision.set(revision);
+        tab.catalog.switching.set(true);
+        sql.set_session_ready(false);
         eprintln!("[tabs] 标签 {tab_id} 请求切库：{catalog}");
         let weak = Rc::downgrade(self);
         let id = tab_id.to_owned();
@@ -3659,12 +3906,16 @@ impl TabSet {
             let Some(tab) = set.by_id(&id) else {
                 return;
             };
-            if tab.session().as_deref() != Some(session.as_str()) {
+            if tab.session().as_deref() != Some(session.as_str())
+                || tab.catalog.revision.get() != revision
+            {
                 return;
             }
             let Some(sql) = tab.sql.as_ref() else {
                 return;
             };
+            tab.catalog.switching.set(false);
+            sql.set_session_ready(true);
             match result {
                 Ok(Ok(context)) => {
                     // 用户意图成立后才改请求值：执行时会带上它（ADR 0030 §8 的另一半）。
@@ -3709,13 +3960,21 @@ impl TabSet {
             return;
         };
         let from = tab.bound_connection();
-        if !tab.binding.begin(target) {
+        if target != from && sql.has_pending_result_edits() {
+            sql.connection_picker().restore_after_selection();
+            (self.context.command_feedback)(crate::l10n::t("tabs.query_rebind_dirty"));
+            return;
+        }
+        if tab.session_attempt.get().is_some()
+            || tab.catalog.switching.get()
+            || !tab.binding.begin(target)
+        {
             // 同一条连接（或已有一轮重绑在途）= no-op：不重建会话，显示回写到绑定值。
             eprintln!(
                 "[tabs] 标签 {tab_id} 的连接选择器选中「{}」= 当前绑定：不重建会话",
                 self.connection_name_for(target)
             );
-            sql.connection_picker().restore();
+            sql.connection_picker().restore_after_selection();
             return;
         }
         let from_name = self.connection_name_for(&from);
@@ -3724,7 +3983,7 @@ impl TabSet {
         // a. 在途查询先取消（重复点幂等；没有在途查询时只记一行日志）。
         sql.request_cancel();
         // b. 关游标：页面只有在拿到过 query_id 时才发 Close。
-        sql.close_query();
+        sql.release_results_session();
         // c. 断开旧会话（worker 侧 CloseTabSession 会先 Cancel 再 Close 再 Disconnect）。
         tab.session.replace(None);
         sql.set_session_ready(false);
@@ -3733,17 +3992,22 @@ impl TabSet {
         sql.catalog_picker().set_capability(false);
         sql.catalog_picker().set_items(&[]);
         sql.catalog_picker().set_truth(None);
-        sql.set_connection_pending(true);
+        sql.connection_picker().restore_after_selection();
         self.context.worker.close_tab_session(tab_id);
         // d. 用目标连接的参数 Connect（与新建标签同一条路径，不另写一套）。
         self.request_session(tab_id);
+        self.refresh_current();
     }
 
     /// 标签会话建立失败：保留标签（用户可关闭或重试），但把原因写在页面上。
-    pub fn on_session_failed(self: &Rc<Self>, tab_id: &str, failure: &TableFailure) {
+    pub fn on_session_failed(self: &Rc<Self>, tab_id: &str, attempt: u64, failure: &TableFailure) {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
+        if tab.session_attempt.get() != Some(attempt) {
+            return;
+        }
+        tab.session_attempt.set(None);
         // 重绑失败（改动确认单 #7 f）：**保留原绑定**，在结果区状态行给失败原因，
         // 并按原连接重新建立会话（旧会话已按固定顺序断开，标签不能就此废掉）。
         if let Some(rebind) = tab.binding.pending() {
@@ -3756,7 +4020,7 @@ impl TabSet {
                 failure.message()
             );
             if let Some(sql) = tab.sql.as_ref() {
-                sql.set_connection_pending(false);
+                sql.set_connection_pending(None);
                 sql.connection_picker().set_current(&kept);
                 // 走查询页既有的失败提示路径：结果区状态行写「查询失败：…（<错误码>）」。
                 sql.show_failure(&QueryFailure::Other {
@@ -3767,7 +4031,6 @@ impl TabSet {
                     ),
                 });
             }
-            self.refresh_current();
             eprintln!("[tabs] 标签 {tab_id} 按原连接「{kept_name}」重新建立会话");
             self.request_session(tab_id);
             return;
@@ -3780,9 +4043,10 @@ impl TabSet {
         if let Some(data) = tab.data.as_ref() {
             data.show_failure(failure);
         } else if let Some(sql) = tab.sql.as_ref() {
-            tab.catalog.clear_truth();
+            sql.set_connection_pending(None);
             sql.mark_disconnected(&failure.message());
         }
+        self.publish_tab_tooltip(&tab);
         self.refresh_current();
     }
 
@@ -3800,14 +4064,16 @@ impl TabSet {
             return;
         };
         tab.session.replace(None);
-        tab.catalog.clear_truth();
+        tab.catalog.switching.set(false);
         eprintln!("[tabs] 标签 {tab_id} 的会话失效：{reason}");
         if let Some(data) = tab.data.as_ref() {
             data.mark_disconnected(reason);
         }
         if let Some(sql) = tab.sql.as_ref() {
+            sql.set_connection_pending(None);
             sql.mark_disconnected(reason);
         }
+        self.publish_tab_tooltip(&tab);
         self.refresh_current();
     }
 
@@ -3818,14 +4084,18 @@ impl TabSet {
         }
         for tab in self.tabs.borrow().iter() {
             tab.session.replace(None);
-            tab.catalog.clear_truth();
+            tab.session_attempt.set(None);
+            tab.binding.finish(false);
+            tab.catalog.switching.set(false);
             if let Some(data) = tab.data.as_ref() {
                 data.mark_disconnected(reason);
             }
             if let Some(sql) = tab.sql.as_ref() {
+                sql.set_connection_pending(None);
                 sql.mark_disconnected(reason);
             }
         }
+        self.refresh_connection_labels();
         self.refresh_current();
     }
 
@@ -4058,6 +4328,10 @@ impl TabSet {
             eprintln!("[qa] 没有第 {index} 个标签");
             return false;
         };
+        self.close_tab_handle(&tab, answer)
+    }
+
+    fn close_tab_handle(self: &Rc<Self>, tab: &Rc<TabHandle>, answer: Option<CloseAnswer>) -> bool {
         if matches!(tab.kind, TabKind::Objects) {
             eprintln!("[qa] Objects 页不可关闭");
             return false;
@@ -4065,7 +4339,7 @@ impl TabSet {
         let snapshot = tab.data.as_ref().map(|data| data.status_snapshot());
         let prompt = close_prompt(&tab.kind.title(), snapshot.as_ref());
         if prompt.is_needed() {
-            self.present_close_dialog(&tab, &prompt, answer);
+            self.present_close_dialog(tab, &prompt, answer);
             return true;
         }
         self.view.close_page(&tab.page);
@@ -6007,21 +6281,28 @@ mod tests {
                 file_path: runtime.path().join("qa.db").display().to_string(),
                 ..Default::default()
             });
+            let peer = registry.upsert_profile(crate::config::SavedConnection {
+                profile_id: "peer".to_owned(),
+                name: "Peer".to_owned(),
+                alias: "Peer".to_owned(),
+                driver: "sqlite".to_owned(),
+                ..Default::default()
+            });
             registry.set_active(Some(&key), None);
             let tabs = TabSet::new(TabContext {
                 worker,
                 on_column: Rc::new(|_, _, _| {}),
                 on_rows: Rc::new(|_, _| {}),
-                connection_name: String::new(),
-                driver_label: String::new(),
-                subtitle: String::new(),
-                catalog: String::new(),
-                registry: Some(registry),
+                driver_name: Rc::new(|_| Some("SQLite".to_owned())),
+                registry: Some(Rc::clone(&registry)),
                 backend_failure: Rc::new(|| {}),
                 resolve_table: Rc::new(|_| None),
-                selected_catalog: Rc::new(|| None),
+                navigation_target: Rc::new(move || {
+                    TargetState::Available(ActionTarget::new(&key, None))
+                }),
+                command_feedback: Rc::new(|_| {}),
                 on_status: Rc::new(|_| {}),
-                on_title: Rc::new(|_, _| {}),
+                on_title: Rc::new(|_, _, _| {}),
                 qa: None,
                 status_cancel: Rc::new(|| false),
             });
@@ -6050,7 +6331,10 @@ mod tests {
                     if clock.elapsed() >= Duration::from_millis(reply.latency_millis)
                         && !delivered.replace(true)
                     {
-                        tabs.on_session(&reply);
+                        let attempt = tab.session_attempt.get().unwrap();
+                        tabs.on_session(&reply, attempt + 1);
+                        assert!(matches!(target.session(), Ok(None)));
+                        tabs.on_session(&reply, attempt);
                     }
                     target.session()
                 }))
@@ -6060,16 +6344,73 @@ mod tests {
             assert!(page.execute());
             assert!(!page.execute());
 
-            assert!(tab.binding.begin("different profile"));
-            tab.binding.finish(false);
+            tabs.apply_catalog_context(
+                &tab,
+                &SessionDatabaseContext {
+                    session_id: reply.session_id.clone(),
+                    driver_id: "sqlite".to_owned(),
+                    default_catalog: Some("main".to_owned()),
+                    catalog_kind: CatalogKind::Database,
+                },
+            );
+            let actual_title = tabs.window_title_and_subtitle(&tab).0;
+            tabs.rebind_connection(&tab.id, &peer);
+            let attempt = tab.session_attempt.get().unwrap();
+            assert_eq!(tab.binding.effective(), peer);
+            assert_eq!(tabs.window_title_and_subtitle(&tab).0, actual_title);
+            assert_eq!(tab.catalog.truth().as_deref(), Some("main"));
+            assert!(!page.execute());
+            let trace = tab.trace();
+            tabs.route_query(&tab.id, QueryEvent::Cancelled { note: None });
+            assert_eq!(tab.trace(), trace);
+
+            let failure = TableFailure::SessionLost {
+                message: "synthetic session rejection".to_owned(),
+            };
+            tabs.on_session_failed(&tab.id, attempt, &failure);
+            let recovery = tab.session_attempt.get().unwrap();
+            tabs.on_session(&reply, attempt);
+            assert_eq!(tab.session_attempt.get(), Some(recovery));
+            assert_eq!(tabs.window_title_and_subtitle(&tab).0, actual_title);
+            assert!(tab.session().is_none());
+            tabs.on_session_failed(&tab.id, recovery, &failure);
+            assert_eq!(tab.catalog.truth().as_deref(), Some("main"));
+            assert_eq!(tabs.window_title_and_subtitle(&tab).0, actual_title);
+            assert!(!page.execute());
             assert!(matches!(target.session(), Err(reason) if reason.contains("重绑")));
+
+            let original_profile = tab.bound_connection();
+            let saved = registry.saved(&original_profile).unwrap();
+            registry.upsert_profile(crate::config::SavedConnection {
+                alias: "Renamed profile".to_owned(),
+                ..saved
+            });
+            tabs.refresh_connection_labels();
+            assert_eq!(tab.bound_connection(), original_profile);
+            assert_eq!(page.connection_picker().display_text(), "Renamed profile");
+            assert!(
+                tabs.window_title_and_subtitle(&tab)
+                    .0
+                    .contains("Renamed profile")
+            );
+
+            tabs.rebind_connection(&tab.id, &peer);
+            let closing_attempt = tab.session_attempt.get().unwrap();
+            assert!(!tab.query_ready());
+            tabs.close_current();
+            tabs.on_session(&reply, closing_attempt);
+            tabs.on_session_failed(&tab.id, closing_attempt, &failure);
+            assert!(tabs.by_id(&tab.id).is_none());
+            assert!(matches!(target.session(), Err(reason) if reason.contains("标签已关闭")));
 
             let id = tabs.new_query_tab().unwrap();
             let tab = tabs.by_id(&id).unwrap();
             let failed = QaQueryTarget::new(&tabs, &tab);
             assert!(matches!(failed.session(), Ok(None)));
+            let attempt = tab.session_attempt.get().unwrap();
             tabs.on_session_failed(
                 &id,
+                attempt,
                 &TableFailure::SessionLost {
                     message: "synthetic session rejection".to_owned(),
                 },
@@ -6262,42 +6603,8 @@ mod tests {
     }
 
     #[test]
-    fn matches_table_requires_name_catalog_and_connection() {
-        let kind = TabKind::Table {
-            name: "items".to_owned(),
-            catalog: "main".to_owned(),
-            connection_key: "sqlite:/tmp/a.db".to_owned(),
-        };
-        // 三者全同 = 同一张表（重复打开要复用）。
-        assert!(matches_table(&kind, "items", "main", "sqlite:/tmp/a.db"));
-        // 任一不同都不是同一张表：同名不同库、同表不同连接、不同对象名。
-        assert!(!matches_table(&kind, "items", "shop", "sqlite:/tmp/a.db"));
-        assert!(!matches_table(&kind, "items", "main", "sqlite:/tmp/b.db"));
-        assert!(!matches_table(&kind, "orders", "main", "sqlite:/tmp/a.db"));
-        // 空 catalog 只有与空 catalog 的标签匹配（`open_table` 已把空库名回退成连接级
-        // catalog，所以真实标签里不会出现空串与实名混用的情况）。
-        assert!(!matches_table(&kind, "items", "", "sqlite:/tmp/a.db"));
-    }
-
-    #[test]
-    fn only_table_tabs_match_a_table() {
-        let objects = TabKind::Objects;
-        assert!(!matches_table(&objects, "items", "main", "k"));
-        let query = TabKind::Query {
-            number: 1,
-            catalog: "main".to_owned(),
-            connection_key: "k".to_owned(),
-        };
-        // 查询标签即使 catalog / 连接一致也不能被当成「同一张表」。
-        assert!(!matches_table(&query, "items", "main", "k"));
-    }
-
-    #[test]
     fn window_title_appends_the_connection_name() {
-        assert_eq!(
-            window_title_for("items @ shop", "本地库"),
-            "items @ shop (本地库)"
-        );
+        assert_eq!(window_title_for("items", "本地库"), "items @ 本地库");
         // 连接名只在标题出现一次，标签名里不重复。
         assert!(!table_tab_title("items", "shop").contains("本地库"));
     }

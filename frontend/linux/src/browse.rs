@@ -164,6 +164,8 @@ pub struct ConnectionSnapshot {
     pub alias: String,
     /// 驱动 ID。
     pub driver: String,
+    /// Server version acknowledged by this profile's browse connection.
+    pub server_version: String,
     /// 目标（`user@host:port/db` 或文件路径）。
     pub target: String,
     /// 会话状态。
@@ -197,6 +199,58 @@ impl ConnectionSnapshot {
     }
 }
 
+fn resolved_labels<'a>(profiles: impl Iterator<Item = &'a SavedConnection>) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+
+    let profiles = profiles.collect::<Vec<_>>();
+    let bases = profiles
+        .iter()
+        .map(|p| p.display_label())
+        .collect::<Vec<_>>();
+    let mut counts = HashMap::new();
+    for label in &bases {
+        *counts.entry(label.as_str()).or_insert(0) += 1;
+    }
+    let mut used = bases.iter().map(String::as_str).collect::<HashSet<_>>();
+    let candidates = profiles
+        .iter()
+        .zip(&bases)
+        .map(|(profile, base)| {
+            if counts[base.as_str()] > 1
+                && let Some(detail) = profile.short_target_label().filter(|detail| detail != base)
+            {
+                return format!("{base} ({detail})");
+            }
+            base.clone()
+        })
+        .collect::<Vec<_>>();
+    let mut labels = bases.clone();
+    let mut order = (0..profiles.len()).collect::<Vec<_>>();
+    order.sort_unstable_by_key(|&index| &profiles[index].profile_id);
+    for index in order {
+        if counts[bases[index].as_str()] == 1 {
+            continue;
+        }
+        let candidate = &candidates[index];
+        labels[index] = if used.insert(candidate) {
+            candidate.clone()
+        } else {
+            let mut number = 2;
+            loop {
+                let label = format!("{candidate} [{number}]");
+                if !used.contains(label.as_str())
+                    && !labels.contains(&label)
+                    && !candidates.contains(&label)
+                {
+                    break label;
+                }
+                number += 1;
+            }
+        };
+    }
+    labels
+}
+
 /// 注册表里一条连接的完整状态。
 struct Entry {
     saved: SavedConnection,
@@ -205,6 +259,7 @@ struct Entry {
     /// `ConnectionService.Connect` 返回的连接 ID（`Disconnect` 用它）。
     connection_id: String,
     session_id: String,
+    server_version: String,
     detail: String,
     /// 该连接自己的元数据通道（一个连接一条）。
     hub: Option<Rc<MetadataHub>>,
@@ -654,6 +709,9 @@ impl ConnectionRegistry {
         let key = connection_key(&saved);
         let mut entries = self.entries.borrow_mut();
         if let Some(entry) = entries.iter_mut().find(|entry| entry.key == key) {
+            if entry.saved.params() != saved.params() {
+                entry.server_version.clear();
+            }
             entry.saved = saved;
         } else {
             entries.push(Self::new_entry(saved));
@@ -679,6 +737,7 @@ impl ConnectionRegistry {
             state: ConnectionState::Disconnected,
             connection_id: String::new(),
             session_id: String::new(),
+            server_version: String::new(),
             detail: l10n::t("object_tree.detail_click_to_connect").to_owned(),
             hub: None,
         }
@@ -688,15 +747,18 @@ impl ConnectionRegistry {
     #[must_use]
     pub fn snapshots(&self) -> Vec<ConnectionSnapshot> {
         let active = self.active.borrow().clone();
-        self.entries
-            .borrow()
+        let entries = self.entries.borrow();
+        let labels = resolved_labels(entries.iter().map(|entry| &entry.saved));
+        entries
             .iter()
-            .map(|entry| ConnectionSnapshot {
+            .zip(labels)
+            .map(|(entry, label)| ConnectionSnapshot {
                 key: entry.key.clone(),
                 name: entry.saved.name.clone(),
-                label: entry.saved.display_label(),
+                label,
                 alias: entry.saved.alias.trim().to_owned(),
                 driver: entry.saved.driver.clone(),
+                server_version: entry.server_version.clone(),
                 target: entry.saved.target_label(),
                 state: entry.state,
                 session_id: entry.session_id.clone(),
@@ -712,6 +774,11 @@ impl ConnectionRegistry {
         self.snapshots().into_iter().find(|row| row.key == key)
     }
 
+    /// Resolved display name, shared by the tree and all workspace surfaces.
+    pub fn label_for_key(&self, key: &str) -> Option<String> {
+        self.snapshot(key).map(|snapshot| snapshot.label)
+    }
+
     /// 某一条连接的保存配置（信息面板的连接页；**不含密码**）。
     ///
     /// 面板要展示地址、默认库、用户、TLS 与凭据引用，这些只在 `SavedConnection`
@@ -723,22 +790,6 @@ impl ConnectionRegistry {
             .iter()
             .find(|entry| entry.key == key)
             .map(|entry| entry.saved.clone())
-    }
-
-    /// 最近一次 `ListSessions` 里属于某条连接的会话数（#119）。
-    ///
-    /// 展示名就是建立会话时用的连接名：会话数只数**名字完全一致**的那些。
-    /// 还没读过 `ListSessions` 时返回 `None`（面板不显示这一行）。
-    #[must_use]
-    pub fn session_count_for(&self, name: &str) -> Option<usize> {
-        let sessions = self.sessions.borrow();
-        let sessions = sessions.as_ref()?;
-        Some(
-            sessions
-                .iter()
-                .filter(|(_, display_name)| display_name == name)
-                .count(),
-        )
     }
 
     /// 最近一次 `ListSessions` 返回的会话总数（QA 断言用；还没读过为 `None`）。
@@ -890,7 +941,7 @@ impl ConnectionRegistry {
         self.entries
             .borrow()
             .iter()
-            .find(|entry| entry.key == key)
+            .find(|entry| entry.key == key && entry.state.is_connected())
             .map(|entry| entry.session_id.clone())
             .filter(|session_id| !session_id.is_empty())
     }
@@ -905,10 +956,13 @@ impl ConnectionRegistry {
     /// 某条会话属于哪一条连接（树在打开表 / 断开时要用）。
     #[must_use]
     pub fn key_for_session(&self, session_id: &str) -> Option<String> {
+        if session_id.is_empty() {
+            return None;
+        }
         self.entries
             .borrow()
             .iter()
-            .find(|entry| entry.session_id == session_id)
+            .find(|entry| entry.session_id == session_id && entry.state.is_connected())
             .map(|entry| entry.key.clone())
     }
 
@@ -942,27 +996,6 @@ impl ConnectionRegistry {
             .map(|entry| entry.saved.name.clone())
     }
 
-    /// 某条连接的默认 catalog（标签名 `对象 @ catalog` 用）。
-    ///
-    /// 服务器型驱动用保存的库名；文件型驱动（SQLite）没有库名，默认库就是 `main`。
-    #[must_use]
-    pub fn catalog_for_key(&self, key: &str) -> String {
-        self.entries
-            .borrow()
-            .iter()
-            .find(|entry| entry.key == key)
-            .map(|entry| {
-                if !entry.saved.database.trim().is_empty() {
-                    entry.saved.database.clone()
-                } else if entry.saved.driver == "sqlite" {
-                    "main".to_owned()
-                } else {
-                    l10n::t("object_tree.catalog_default").to_owned()
-                }
-            })
-            .unwrap_or_else(|| l10n::t("object_tree.catalog_default").to_owned())
-    }
-
     /// 当前活动连接的浏览会话 ID（平铺表列表用它，不占标签会话）。
     #[must_use]
     #[allow(
@@ -994,6 +1027,7 @@ impl ConnectionRegistry {
                     connection_id,
                     session_id,
                     latency_millis,
+                    server_version,
                     ..
                 } = session;
                 if !self.entries.borrow().iter().any(|entry| entry.key == key) {
@@ -1029,6 +1063,7 @@ impl ConnectionRegistry {
                     entry.state = ConnectionState::Connected;
                     entry.connection_id = connection_id;
                     entry.session_id = session_id.clone();
+                    entry.server_version = server_version;
                     entry.detail = l10n::tf(
                         "object_tree.detail_browse_session",
                         &[("latency_millis", latency_millis.to_string())],
@@ -1247,9 +1282,37 @@ mod tests {
     #[test]
     fn target_labels_distinguish_file_and_server_connections() {
         assert_eq!(sqlite("a", "/tmp/a.sqlite").target_label(), "/tmp/a.sqlite");
+        assert_eq!(mariadb("x").target_label(), "127.0.0.1:53306");
+    }
+
+    #[test]
+    fn resolved_connection_names_are_safe_and_unique() {
+        let mut east = sqlite("east", "/tmp/east/demo.db");
+        let mut west = sqlite("west", "/tmp/west/demo.db");
+        east.alias = "Local".to_owned();
+        west.alias = "Local".to_owned();
         assert_eq!(
-            mariadb("x").target_label(),
-            "sqarvo_test@127.0.0.1:53306/sqarvo_test_114"
+            resolved_labels([&east, &west].into_iter()),
+            ["Local (east/demo.db)", "Local (west/demo.db)"]
+        );
+        east.alias.clear();
+        west.alias.clear();
+        assert_eq!(
+            resolved_labels([&west, &east].into_iter()),
+            ["demo.db (west/demo.db)", "demo.db (east/demo.db)"]
+        );
+        let memory = sqlite("memory", ":memory:");
+        assert_eq!(
+            memory.display_label(),
+            l10n::t("object_tree.connection_memory")
+        );
+
+        let mut malformed = mariadb("malformed");
+        malformed.host = "mariadb://root:example@server".to_owned();
+        assert!(malformed.target_label().is_empty());
+        assert_eq!(
+            malformed.display_label(),
+            l10n::t("object_tree.connection_unnamed")
         );
     }
 

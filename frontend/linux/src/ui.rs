@@ -51,6 +51,7 @@ use crate::proto::services::v1::ObjectRef;
 use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar};
 use crate::theme;
 use crate::tree::{KindGroup, RowGroup, TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
+use crate::workspace_context::{TargetState, object_scope};
 
 /// 主窗口与连接对话框共享的状态。
 struct UiState {
@@ -781,7 +782,14 @@ pub fn activate(app: &adw::Application) {
                             }
                             // 已连上数据库：启动态外壳由连接后的工作区整体替换
                             // （当前宽度由 show_workspace 读走后再释放启动态）。
-                            show_workspace(&events_state, &outcome);
+                            show_workspace(
+                                &events_state,
+                                &outcome,
+                                outcome
+                                    .saved_profile
+                                    .as_ref()
+                                    .map(|saved| saved.profile_id.as_str()),
+                            );
                             maybe_run_qa_sql(&events_state);
                             maybe_run_qa_data(&events_state);
                             maybe_run_qa_browse(&events_state);
@@ -823,17 +831,22 @@ pub fn activate(app: &adw::Application) {
                         }
                     }
                 }
-                Event::TabSession { tab_id, result } => {
+                Event::TabSession {
+                    tab_id,
+                    attempt,
+                    result,
+                } => {
                     let workspace = events_state.workspace.borrow().as_ref().cloned();
                     let Some(workspace) = workspace else {
                         continue;
                     };
                     match result {
-                        Ok(opened) => workspace.tabs.on_session(&opened),
+                        Ok(opened) => workspace.tabs.on_session(&opened, attempt),
                         Err(failure) => {
                             let message = format!("[{}] {}", failure.code(), failure.detail());
                             workspace.tabs.on_session_failed(
                                 &tab_id,
+                                attempt,
                                 &crate::backend::table::TableFailure::SessionLost { message },
                             );
                         }
@@ -852,10 +865,16 @@ pub fn activate(app: &adw::Application) {
                         eprintln!("[tabs] 标签 {tab_id} 会话失效：{reason}");
                     }
                 }
-                Event::QueryEdit { tab_id, result } => {
+                Event::QueryEdit {
+                    tab_id,
+                    session_id,
+                    result,
+                } => {
                     let workspace = events_state.workspace.borrow().as_ref().cloned();
                     if let Some(workspace) = workspace {
-                        workspace.tabs.route_query_edit(&tab_id, result);
+                        workspace
+                            .tabs
+                            .route_query_edit(&tab_id, &session_id, result);
                     }
                 }
                 Event::Query { tab_id, event } => {
@@ -1227,6 +1246,17 @@ fn open_connection_dialog_for(state: &Rc<UiState>, saved_key: Option<&str>) {
         eprintln!("[sqarvo-desktop] 后端尚未连接，忽略「新建连接」");
         return;
     }
+    let saved = match saved_key {
+        Some(key) => {
+            let saved = state.registry.borrow().as_ref().and_then(|r| r.saved(key));
+            let Some(saved) = saved else {
+                show_unavailable_tree_target(state);
+                return;
+            };
+            Some(saved)
+        }
+        None => None,
+    };
     // 槽位里的对话框只有「还开着」才复用：`present()` 对已经关闭的 `AdwDialog`
     // 是空操作，复用旧实例会让「编辑连接…」看起来没反应（#175）。要点编辑某条
     // 连接时必须按那条连接重建，否则会把别的连接的字段带过来。
@@ -1242,18 +1272,14 @@ fn open_connection_dialog_for(state: &Rc<UiState>, saved_key: Option<&str>) {
 
     let drivers = state.drivers.borrow().clone();
     let dialog = ConnectionDialog::build(&drivers);
-    if let Some(key) = saved_key {
-        let saved = state
-            .registry
-            .borrow()
-            .as_ref()
-            .and_then(|registry| registry.saved(key));
-        match saved {
-            Some(saved) => match dialog.apply_saved(&saved) {
-                Ok(()) => eprintln!("[connections] 已用已保存连接「{}」预填对话框", saved.name),
-                Err(reason) => eprintln!("[connections] 无法预填已保存连接：{reason}"),
-            },
-            None => eprintln!("[connections] 注册表里找不到连接键 {key}，按新建连接打开"),
+    if let Some(saved) = saved {
+        match dialog.apply_saved(&saved) {
+            Ok(()) => eprintln!("[connections] 已用已保存连接「{}」预填对话框", saved.name),
+            Err(reason) => {
+                eprintln!("[connections] 无法预填已保存连接：{reason}");
+                show_unavailable_tree_target(state);
+                return;
+            }
         }
     }
 
@@ -1392,7 +1418,7 @@ fn browse_session_opened(
         session.driver_id,
         short_id(&session.session_id)
     );
-    show_workspace(state, &outcome);
+    show_workspace(state, &outcome, Some(key));
     if let Some(workspace) = state.workspace.borrow().as_ref() {
         workspace.expand_connection(key);
     }
@@ -1478,12 +1504,6 @@ enum ObjectsTarget {
 }
 
 fn objects_target(selection: &TreeSelection) -> ObjectsTarget {
-    fn catalog_of(reference: &ObjectRef) -> ObjectRef {
-        let mut catalog = reference.clone();
-        catalog.kind = ObjectKind::Catalog as i32;
-        catalog.name = reference.catalog.clone();
-        catalog
-    }
     let tables = vec![ObjectKind::Table];
     let views = vec![ObjectKind::View, ObjectKind::MaterializedView];
     match selection {
@@ -1491,10 +1511,13 @@ fn objects_target(selection: &TreeSelection) -> ObjectsTarget {
             ObjectKind::Catalog | ObjectKind::Schema => {
                 ObjectsTarget::List(node.reference.clone(), tables)
             }
-            ObjectKind::View | ObjectKind::MaterializedView => {
-                ObjectsTarget::List(catalog_of(&node.reference), views)
-            }
-            _ => ObjectsTarget::List(catalog_of(&node.reference), tables),
+            ObjectKind::View | ObjectKind::MaterializedView => object_scope(&node.reference)
+                .map_or(ObjectsTarget::Empty, |scope| {
+                    ObjectsTarget::List(scope, views)
+                }),
+            _ => object_scope(&node.reference).map_or(ObjectsTarget::Empty, |scope| {
+                ObjectsTarget::List(scope, tables)
+            }),
         },
         TreeSelection::Group { group, parent } => match group {
             RowGroup::Catalog(KindGroup::Views) => ObjectsTarget::List(parent.clone(), views),
@@ -1506,7 +1529,9 @@ fn objects_target(selection: &TreeSelection) -> ObjectsTarget {
             RowGroup::Catalog(KindGroup::Queries) => {
                 ObjectsTarget::Unavailable(crate::tabs::KindShortcut::Queries)
             }
-            RowGroup::Table(_) => ObjectsTarget::List(catalog_of(parent), tables),
+            RowGroup::Table(_) => object_scope(parent).map_or(ObjectsTarget::Empty, |scope| {
+                ObjectsTarget::List(scope, tables)
+            }),
         },
         TreeSelection::Connection(_) | TreeSelection::None => ObjectsTarget::Empty,
     }
@@ -1521,16 +1546,14 @@ fn selection_identity(selection: &TreeSelection) -> String {
         TreeSelection::Connection(snapshot) => format!("connection|{}", snapshot.key),
         TreeSelection::Object { node, parent } => format!(
             "object|{}|{}",
-            node.path_label(),
-            parent.as_ref().map_or_else(String::new, |p| p.path_label())
+            object_identity(&node.reference),
+            parent
+                .as_ref()
+                .map_or_else(String::new, |p| object_identity(&p.reference))
         ),
-        TreeSelection::Group { group, parent } => format!(
-            "group|{}|{}|{}|{}",
-            (*group).label(),
-            parent.catalog,
-            parent.schema,
-            parent.name
-        ),
+        TreeSelection::Group { group, parent } => {
+            format!("group|{group:?}|{}", object_identity(parent))
+        }
         TreeSelection::None => "none".to_owned(),
     }
 }
@@ -1538,8 +1561,8 @@ fn selection_identity(selection: &TreeSelection) -> String {
 /// 对象身份串，用于合并同一次操作的重复 UI 事件。
 fn object_identity(reference: &crate::proto::services::v1::ObjectRef) -> String {
     format!(
-        "{}|{}|{}|{}",
-        reference.session_id, reference.catalog, reference.schema, reference.name
+        "{:?}|{:?}|{:?}|{:?}|{}",
+        reference.session_id, reference.catalog, reference.schema, reference.name, reference.kind
     )
 }
 
@@ -1561,11 +1584,9 @@ fn pin_identity(
             "{tab_id}|tree|{}",
             selection.map_or_else(|| "none".to_owned(), selection_identity)
         ),
-        TabPin::Table { entry: Some(entry) } => format!(
-            "{tab_id}|table|{}|{}",
-            object_identity(&entry.reference),
-            entry.display_name
-        ),
+        TabPin::Table { entry: Some(entry) } => {
+            format!("{tab_id}|table|{}", object_identity(&entry.reference))
+        }
         TabPin::Table { entry: None } => format!("{tab_id}|table|pending"),
         TabPin::QueryCatalog {
             connection_key,
@@ -1898,7 +1919,7 @@ fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
 ///
 /// 标签、会话与页面都在 [`crate::tabs::TabSet`] 里；本函数只负责把它接上外壳、
 /// 对象树与 DDL 面板，并把「当前标签」的状态转成状态栏与 `win.*` 动作的可用性。
-fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
+fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome, profile_id: Option<&str>) {
     // 启动态刚拖过面板就立刻点连接时，400ms 的落盘防抖还没触发：先取当前外壳
     // 的真实宽度带进新工作区，避免重读 window.json 拿到旧值（#155 复核）。
     let startup_width = state
@@ -1914,46 +1935,9 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
         .map(|startup| startup.sidebar_state());
     state.startup.borrow_mut().take();
 
-    let version = if outcome.server_version.trim().is_empty() {
-        "未知（后端未返回）".to_owned()
-    } else {
-        outcome.server_version.clone()
-    };
-    // 驱动显示名来自 `ListDrivers`：会话信息里必须能看出连的是哪种数据库。
-    let driver_name = state
-        .drivers
-        .borrow()
-        .iter()
-        .find(|driver| driver.driver_id == outcome.driver_id)
-        .map_or_else(
-            || outcome.driver_id.clone(),
-            |driver| driver.display_name.clone(),
-        );
-    let driver_label = state
-        .drivers
-        .borrow()
-        .iter()
-        .find(|driver| driver.driver_id == outcome.driver_id)
-        .map(|driver| format!("{}（{}）", driver.display_name, driver.driver_id))
-        .unwrap_or_else(|| outcome.driver_id.clone());
-    // 标题规则（§5.1）：无标签时 = `<连接名> - <连接类型>`。
-    let connection_name = state
-        .connection_name
-        .borrow()
-        .clone()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| format!("连接 {}", short_id(&outcome.connection_id)));
-    state
-        .title
-        .set_title(&format!("{connection_name} - {driver_name}"));
-    state.title.set_subtitle(&l10n::tf(
-        "shell.title_connected",
-        &[
-            ("driver", driver_label.clone()),
-            ("version", version.clone()),
-        ],
-    ));
-
+    let connection_name = profile_id
+        .and_then(|key| state.registry.borrow().as_ref()?.label_for_key(key))
+        .unwrap_or_else(|| l10n::t("object_tree.connection_unnamed").to_owned());
     // 旧工作区（若有）先释放：它的标签会话属于上一次连接，不能留在新工作区里。
     if let Some(previous) = state.workspace.borrow_mut().take() {
         previous.shutdown();
@@ -1962,9 +1946,9 @@ fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome) {
     let workspace = Workspace::new(
         state,
         outcome,
+        profile_id,
         &connection_name,
-        &driver_label,
-        &version,
+        &outcome.server_version,
         startup_width,
         startup_sidebar,
     );
@@ -2076,71 +2060,39 @@ fn apply_tab_status(
     }
 }
 
-/// 主工具条的种类入口（表 / 视图 / 函数 / 查询）：切到 `Objects` 页并列出该种类。
-///
-/// 「表 / 视图」走与对象树选中**同一条**路径：先选中树里对应的库（视图还要选中它的
-/// `Views` 分组），信息面板随之切换；再把列表切到同一作用域。「函数 / 查询」没有可拉取
-/// 的列表，页面如实说明原因，不摆假数据。
+/// Browse the exact Action Context on the fixed Objects page.
 fn show_objects_for_kind(
     tree: &Rc<TreePanel>,
     tabs: &Rc<crate::tabs::TabSet>,
     shortcut: crate::tabs::KindShortcut,
 ) {
-    use crate::tabs::KindShortcut;
-    // 目标库 = 树里当前选中项所在的库（用户可能刚切到另一个库）；没有选中时才退回
-    // 活动连接的默认库。不能用「活动连接的默认库」直接决定——那会把按钮锁死在默认库上。
-    let target = tree.selected_catalog();
-    let group = match shortcut {
-        KindShortcut::Views => crate::tree::KindGroup::Views,
-        KindShortcut::Functions => crate::tree::KindGroup::Functions,
-        KindShortcut::Queries => crate::tree::KindGroup::Queries,
-        KindShortcut::Tables => crate::tree::KindGroup::Tables,
-    };
-    match tree.select_kind(target.as_ref(), group) {
-        Ok(parent) => {
-            // 树里只选中一次（直接落在分组行上）：先选库再选分组会看到高亮「跳一下」，
-            // 那是两段选中 + 两次滚动叠出来的。
-            let scope = if parent.catalog.is_empty() {
-                parent.name.clone()
-            } else {
-                parent.catalog.clone()
+    let scope = match tabs.action_context() {
+        TargetState::Available(target) => {
+            let Some(mut scope) = target.scope else {
+                tree.show_hint(l10n::t("object_tree.target_database_required"));
+                return;
             };
-            match shortcut.kinds() {
-                Some(kinds) => {
-                    tabs.show_objects(Some(parent), &kinds);
-                    eprintln!(
-                        "[toolbar] 种类入口「{}」：列出 {scope} 的 {}（{} 个种类）",
-                        shortcut.label(),
-                        shortcut.label(),
-                        kinds.len()
-                    );
-                }
-                None => {
-                    // 入口已经有、列表还没有（Functions / Queries）：树里照样选中分组行，
-                    // 页面如实说明。两个方向都要能走通，才叫联动。
-                    tabs.show_objects_unavailable_for(shortcut);
-                    eprintln!(
-                        "[toolbar] 种类入口「{}」：{scope} 的 {} 列表尚未实现（页面已如实说明）",
-                        shortcut.label(),
-                        shortcut.label()
-                    );
-                }
-            }
-            tabs.show_objects_page();
-            tabs.refresh_current();
+            let Some(session) = tree.browse_session_for(&target.profile_id) else {
+                tree.show_hint(l10n::t("object_tree.target_unavailable"));
+                return;
+            };
+            scope.session_id = session;
+            scope
         }
-        Err(reason) => {
-            eprintln!(
-                "[toolbar] 种类入口「{}」无法定位库：{reason}",
-                shortcut.label()
-            );
-            // 树里还没有库（例如尚未连接）：仍然切到页面并如实说明，不能点了没反应。
-            if shortcut.kinds().is_none() {
-                tabs.show_objects_unavailable_for(shortcut);
-                tabs.show_objects_page();
-                tabs.refresh_current();
-            }
+        TargetState::Unavailable(_) => {
+            tree.show_hint(l10n::t("object_tree.target_unavailable"));
+            return;
         }
+        TargetState::None => {
+            tree.show_hint(l10n::t("object_tree.target_database_required"));
+            return;
+        }
+    };
+    if let Some(kinds) = shortcut.kinds() {
+        tabs.browse_objects(scope, &kinds, true);
+    } else {
+        tabs.show_objects_unavailable_for(shortcut);
+        tabs.show_objects_page();
     }
 }
 
@@ -2201,8 +2153,8 @@ impl Workspace {
     fn new(
         state: &Rc<UiState>,
         outcome: &ConnectOutcome,
+        profile_id: Option<&str>,
         connection_name: &str,
-        driver_label: &str,
         version: &str,
         startup_width: Option<i32>,
         startup_sidebar: Option<i32>,
@@ -2264,9 +2216,7 @@ impl Workspace {
             let state = Rc::clone(state);
             let server_version = version.to_owned();
             let latency = outcome.latency_millis;
-            // 本次「保存并连接」的那条连接按名字认：活动键在注册表刷新后可能已经
-            // 换成别的条目，而版本 / 延迟属于这次 ConnectOutcome。
-            let owner = connection_name.to_owned();
+            let owner = profile_id.map(str::to_owned);
             Rc::new(move |selection: TreeSelection| {
                 let tab_id = tabs_slot
                     .borrow()
@@ -2294,12 +2244,13 @@ impl Workspace {
                         let saved = registry
                             .as_ref()
                             .and_then(|registry| registry.saved(&snapshot.key));
-                        let sessions = registry
-                            .as_ref()
-                            .and_then(|registry| registry.session_count_for(&snapshot.name));
+                        let sessions = tabs_slot.borrow().as_ref().map(|tabs| {
+                            usize::from(snapshot.state.is_connected())
+                                + tabs.live_session_count_for(&snapshot.key)
+                        });
                         // 服务端版本与延迟只有「保存并连接」那条连接有：其它连接
                         // 拿不到就不显示这两行（不编造）。
-                        let mine = snapshot.is_active || snapshot.name == owner;
+                        let mine = owner.as_deref() == Some(snapshot.key.as_str());
                         let live = ConnectionLive {
                             server_version: if mine {
                                 server_version.clone()
@@ -2311,6 +2262,7 @@ impl Workspace {
                         };
                         inspector.show_connection(
                             saved.as_ref(),
+                            snapshot.label(),
                             &live,
                             Some(&snapshot.session_id),
                         );
@@ -2463,26 +2415,24 @@ impl Workspace {
                     });
                 })
             },
-            select: {
-                let render_selection = Rc::clone(&render_selection);
+            select: Rc::clone(&render_selection),
+            browse: {
                 let tabs_slot = Rc::clone(&tabs_slot);
-                Rc::new(move |selection: TreeSelection| {
-                    // 先同步面板（`Objects` 页时这一步就是钉住渲染，内部已写键），
-                    // 再联动 Objects 固定页列表。顺序反过来会让固定页的状态事件
-                    // 在键写入前触发，同一次选中渲染两遍、发两份请求。
-                    (render_selection)(selection.clone());
-                    // Objects 固定页与树选中联动：选中库 / Tables / Views 及其下级时
-                    // 列出该库对应的表或视图；选连接或占位行时回到空态。
-                    if let Some(tabs) = tabs_slot.borrow().as_ref() {
-                        match objects_target(&selection) {
-                            ObjectsTarget::List(parent, kinds) => {
-                                tabs.show_objects(Some(parent), &kinds);
-                            }
-                            ObjectsTarget::Unavailable(shortcut) => {
-                                tabs.show_objects_unavailable_for(shortcut);
-                            }
-                            ObjectsTarget::Empty => tabs.show_objects(None, &[]),
+                Rc::new(move |selection| {
+                    let tabs = tabs_slot.borrow().as_ref().cloned();
+                    let Some(tabs) = tabs else {
+                        return;
+                    };
+                    match objects_target(&selection) {
+                        ObjectsTarget::List(parent, kinds) => {
+                            let category = matches!(selection, TreeSelection::Group { .. });
+                            tabs.browse_objects(parent, &kinds, category);
                         }
+                        ObjectsTarget::Unavailable(shortcut) => {
+                            tabs.show_objects_unavailable_for(shortcut);
+                            tabs.show_objects_page();
+                        }
+                        ObjectsTarget::Empty => {}
                     }
                 })
             },
@@ -2556,22 +2506,17 @@ impl Workspace {
                 let inspector = Rc::clone(&inspector);
                 Rc::new(move |reference, rows| inspector.set_loaded_rows(&reference, rows))
             },
-            connection_name: connection_name.to_owned(),
-            driver_label: driver_label.to_owned(),
-            subtitle: l10n::tf(
-                "shell.title_connected",
-                &[
-                    ("driver", driver_label.to_owned()),
-                    ("version", version.to_owned()),
-                ],
-            ),
-            catalog: state
-                .registry
-                .borrow()
-                .as_ref()
-                .and_then(|registry| registry.active_key())
-                .map(|key| registry_catalog(state, &key))
-                .unwrap_or_else(|| "默认".to_owned()),
+            driver_name: {
+                let state = Rc::clone(state);
+                Rc::new(move |driver_id| {
+                    state
+                        .drivers
+                        .borrow()
+                        .iter()
+                        .find(|driver| driver.driver_id == driver_id)
+                        .map(|driver| driver.display_name.clone())
+                })
+            },
             registry: state.registry.borrow().clone(),
             backend_failure: {
                 let state = Rc::clone(state);
@@ -2588,15 +2533,13 @@ impl Workspace {
                     })
                 })
             },
-            selected_catalog: {
-                // 新查询标签的默认请求库：树里当前选中项所在的库（ADR 0030）。
-                let tree_slot = Rc::clone(&tree_slot);
-                Rc::new(move || {
-                    tree_slot
-                        .borrow()
-                        .as_ref()
-                        .and_then(|tree| tree.selected_catalog())
-                })
+            navigation_target: {
+                let tree = Rc::clone(&tree);
+                Rc::new(move || tree.navigation_target())
+            },
+            command_feedback: {
+                let tree = Rc::clone(&tree);
+                Rc::new(move |message| tree.show_hint(message))
             },
             on_status: {
                 let shell_slot = Rc::clone(&shell_slot);
@@ -2706,9 +2649,18 @@ impl Workspace {
             },
             on_title: {
                 let state = Rc::clone(state);
-                Rc::new(move |title: &str, subtitle: &str| {
+                Rc::new(move |title: &str, subtitle: &str, tooltip: &str| {
                     state.title.set_title(title);
                     state.title.set_subtitle(subtitle);
+                    state
+                        .title
+                        .set_tooltip_text((!tooltip.is_empty()).then_some(tooltip));
+                    let system_title = if title == "Sqarvo" {
+                        title.to_owned()
+                    } else {
+                        format!("{title} — Sqarvo")
+                    };
+                    state.window.set_title(Some(&system_title));
                 })
             },
         });
@@ -2741,6 +2693,8 @@ impl Workspace {
                     }
                     tabs.clear_objects_for_session(&connection.session_id);
                 }
+                tabs.refresh_connection_labels();
+                inspector.refresh_connection_label(|key| registry.label_for_key(key));
             }));
         }
 
@@ -2852,6 +2806,9 @@ impl Workspace {
                     })
                 });
                 tree.attach(registry);
+                if let Some(profile_id) = profile_id {
+                    tree.select_initial_connection(profile_id);
+                }
             }
             None => tree.mark_unavailable("连接注册表不可用：无法读取对象树"),
         }
@@ -3008,6 +2965,52 @@ fn maybe_run_qa_sql(state: &Rc<UiState>) {
     }
 
     let tabs = &workspace.tabs;
+    // Save & Connect creates the workspace before the independent browse session settles.
+    // Wait for that exact target so this QA action follows the same command as the toolbar.
+    if let TargetState::Unavailable(target) = tabs.action_context()
+        && let Some(registry) = state.registry.borrow().clone()
+        && registry
+            .snapshot(&target.profile_id)
+            .is_some_and(|row| row.state == ConnectionState::Connecting)
+    {
+        let workspace = Rc::downgrade(&workspace);
+        let state = Rc::downgrade(state);
+        schedule_retry(
+            40,
+            Rc::new(move || {
+                let (Some(state), Some(workspace)) = (state.upgrade(), workspace.upgrade()) else {
+                    return Ok(());
+                };
+                if !state
+                    .workspace
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &workspace))
+                {
+                    return Ok(());
+                }
+                match workspace.tabs.action_context() {
+                    TargetState::Available(current) if current == target => {
+                        maybe_run_qa_sql(&state);
+                        Ok(())
+                    }
+                    TargetState::Unavailable(current)
+                        if current == target
+                            && registry
+                                .snapshot(&target.profile_id)
+                                .is_some_and(|row| row.state == ConnectionState::Connecting) =>
+                    {
+                        Err(l10n::t("object_tree.target_unavailable").to_owned())
+                    }
+                    _ => {
+                        eprintln!("[qa] 捕获的查询目标已失效，停止自动执行");
+                        Ok(())
+                    }
+                }
+            }),
+        );
+        return;
+    }
     let current = tabs.current_id().and_then(|id| tabs.by_id(&id));
     let tab = match current.filter(|tab| tab.sql.is_some()) {
         Some(tab) => tab,
@@ -4222,13 +4225,12 @@ fn schedule_retry(attempts: u32, action: Rc<dyn Fn() -> Result<(), String>>) {
 ///
 /// 连接本来就没连上时不弹确认：没有会话、没有标签可关，多一次点击没有信息量。
 fn confirm_edit_saved(state: &Rc<UiState>, key: &str) {
-    let Some(registry) = state.registry.borrow().clone() else {
-        open_connection_dialog_for(state, Some(key));
-        return;
-    };
-    let Some(snapshot) = registry.snapshot(key) else {
-        eprintln!("[connections] 编辑：注册表里没有连接键 {key}，按新建连接打开");
-        open_connection_dialog_for(state, None);
+    let Some((registry, snapshot)) = state.registry.borrow().as_ref().and_then(|registry| {
+        registry
+            .snapshot(key)
+            .map(|snapshot| (Rc::clone(registry), snapshot))
+    }) else {
+        show_unavailable_tree_target(state);
         return;
     };
     if !snapshot.state.is_connected() {
@@ -4265,6 +4267,10 @@ fn confirm_edit_saved(state: &Rc<UiState>, key: &str) {
         let handled = Rc::new(Cell::new(false));
         dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
             if handled.replace(true) || response != "edit" {
+                return;
+            }
+            if registry.session_for_key(&key).as_deref() != Some(snapshot.session_id.as_str()) {
+                show_unavailable_tree_target(&state);
                 return;
             }
             let closed = state.workspace.borrow().as_ref().map_or(0, |workspace| {
@@ -4313,12 +4319,16 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot, auto_co
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
     {
-        let registry = Rc::clone(&registry);
+        let state = Rc::clone(state);
         let key = snapshot.key.clone();
         let name = snapshot.name.clone();
         let handled = Rc::new(Cell::new(false));
         dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
             if handled.replace(true) || response != "disconnect" {
+                return;
+            }
+            if registry.session_for_key(&key).as_deref() != Some(snapshot.session_id.as_str()) {
+                show_unavailable_tree_target(&state);
                 return;
             }
             eprintln!("[browse] 用户确认断开「{name}」（连接键 {key}）");
@@ -4346,12 +4356,13 @@ fn confirm_disconnect(state: &Rc<UiState>, snapshot: ConnectionSnapshot, auto_co
     dialog.present(Some(&state.window));
 }
 
-/// 某条连接在标签名里用的 catalog（标签 `对象 @ catalog`）。
-fn registry_catalog(state: &Rc<UiState>, key: &str) -> String {
-    state.registry.borrow().as_ref().map_or_else(
-        || "默认".to_owned(),
-        |registry| registry.catalog_for_key(key),
-    )
+fn show_unavailable_tree_target(state: &UiState) {
+    let message = l10n::t("object_tree.target_unavailable");
+    if let Some(workspace) = state.workspace.borrow().as_ref() {
+        workspace.tree.show_hint(message);
+    } else if let Some(startup) = state.startup.borrow().as_ref() {
+        startup.shell().status().set_idle_summary(Some(message));
+    }
 }
 
 /// 会话 ID / 查询 ID 的短形式（界面展示用，完整值在 tooltip 与日志里）。
@@ -5217,6 +5228,10 @@ fn build_main_menu() -> MainMenu {
     // 当前值打勾。GMenu 没有逐项 tooltip，所以密度档放不下时靠**条目文字**
     // （`refresh_tier_actions` 补「放不下」），原因同时进日志。
     let view = gio::Menu::new();
+    view.append(
+        Some(l10n::t("shell.menu.clear_selection")),
+        Some("win.clear-selection"),
+    );
 
     let theme_section = gio::Menu::new();
     for scheme in theme::Scheme::ALL {
@@ -5423,11 +5438,16 @@ fn install_window_actions(
     let new_tab = gio::SimpleAction::new("new-tab", None);
     {
         let state = Rc::clone(state);
-        new_tab.connect_activate(move |_, _| {
-            if let Some(workspace) = state.workspace.borrow().as_ref().cloned()
-                && let Err(message) = workspace.tabs.new_query_tab()
-            {
-                eprintln!("[tabs] 新建查询标签被拒绝：{message}");
+        new_tab.connect_activate(move |_, _| request_new_query_tab(&state));
+    }
+    let clear_selection = gio::SimpleAction::new("clear-selection", None);
+    {
+        let state = Rc::clone(state);
+        clear_selection.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref() {
+                workspace.tree.clear_selection();
+            } else if let Some(startup) = state.startup.borrow().as_ref() {
+                startup.clear_selection();
             }
         });
     }
@@ -5704,6 +5724,7 @@ fn install_window_actions(
     for action in [
         &new_connection,
         &new_tab,
+        &clear_selection,
         &close_tab,
         &tab_next,
         &tab_prev,
@@ -6457,8 +6478,9 @@ mod tests {
         let view = submenu_model(&model, "视图").expect("视图子菜单");
         assert_eq!(
             menu_labels(&view),
-            ["深色模式", "界面密度", "语言"].map(str::to_owned)
+            ["清除选择", "深色模式", "界面密度", "语言"].map(str::to_owned)
         );
+        assert!(menu_actions(&view).contains(&"win.clear-selection".to_owned()));
         assert_eq!(
             menu_actions(&model),
             ["win.mcp-management"].map(str::to_owned)

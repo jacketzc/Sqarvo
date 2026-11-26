@@ -97,6 +97,10 @@ pub struct StartupWorkspace {
 
 impl StartupWorkspace {
     /// 六区域外壳（切档时重设面板区间 / 宽度用；#160）。
+    pub fn clear_selection(&self) {
+        self.tree.clear_selection();
+    }
+
     pub fn shell(&self) -> &Rc<Shell> {
         &self.shell
     }
@@ -121,9 +125,7 @@ impl StartupWorkspace {
                         let saved = registry
                             .as_ref()
                             .and_then(|registry| registry.saved(&snapshot.key));
-                        let sessions = registry
-                            .as_ref()
-                            .and_then(|registry| registry.session_count_for(&snapshot.name));
+                        let sessions = Some(usize::from(snapshot.state.is_connected()));
                         // 未连接时没有服务端版本与延迟：那两行不出现，不编造。
                         let live = crate::inspector::ConnectionLive {
                             sessions,
@@ -131,6 +133,7 @@ impl StartupWorkspace {
                         };
                         inspector.show_connection(
                             saved.as_ref(),
+                            snapshot.label(),
                             &live,
                             Some(&snapshot.session_id),
                         );
@@ -144,6 +147,7 @@ impl StartupWorkspace {
                     }
                 })
             },
+            browse: Rc::new(|_| {}),
             health: Rc::new(|health: TreeHealth| {
                 eprintln!("[startup] 对象树健康状态：{}", health.name());
             }),

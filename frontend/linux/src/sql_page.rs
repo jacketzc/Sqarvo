@@ -587,8 +587,8 @@ impl SqlPage {
     }
 
     /// 正在把本标签的会话重绑到另一条连接：选择器置灰并说明在做什么（避免连点两次）。
-    pub fn set_connection_pending(&self, pending: bool) {
-        self.connection.set_pending(pending);
+    pub fn set_connection_pending(&self, target: Option<&str>) {
+        self.connection.set_pending(target);
     }
 
     /// 会话就绪状态：未就绪时选择器可见但禁用，并说明原因。
@@ -2207,6 +2207,10 @@ impl SqlPage {
             detail: false,
             reason: None,
         };
+        if !self.session_ready.get() {
+            ops.reason = Some(l10n::t("tabs.query_gate_no_session").to_owned());
+            return ops;
+        }
         // 刷新与编辑无关：只要有执行过的语句就能重跑（用户反馈「刷新按钮没用」）。
         ops.refresh = !self.results.statement().trim().is_empty() && !self.state.get().is_active();
         // 状态栏行 1 的「取消」在查询页只用一档：查询在途（Loading / Streaming）时可点，
@@ -2239,6 +2243,9 @@ impl SqlPage {
 
     /// 行操作入口（查询标签）。
     pub fn perform_row_op(self: &Rc<Self>, op: RowOp) {
+        if !self.session_ready.get() {
+            return;
+        }
         match op {
             RowOp::Add => match self.results.begin_insert_row() {
                 Ok(_) => {
@@ -2507,6 +2514,27 @@ impl SqlPage {
             self.set_state(PageState::Idle, None);
         }
         eprintln!("[query] 结果区已关闭：游标已释放，编辑器占满整页");
+    }
+
+    /// A replacement session cannot edit or fetch from the previous session's results.
+    pub fn release_results_session(&self) {
+        self.close_query();
+        self.query_id.replace(None);
+        self.reset_edit();
+        self.set_transaction_open(false);
+        self.results
+            .set_state(RunState::Complete, self.results.row_count(), false, None);
+        if let Some(multi) = self.multi.borrow_mut().as_mut() {
+            for slot in &mut multi.slots {
+                slot.has_more = false;
+            }
+        }
+    }
+
+    pub fn has_pending_result_edits(&self) -> bool {
+        self.results
+            .edit()
+            .is_some_and(|edit| edit.pending() > 0 || edit.has_insert())
     }
 
     /// 页面离开时释放游标（调用方随后丢弃页面）。
@@ -2917,6 +2945,9 @@ impl ConnectionPicker {
 
     /// 换上可选的连接（注册表里已保存的那些）。
     pub fn set_items(&self, items: &[(String, String)]) {
+        if self.items.borrow().as_slice() == items {
+            return;
+        }
         self.items.replace(items.to_vec());
         self.rebuild();
     }
@@ -2933,14 +2964,23 @@ impl ConnectionPicker {
     }
 
     /// 重绑在途：置灰 + 说明在做什么（成功 / 失败后由 tabs 解除）。
-    pub fn set_pending(&self, pending: bool) {
-        self.pending.set(pending);
-        self.dropdown.set_sensitive(!pending);
-        if pending {
-            let target = self.display_text();
+    /// Defer rebuilding the GTK model until the selection signal has returned.
+    pub fn restore_after_selection(self: &Rc<Self>) {
+        let picker = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            if let Some(picker) = picker.upgrade() {
+                picker.restore();
+            }
+        });
+    }
+
+    pub fn set_pending(&self, target: Option<&str>) {
+        self.pending.set(target.is_some());
+        self.dropdown.set_sensitive(target.is_none());
+        if let Some(target) = target {
             let text = l10n::tf(
                 "tabs.picker_connection_pending_tip",
-                &[("target", target.clone())],
+                &[("target", target.to_owned())],
             );
             self.root.set_tooltip_text(Some(&text));
             self.dropdown.set_tooltip_text(Some(&text));

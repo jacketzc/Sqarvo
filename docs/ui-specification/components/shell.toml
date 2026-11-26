@@ -123,7 +123,7 @@ style.metrics = ["font_ui"]
 a11y.name = "窗口标题"
 impl_notes = [
   "由 AdwWindowTitle 承载：字号随窗口继承 font_ui，字重由 Adwaita 的内部样式决定，`.sqarvo-title` 类只用在页内标题上。",
-  "标题跟着**当前标签**变，副标题是连接级信息、不随标签改 —— 这是两条不同的刷新路径。",
+  "标题、副标题和 tooltip 读取活动工作区的实际绑定。查询重绑的目标只用于建立会话。",
 ]
 
 [[component.interaction]]
@@ -135,19 +135,19 @@ source = "src/ui.rs:1561"
 [[component.interaction]]
 trigger = "load"
 precondition = "连接数据库成功"
-result = "标题「<连接名> - <驱动显示名>」；副标题「已连接 · <显示名>（<driver_id>）· <服务端版本>」，版本缺失时写「未知（后端未返回）」"
+result = "Objects 还没有成功浏览的范围时，标题是「Sqarvo」，副标题为空"
 source = "src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "切换标签"
-result = "标题跟着当前标签变：`Objects` → 「<连接名> - <驱动>」；表 / 查询标签 → 「<标签标题> (<连接名>)」；副标题不变（连接级信息）"
+result = "主标题用工作区原始名称与连接显示名组成「<工作区名> @ <连接名>」。副标题显示驱动显示名和实际数据库或 Schema，缺失项省略。系统窗口标题加「— Sqarvo」。tooltip 补充可安全显示的目标详情。选中树资源和在途重绑都不改归属"
 source = "src/tabs.rs:2292、src/tabs.rs:2310、src/tabs.rs:135"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "后端断开"
-result = "标题「Sqarvo」、副标题「已断开」；已建立的工作区保留（已加载的行仍可查看），所有标签标记失连"
+result = "存续的普通标签保留实际归属及已加载结果，业务区域显示失连。无工作区时展示外壳的断开状态"
 source = "src/ui.rs:587、src/tabs.rs:2632"
 
 [[component.interaction]]
@@ -164,8 +164,8 @@ source = "src/ui.rs:1420"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3d3d47678dd2"
-evidence = "§1.1 六条标题 / 副标题规则；show_startup_workspace / show_workspace / TabSet::refresh_current"
+spec_hash = "51c25923bc17"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：树选 B 时系统标题保留 A；同名表标签及 Objects 分别显示实际档案。隔离 GTK qa_query_target_tracks_the_original_tab_session：在途、失败与迟到响应不改实际标题。"
 
 [[component]]
 id = "shell.menu"
@@ -191,15 +191,15 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "窗口存在"
-result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选）"
+result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（清除选择 / 深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选）"
 source = "src/ui.rs:4945、src/ui.rs:321"
 
 platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，两个 MenuFlyoutSubItem（文件 / 帮助）装同一批条目（「表 → 导出 CSV」已随改动确认单 #1 / #198 删除），条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "266fdcc0d784"
-evidence = "GTK 单测 mcp_management_has_a_top_level_menu_item 检查菜单模型，AT-SPI test_06_mcp_access.py 验证菜单、权限动作与回读。"
+spec_hash = "6e38f2035271"
+evidence = "GTK 菜单模型单测验证视图 → 清除选择绑定 win.clear-selection；test_16_workspace_context.py::test_navigation_target_and_clear_selection 通过该公开动作验证清除后回退工作区。"
 
 [[component]]
 id = "shell.menu.new_connection"
@@ -242,7 +242,7 @@ impl_notes = ["与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同�
 [[component.interaction]]
 trigger = "click"
 precondition = "后端已握手且工作区存在（`set_workspace_ready` 统一开关）"
-result = "新建查询标签并聚焦编辑器；未就绪 / 未连接时禁用（不是点了没反应）"
+result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。目标缺失或不可用时在侧栏提示，成功时聚焦编辑器。后端未就绪或工作区未建立时入口禁用"
 source = "src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859"
 
 [[component.interaction]]
@@ -254,8 +254,28 @@ source = "src/ui.rs:327"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a9eefc8582db"
-evidence = "§1.4 文件 → 新建查询标签；set_workspace_ready 与 new-tab 接线"
+spec_hash = "0a3c79a29497"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：win.new-tab 对失效、删除目标提示并保持标签数。test_03_sql.py 验证独立查询与执行。"
+
+[[component]]
+id = "shell.menu.clear_selection"
+parent = "shell.menu"
+display_name = "视图 → 清除选择"
+kind = "item"
+status = "active"
+style.metrics = ["font_ui"]
+a11y.name = "清除选择"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "主菜单的视图子菜单可用"
+result = "清除树的逻辑与可见选择，保留活动标签和 Objects 范围。下一次全局命令可以使用活动工作区。"
+source = "src/ui.rs::install_window_actions、src/tree.rs::TreePanel::clear_selection"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "cb337bcf0d4a"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：失效导航阻止查询，win.clear-selection 后新查询从活动 A 读到合成数据。GTK 菜单模型断言该条目及动作。"
 
 [[component]]
 id = "shell.menu.quit"
@@ -423,13 +443,13 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "后端已握手且工作区存在"
-result = "新建查询标签并聚焦编辑器；工作区不存在时只写日志「尚未连接数据库：先连接再新建查询标签」"
+result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。目标缺失或不可用时在侧栏提示，成功时聚焦编辑器。后端未就绪或工作区未建立时入口禁用"
 source = "src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a27092daa726"
-evidence = "§1.2「新建查询」；apply_new_query 的两条件与三段 tooltip"
+spec_hash = "208555801c16"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：直接点新建查询在两条同名 main 的独立会话读到 A/B；清除后跟随活动页。test_01_startup.py 断言未连接时可访问的禁用原因。"
 
 [[component]]
 id = "shell.toolbar.tables"
@@ -445,25 +465,25 @@ a11y.name = "Tables"
 impl_notes = [
   "纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。",
   "高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。",
-  "tooltip：就绪「在 Objects 页列出当前库的表（等同在对象树里选中 Tables 分组）」；未就绪「后端尚未就绪：握手完成后可用」。",
+  "tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的表；未就绪提示等待握手。",
 ]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "后端已握手且树里能定位到库"
-result = "在树里**一次选中**该库的 `Tables` 分组行（库未展开先展开），切到 `Objects` 页并按 `filter.kinds=[TABLE]` 拉第一页；信息面板随树选中切换；工具条高亮 `Tables`"
+precondition = "后端已握手，Action Context 有可用的数据库或 Schema"
+result = "切到固定 Objects 页，按解析出的目标数据库或 Schema 列出 Tables，高亮来自 Objects 当前种类。树逻辑选择保留"
 source = "src/ui.rs:1078、src/ui.rs:1909、src/shell.rs:958"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "树里定位不到库（尚未连接 / 树里没有库）"
-result = "只写日志「种类入口「Tables」无法定位库：…」，界面不变化（§9 已知偏差）；启动态则把固定 `Objects` 页摆到前面并**保持空态**，日志「尚未连接数据库，Objects 页保持空态」"
+precondition = "工作区没有可用数据库或 Schema，或目标已失效"
+result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
 source = "src/ui.rs:1942、src/startup.rs:298"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a7f18caeeac3"
-evidence = "§1.3 点 Tables；show_objects_for_kind 的 select_kind → show_objects → 高亮"
+spec_hash = "23e475dd453e"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：只选 B 连接时提示选择库；选中 B 的 main 时列出 peer_only。"
 
 [[component]]
 id = "shell.toolbar.views"
@@ -478,25 +498,25 @@ style.states = { selected = "sqarvo_brand_mid" }
 a11y.name = "Views"
 impl_notes = [
   "与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。",
-  "tooltip：就绪「在 Objects 页列出当前库的视图（等同在对象树里选中 Views 分组）」；未就绪「后端尚未就绪：握手完成后可用」。",
+  "tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的视图；未就绪提示等待握手。",
 ]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "后端已握手且树里能定位到库"
-result = "在树里一次选中该库的 `Views` 分组行，切到 `Objects` 页并按 `filter.kinds=[VIEW, MATERIALIZED_VIEW]` 拉第一页；信息面板随树选中切换；工具条高亮 `Views`"
+precondition = "后端已握手，Action Context 有可用的数据库或 Schema"
+result = "切到固定 Objects 页，按解析出的目标数据库或 Schema 列出 Views，高亮来自 Objects 当前种类。树逻辑选择保留"
 source = "src/ui.rs:1078、src/ui.rs:1904、src/ui.rs:1920"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "树里定位不到库（尚未连接 / 树里没有库）"
-result = "只写日志，界面不变化（与 `Tables` 同一条分支）；启动态把固定 `Objects` 页摆到前面并保持空态"
+precondition = "工作区没有可用数据库或 Schema，或目标已失效"
+result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
 source = "src/ui.rs:1942、src/startup.rs:298"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3bbc4d786577"
-evidence = "§1.3 点 Views；KindGroup::Views 与 kinds 组合"
+spec_hash = "a26cf6a66875"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：过同一目标解析路径从 B 的 main 列出 peer_view。"
 
 [[component]]
 id = "shell.toolbar.functions"
@@ -510,26 +530,26 @@ style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
 style.states = { selected = "sqarvo_brand_mid" }
 a11y.name = "Functions"
 impl_notes = [
-  "有入口、没有列表能力：点了照样联动（树里选中分组行），页面如实说明原因，不摆假数据。",
+  "沿用当前阶段的未实现说明页，保留树逻辑选择。",
   "tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。",
 ]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "后端已握手且树里能定位到库"
-result = "树里照样选中 `Functions` 分组行（联动两向都要通）；`Objects` 页写「函数列表尚未实现」+「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；**0 次 RPC**；工具条高亮 `Functions`"
+precondition = "后端已握手，Action Context 有可用的数据库或 Schema"
+result = "切到固定 Objects 页并显示 Functions 尚未实现的说明。零列表 RPC，树逻辑选择保留"
 source = "src/ui.rs:1931、src/tabs.rs:518、src/ui.rs:1928"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "树里定位不到库"
-result = "仍然切到 `Objects` 页并显示未实现说明（不静默、不留空白页）"
+precondition = "工作区没有可用数据库或 Schema，或目标已失效"
+result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
 source = "src/ui.rs:1948"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "33656da40d0f"
-evidence = "§1.3 点 Functions 与「定位不到库」分支；unavailable_copy 原文"
+spec_hash = "58e26138dc99"
+evidence = "test_15_refresh_regressions.py::test_objects_unsupported_kind_survives_reentry_and_f5[Functions]：未实现说明在重入、F5 后保留，Objects 请求次数不增加。"
 
 [[component]]
 id = "shell.toolbar.queries"
@@ -549,20 +569,20 @@ impl_notes = [
 
 [[component.interaction]]
 trigger = "click"
-precondition = "后端已握手且树里能定位到库"
-result = "树里选中 `Queries` 分组行；`Objects` 页写「已保存的查询尚未实现」+「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」；**0 次 RPC**；工具条高亮 `Queries`"
+precondition = "后端已握手，Action Context 有可用的数据库或 Schema"
+result = "切到固定 Objects 页并显示 Queries 尚未实现的说明。零列表 RPC，树逻辑选择保留"
 source = "src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "树里定位不到库"
-result = "仍然切到 `Objects` 页并显示未实现说明（与 Functions 同一条分支）"
+precondition = "工作区没有可用数据库或 Schema，或目标已失效"
+result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
 source = "src/ui.rs:1948"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "43daeedc82f9"
-evidence = "§1.3 点 Queries；unavailable_copy 的 Queries 原文"
+spec_hash = "b67b9a9723e8"
+evidence = "test_15_refresh_regressions.py::test_objects_unsupported_kind_survives_reentry_and_f5[Queries]：未实现说明在重入、F5 后保留，Objects 请求次数不增加。"
 
 [[component]]
 id = "shell.theme"

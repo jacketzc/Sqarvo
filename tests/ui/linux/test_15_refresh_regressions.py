@@ -179,7 +179,7 @@ def test_sql_editor_ddl_refreshes_objects_on_reentry(ui_instance):
     # SQLite 不支持指定请求库。先以连接行为上下文建立 SQL 标签，再恢复 Objects 作用域。
     _select_tree_row(frame, "uitest.db", "已连接")
     ops.open_sql_page(frame)
-    _select_tree_row(frame, "Tables")
+    A.mouse_click(A.find_one(ops.find_row(frame, "Tables", timeout=15), role_in=("label",), name="Tables"))
     _tab_action(frame, "win.tab-1")
     _wait_list_loaded(inst)
 
@@ -243,34 +243,36 @@ def test_objects_row_selection_does_not_reload(ui_instance):
         _expect_submit(inst, "ddl", before["ddl"] + 1)
 
 
-def test_objects_true_empty_state_is_not_restored(ui_instance):
-    """objects_page.empty: 从已加载作用域进入空态，切标签后仍为空态。"""
+def test_objects_scope_survives_connection_selection(ui_instance):
+    """objects_page, objects_page.tab, object_tree.tree: 只选连接保留 Objects 范围。"""
     inst = _start(ui_instance, "obj_empty")
     frame = inst.frame()
-    with step("true_empty"):
+    with step("select_connection"):
         _wait_list_loaded(inst)
-        _select_tree_row(frame, "uitest.db", "已连接")
-        A.find_one(_objects_page(frame), role_in=("label",), name="没有选中对象", timeout=15)
         before = _metadata_counts(inst)
+        _select_tree_row(frame, "uitest.db", "已连接")
+        expect("widgets" in _objects_labels(frame), "连接选择保留已有范围")
+        _expect_submit(inst, "objects.nodes", before["objects.nodes"])
 
-    with step("reentry_keeps_empty"):
+    with step("reentry_keeps_scope"):
         ops.open_sql_page(frame)
         _tab_action(frame, "win.tab-1")
-        A.find_one(_objects_page(frame), role_in=("label",), name="没有选中对象", timeout=15)
-        expect(_objects_grid(frame) is None, "重新进入 Objects 不恢复历史列表")
-        _expect_submit(inst, "objects.nodes", before["objects.nodes"])
+        _wait_list_loaded(inst)
+        expect("widgets" in _objects_labels(frame), "重新进入 Objects 恢复已有范围")
+        _expect_submit(inst, "objects.nodes", before["objects.nodes"] + 1)
         _expect_submit(inst, "nodes", before["nodes"])
 
 
-def test_objects_unsupported_kind_survives_reentry_and_f5(ui_instance):
-    """Functions 的「不支持」说明在重入与 F5 后保持，不回退到 Tables 列表。"""
-    inst = _start(ui_instance, "obj_unsupported")
-    with step("functions"):
+@pytest.mark.parametrize("kind", ["Functions", "Queries"])
+def test_objects_unsupported_kind_survives_reentry_and_f5(ui_instance, kind):
+    """shell.toolbar.functions, shell.toolbar.queries: 重入和 F5 后保留未实现说明。"""
+    inst = _start(ui_instance, f"obj_unsupported_{kind.lower()}")
+    with step("unsupported_category"):
         _wait_list_loaded(inst)
-        A.click(A.query(inst.frame(), role_in=("button",), name="Functions")[0])
+        A.click(A.query(inst.frame(), role_in=("button",), name=kind)[0])
         A.wait_until(
             lambda: any("尚未实现" in text for text in _status_texts(_objects_page(inst.frame()))),
-            15, "Functions 显示不支持说明")
+            15, f"{kind} 显示不支持说明")
         before = _submit_count(inst, "objects.nodes")
 
     frame = inst.frame()
@@ -300,9 +302,10 @@ def test_loaded_rows_survive_tab_switch(ui_instance):
         columns = _submit_count(inst, "columns")
 
     with step("switch_to_objects_and_back"):
-        _tab_action(inst.frame(), "win.tab-1")
+        frame = inst.frame()
+        A.mouse_click(A.find_one(ops.find_row(frame, "Tables", timeout=15), role_in=("label",), name="Tables"))
         _wait_list_loaded(inst)
-        _tab_action(inst.frame(), "win.tab-2")
+        _tab_action(frame, "win.tab-2")
         A.wait_until(
             lambda: any(text == "3 行" for text in _status_texts(_inspector(inst.frame()))),
             15, "回到表标签行数仍为 3 行")
@@ -368,7 +371,7 @@ def test_closing_background_data_tab_clears_only_its_rows(ui_instance):
     frame = inst.frame()
     panel = _inspector(frame)
     A.wait_until(lambda: "3 行" in _status_texts(panel), 20, "A 的数据页已加载")
-    _tab_action(frame, "win.tab-1")
+    A.mouse_click(A.find_one(ops.find_row(frame, "Tables", timeout=15), role_in=("label",), name="Tables"))
     _wait_list_loaded(inst)
     _select_tree_row(frame, "widgets", "表")
     info = A.find_one(panel, role_in=("toggle button",), name="表信息", timeout=15)
@@ -392,7 +395,8 @@ def test_closing_background_data_tab_clears_only_its_rows(ui_instance):
 
 @pytest.mark.parametrize("disconnect", ["UITestDB", "Peer"])
 def test_query_catalog_tracks_rebind_and_disconnect(ui_instance, disconnect):
-    """inspector.catalog, tabs.query.connection: 同名库重绑、失败回滚和断连归属。"""
+    """inspector.catalog, tabs.query.connection_picker, tabs.strip.tab.query, shell.title:
+    同名库重绑、失败回滚和断连归属。"""
     inst = ui_instance(f"catalog_{disconnect}")
     peer_db = inst.db.with_name("peer.db")
     with sqlite3.connect(peer_db) as con:
@@ -432,11 +436,11 @@ def test_query_catalog_tracks_rebind_and_disconnect(ui_instance, disconnect):
         A.wait_until(lambda: "重绑成功：Peer" in inst.log_text(), 15, "SQL 标签重绑 Peer")
         A.wait_until(lambda: "重绑失败（保留 Peer）" in inst.log_text(), 15,
                      "不可用目标失败，标签恢复 Peer")
-        A.wait_until(lambda: any("断言 OK：信息面板 facts=名称=main" in line and "（期望 名称=main）" in line
+        A.wait_until(lambda: any("断言 OK：信息面板 facts=" in line and "名称=main" in line and "（期望 名称=main）" in line
                                  for line in inst.log_text().splitlines()), 15,
                      "重绑失败后保留 Peer 的 main")
         fact_line = next(line for line in inst.log_text().splitlines()
-                         if "断言 OK：信息面板 facts=名称=main" in line and "（期望 名称=main）" in line)
+                         if "断言 OK：信息面板 facts=" in line and "名称=main" in line and "（期望 名称=main）" in line)
         expect("3 个" not in fact_line, "Peer 的 main 没有借用原连接的表数", fact_line)
 
     with step("disconnect_" + disconnect):
@@ -452,3 +456,36 @@ def test_query_catalog_tracks_rebind_and_disconnect(ui_instance, disconnect):
         labels = _status_texts(_inspector(frame))
         expect(("main" in labels) == (disconnect == "UITestDB"),
                "只在当前展示所属连接断开时清除库视图", labels)
+
+
+def test_navigation_selection_survives_projection_without_requests(ui_instance):
+    """object_tree.tree, object_tree.tree.row.expander, objects_page.table, inspector.object:
+    折叠和恢复已加载路径时保留逻辑选择，程序化恢复不重复预览或浏览。
+    """
+    inst = _start(ui_instance, "navigation_projection")
+    frame = inst.frame()
+    _wait_list_loaded(inst)
+    if ops.find_row(frame, "widgets", "表") is None:
+        ops.expand_tree_row(ops.find_row(frame, "Tables", timeout=15))
+    _select_tree_row(frame, "widgets", "表")
+    panel = _inspector(frame)
+    A.wait_until(lambda: any("CREATE TABLE widgets" in A.text_value(control)
+                             for control in A.query(panel, role_in=("text",))),
+                 15, "已完成一次用户主动的预览")
+    before = _metadata_counts(inst)
+
+    with step("collapse_then_restore"):
+        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接"))
+        A.wait_gone(lambda: ops.find_row(frame, "widgets", "表"), 10, "目标随折叠隐藏")
+        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接"))
+        main = ops.find_row(frame, "main", timeout=15)
+        if ops.find_row(frame, "Tables") is None:
+            ops.expand_tree_row(main)
+        tables = ops.find_row(frame, "Tables", timeout=15)
+        if ops.find_row(frame, "widgets", "表") is None:
+            ops.expand_tree_row(tables)
+        A.wait_until(lambda: "selected" in A.states(
+            ops.find_row(frame, "widgets", "表", timeout=5)),
+            10, "同一资源恢复为可见选择")
+        expect(_metadata_counts(inst) == before, "恢复逻辑选择不会请求元数据",
+               (_metadata_counts(inst), before))

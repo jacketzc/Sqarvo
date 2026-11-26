@@ -13,7 +13,7 @@
 [area]
 id = "objects_page"
 display_name = "Objects 固定页"
-summary = "工作区最左侧的固定页：标题「Objects」+ 三列表格（行号 · 表名 · 类型）+ 状态行 +「加载更多…」。列表内容跟着对象树的选中换作用域，页面自己发 ListNodes 并持有自己的分页 token；不新建会话、不反写树的选中。"
+summary = "工作区最左侧的固定页：标题「Objects」+ 三列表格（行号 · 表名 · 类型）+ 状态行 +「加载更多…」。列表内容由主动 Browse 命令改变作用域，页面自己发 ListNodes 并持有自己的分页 token；不新建会话、不反写树的选中。"
 legacy_ref = "ui-behavior-contract.md §3（原章节已退役为指针，行为见本文件）"
 
 [[component]]
@@ -49,12 +49,13 @@ style.metrics = ["objects_min_width", "tab_strip_height"]
 a11y.name = "Objects"
 a11y.tab = "可聚焦；固定在标签条首位"
 impl_notes = [
+  "固定页独立持有已确认的浏览范围和当前请求范围。普通标签激活和树的被动选择不会改动浏览范围。",
   "AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。",
   "页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。",
   "不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。",
   "启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。",
   "页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。",
-  "重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；唯一权威作用域同时服务分页与刷新，真实空态 / 不支持页会清空它，不恢复历史列表。同一作用域已有在飞请求时，树选中与重复「加载更多」都不叠加请求。",
+  "重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；当前请求范围服务分页与刷新，只有匹配的成功响应才能确认范围。空态或不支持页会清空范围，不恢复历史列表。同一作用域已有在飞请求时，树选中与重复「加载更多」都不叠加请求。",
 ]
 
 [[component.interaction]]
@@ -84,8 +85,8 @@ source = "src/tabs.rs:1393、src/tabs.rs:2684"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e641a40a25b4"
-evidence = "§3 固定页存在 / 关闭 Objects；add_objects_page 的 set_page_pinned 与 on_close_page 的 Objects 分支"
+spec_hash = "941e53e473ba"
+evidence = "test_15_refresh_regressions.py::test_objects_scope_survives_connection_selection：普通标签往返恢复原范围；启动与关闭回归覆盖固定页。"
 
 [[component]]
 id = "objects_page.table"
@@ -136,31 +137,31 @@ source = "src/tabs.rs:938、src/tabs.rs:1779"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "树里选中库 / 它下面的 Tables 分组 / 表内分组（Fields 等）/ 某张表"
+precondition = "单击库、Schema 或表分类正文，或主动点击 Tables 入口"
 result = "列出该库的表（filter.kinds=[TABLE]）；页面自己请求，树没展开过也能看到完整列表"
 source = "src/ui.rs:1346、src/ui.rs:1357、src/ui.rs:2093"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "树里选中 Views 分组 / 某个视图"
+precondition = "单击 Views 分组正文，或主动点击 Views 入口"
 result = "列出该库的视图（[VIEW, MATERIALIZED_VIEW]）"
 source = "src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "树里选中 Functions / Queries 分组"
+precondition = "主动单击 Functions / Queries 分组正文或对应工具条入口"
 result = "不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token"
 source = "src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "树里选中连接行 / 占位行（没有作用域）"
-result = "回到空态页：不是空白，也不残留上一批行；分页 token 一并清掉"
+precondition = "只选择连接、具体对象、辅助行或显式清除选择"
+result = "维持已有的 Objects 浏览范围。单纯选择、程序化定位或重建不派发列表请求"
 source = "src/ui.rs:1377、src/tabs.rs:1016"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "树里换了选中，但作用域仍是同一个库、同一类（例如从库切到它下面某张表）"
+precondition = "重复主动浏览已加载的同一个库或 Schema 及分类"
 result = "不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览）"
 source = "src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050"
 
@@ -179,8 +180,8 @@ source = "src/ui.rs:2846、src/tabs.rs:2099"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "074178bf4b32"
-evidence = "test_15_refresh_regressions.py 经 SQL 编辑器提交 CREATE、ALTER RENAME、DROP 后重入，另测外部 DDL、主动刷新、单选与空态；按 Objects 和对象树独立请求计数核对"
+spec_hash = "89e3bd3d6105"
+evidence = "test_15_refresh_regressions.py::test_objects_scope_survives_connection_selection：只选连接保留范围与数据。test_15_refresh_regressions.py::test_navigation_selection_survives_projection_without_requests：模型恢复不发被动 RPC。test_16_workspace_context.py::test_navigation_target_and_clear_selection：分类操作使用 Peer。"
 
 [[component]]
 id = "objects_page.table.row"

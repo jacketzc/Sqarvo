@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::backend::client::BackendClient;
@@ -147,32 +147,79 @@ impl SavedConnection {
             .then_some(self.file_path.as_str())
     }
 
-    /// 对象树名称。
+    /// Shared base name for tree rows, selectors and workspace titles.
     pub fn display_label(&self) -> String {
         let alias = self.alias.trim();
-        if alias.is_empty() {
-            self.target_label()
+        if !alias.is_empty() && safe_display_label(alias) {
+            return alias.to_owned();
+        }
+        if self.driver == SQLITE_DRIVER_ID && self.file_path == ":memory:" {
+            return crate::l10n::t("object_tree.connection_memory").to_owned();
+        }
+        if let Some(path) = self
+            .file_target()
+            .or_else(|| self.host.starts_with('/').then_some(self.host.as_str()))
+            && let Some(name) = Path::new(path).file_name().and_then(|name| name.to_str())
+            && safe_display_label(name)
+        {
+            return name.to_owned();
+        }
+        self.server_label()
+            .unwrap_or_else(|| crate::l10n::t("object_tree.connection_unnamed").to_owned())
+    }
+
+    fn server_label(&self) -> Option<String> {
+        let host = self.host.trim();
+        if host.is_empty()
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || ".-_:[]%".contains(c))
+        {
+            return None;
+        }
+        if self.port == 0 {
+            return Some(host.to_owned());
+        }
+        if host.contains(':') && !host.starts_with('[') {
+            Some(format!("[{host}]:{}", self.port))
         } else {
-            alias.to_owned()
+            Some(format!("{host}:{}", self.port))
         }
     }
 
-    /// 连接目标，用于同名连接的 tooltip 和确认对话框。
+    /// Safe endpoint details for tooltips and confirmation dialogs.
     pub fn target_label(&self) -> String {
-        if let Some(path) = self.file_target() {
-            return path.to_owned();
+        if self.file_target() == Some(":memory:") {
+            return crate::l10n::t("object_tree.connection_memory").to_owned();
         }
-        let user = if self.username.is_empty() {
-            String::new()
+        self.file_target()
+            .or_else(|| self.host.starts_with('/').then_some(self.host.as_str()))
+            .filter(|path| safe_display_label(path))
+            .map(str::to_owned)
+            .or_else(|| self.server_label())
+            .unwrap_or_default()
+    }
+
+    /// A concise endpoint qualifier for duplicate base names.
+    pub fn short_target_label(&self) -> Option<String> {
+        let target = self.target_label();
+        if target.starts_with('/') || self.file_target().is_some_and(|path| path != ":memory:") {
+            let path = Path::new(&target);
+            let file = path.file_name()?.to_str()?;
+            let parent = path.parent()?.file_name()?.to_str()?;
+            Some(format!("{parent}/{file}"))
         } else {
-            format!("{}@", self.username)
-        };
-        if self.database.is_empty() {
-            format!("{user}{}:{}", self.host, self.port)
-        } else {
-            format!("{user}{}:{}/{}", self.host, self.port, self.database)
+            (!target.is_empty()).then_some(target)
         }
     }
+}
+
+fn safe_display_label(label: &str) -> bool {
+    let lowercase = label.to_ascii_lowercase();
+    !label.chars().any(char::is_control)
+        && !["://", "password=", "token=", "credential_ref="]
+            .iter()
+            .any(|pattern| lowercase.contains(pattern))
 }
 
 fn invalid_response() -> ConnectionFailure {

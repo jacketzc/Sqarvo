@@ -151,12 +151,13 @@ impl_notes = [
   "地址是 host:port 或文件路径，不拼用户名与库名（它们各有独立字段）。",
   "服务器型驱动没有默认库时写「未指定」（吞掉整行会像漏了字段）；文件型驱动没有 TLS 一层，这一行整行不出现。",
   "凭据引用只写 credential_ref，面板里没有明文密码。",
+  "连接别名或显示名消歧义变化时，当前预览按档案 ID 更新名称，不新增元数据请求。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "选中连接行且连接在配置里"
-result = "标题 = 连接名、副标题 = 驱动；字段行给驱动、地址（host:port 或文件路径）、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、连接延迟、会话数；拿不到的字段不出现"
+result = "标题 = 树与标签共享的连接显示名，副标题 = 驱动。会话数按该档案的浏览会话及本窗口的独立会话统计；字段行给驱动、地址（host:port 或文件路径）、默认库、用户、TLS、凭据引用（不含密码）、服务端版本、连接延迟、会话数；拿不到的字段不出现"
 source = "src/ui.rs:2122、src/inspector.rs:621、src/inspector.rs:133"
 
 [[component.interaction]]
@@ -167,8 +168,8 @@ source = "src/inspector.rs:625"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ff0220fb8f1d"
-evidence = "§6 选中连接；inspector.rs::connection_facts 与 show_connection"
+spec_hash = "3bc40752c787"
+evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：活动 A 时预览 B，B 改别名后 Inspector 同步名称、A 的标题保持、元数据请求数不变；test_14_inspector_no_cache.py 验证 Preview 请求隔离。"
 
 [[component]]
 id = "inspector.field"
@@ -214,7 +215,7 @@ source = "src/ui.rs:2132、src/inspector.rs:644、src/inspector.rs:192"
 [[component.interaction]]
 trigger = "load"
 precondition = "当前 SQL 标签已确定库上下文，或用户在 SQL 标签里切换连接"
-result = "库视图跟随该标签实际绑定的连接。重绑等待中与失败时保留原归属，成功后按新会话的库上下文更新，同名库也重新匹配统计"
+result = "库视图跟随该标签实际绑定的连接。重绑等待中与失败时保留原归属及此前确认的库，成功后按新会话的库上下文更新，同名库也重新匹配统计"
 source = "src/tabs.rs::TabSet::pin_target、src/ui.rs::pin_identity、src/tree.rs::TreePanel::group_counts_by_catalog"
 
 [[component.interaction]]
@@ -225,8 +226,8 @@ source = "src/ui.rs:2152"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e877108d8794"
-evidence = "test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect；GTK catalog_counts_require_the_same_browse_session_and_catalog_identity"
+spec_hash = "c3b47fff03dd"
+evidence = "test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect 两个断开场景：同名库计数不串连接，目标失败后仍是原库。隔离 GTK qa_query_target_tracks_the_original_tab_session 覆盖迟到回答。"
 
 [[component]]
 id = "inspector.object"

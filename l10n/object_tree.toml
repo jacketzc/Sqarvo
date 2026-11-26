@@ -200,15 +200,9 @@ en = "Browse session {session} ({detail})"
 status = "done"
 
 [[entry]]
-key = "object_tree.tooltip_saved_name"
-zh = "\n连接名：{name}"
-en = "\nConnection name: {name}"
-status = "done"
-
-[[entry]]
 key = "object_tree.tooltip_connection"
-zh = "{label} · {driver}\n{target}{saved_name}\n{state}{active_note}\n右键：连接 / 断开连接 / 刷新连接"
-en = "{label} · {driver}\n{target}{saved_name}\n{state}{active_note}\nRight-click: Connect / Disconnect / Refresh connection"
+zh = "{label} · {driver}\n{target}\n{state}{active_note}\n右键：连接 / 断开连接 / 刷新连接"
+en = "{label} · {driver}\n{target}\n{state}{active_note}\nRight-click: Connect / Disconnect / Refresh connection"
 status = "done"
 
 [[entry]]
@@ -826,4 +820,34 @@ status = "done"
 key = "object_tree.dlg_disconnect_btn"
 zh = "断开连接"
 en = "Disconnect"
+status = "done"
+
+[[entry]]
+key = "object_tree.connection_memory"
+zh = "内存数据库"
+en = "In-memory database"
+status = "done"
+
+[[entry]]
+key = "object_tree.connection_unnamed"
+zh = "未命名连接"
+en = "Unnamed connection"
+status = "done"
+
+[[entry]]
+key = "object_tree.target_unavailable"
+zh = "所选资源已不可用，请重新选择或清除选择。"
+en = "The selected resource is unavailable. Select another resource or clear the selection."
+status = "done"
+
+[[entry]]
+key = "object_tree.target_database_required"
+zh = "请先选择要浏览的数据库或 Schema。"
+en = "Select a database or schema to browse."
+status = "done"
+
+[[entry]]
+key = "object_tree.target_connection_required"
+zh = "请先选择要查询的连接或数据库。"
+en = "Select a connection or database to query."
 status = "done"

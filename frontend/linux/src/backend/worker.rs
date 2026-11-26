@@ -209,6 +209,8 @@ pub enum Command {
     OpenTabSession {
         /// 标签 ID。
         tab_id: TabId,
+        /// Frontend attempt that owns the session.
+        attempt: u64,
         /// 连接参数（只带凭据引用，不含密码）。
         params: Box<ConnectionParams>,
         /// 会话显示名（日志与诊断用）。
@@ -405,6 +407,10 @@ pub enum TaskUpdate {
     TabConnected {
         /// 标签 ID。
         tab_id: TabId,
+        /// Frontend attempt that owns the session.
+        attempt: u64,
+        /// The backend that created the session, also used to release a late reply.
+        client: BackendClient,
         /// 结果。
         result: Box<Result<ConnectedTab, ConnectionFailure>>,
     },
@@ -926,6 +932,8 @@ pub enum Event {
     TabSession {
         /// 标签 ID。
         tab_id: TabId,
+        /// Frontend attempt that owns the session.
+        attempt: u64,
         /// 结果。
         result: Result<TabSessionOpened, ConnectionFailure>,
     },
@@ -940,6 +948,7 @@ pub enum Event {
     QueryEdit {
         /// 标签 ID。
         tab_id: TabId,
+        session_id: String,
         /// 结果。
         result: Result<QueryEditMeta, String>,
     },
@@ -1071,12 +1080,21 @@ impl WorkerHandle {
     }
 
     /// 为标签建立一条数据库会话（或领养「保存并连接」留下的那条）。
-    pub fn open_tab_session(&self, tab_id: &str, params: ConnectionParams, display_name: &str) {
-        let _ = self.commands.send(Command::OpenTabSession {
-            tab_id: tab_id.to_owned(),
-            params: Box::new(params),
-            display_name: display_name.to_owned(),
-        });
+    pub fn open_tab_session(
+        &self,
+        tab_id: &str,
+        attempt: u64,
+        params: ConnectionParams,
+        display_name: &str,
+    ) -> bool {
+        self.commands
+            .send(Command::OpenTabSession {
+                tab_id: tab_id.to_owned(),
+                attempt,
+                params: Box::new(params),
+                display_name: display_name.to_owned(),
+            })
+            .is_ok()
     }
 
     /// 释放标签会话（未提交事务由服务端回滚）。
@@ -1327,6 +1345,7 @@ pub struct QueryEditMeta {
 /// 让两个标签互相踩状态（事务尤其如此）。
 struct TabSession {
     tab_id: TabId,
+    attempt: u64,
     /// 后端连接 ID（关闭标签时 `Disconnect` 用它）。连接中为空。
     connection_id: String,
     /// 数据库会话 ID。连接中为空。
@@ -1349,9 +1368,10 @@ struct TabSession {
 
 impl TabSession {
     /// 连接中的占位条目：先登记，`TabConnected` 到达时补齐。
-    fn connecting(tab_id: &str) -> Self {
+    fn connecting(tab_id: &str, attempt: u64) -> Self {
         Self {
             tab_id: tab_id.to_owned(),
+            attempt,
             connection_id: String::new(),
             session_id: String::new(),
             driver: String::new(),
@@ -1652,6 +1672,7 @@ async fn worker_loop(
                     }
                     Command::OpenTabSession {
                         tab_id,
+                        attempt,
                         params,
                         display_name,
                     } => {
@@ -1672,6 +1693,7 @@ async fn worker_loop(
                                 tab_id.clone(),
                                 TabSession {
                                     tab_id: tab_id.clone(),
+                                    attempt,
                                     connection_id: adopt.connection_id.clone(),
                                     session_id: adopt.session_id.clone(),
                                     driver: adopt.driver.clone(),
@@ -1695,22 +1717,25 @@ async fn worker_loop(
                             let _ = events
                                 .send(Event::TabSession {
                                     tab_id,
+                                    attempt,
                                     result: Ok(opened),
                                 })
                                 .await;
                             continue;
                         }
                         let Some(active_session) = session.as_ref() else {
+                            slots.close(&tab_id);
                             let _ = events
                                 .send(Event::TabSession {
                                     tab_id,
+                                    attempt,
                                     result: Err(ConnectionFailure::backend_unavailable()),
                                 })
                                 .await;
                             continue;
                         };
                         // 先登记「连接中」：关闭请求与迟到的命令都能按 tab_id 找到归属。
-                        tabs.insert(tab_id.clone(), TabSession::connecting(&tab_id));
+                        tabs.insert(tab_id.clone(), TabSession::connecting(&tab_id, attempt));
                         let client = active_session.client.clone();
                         let sender = commands_tx.clone();
                         let display_name = display_name.clone();
@@ -1728,10 +1753,16 @@ async fn worker_loop(
                                     latency_millis: u64::try_from(started.elapsed().as_millis())
                                         .unwrap_or(u64::MAX),
                                 });
-                            let _ = sender.send(Command::Task(TaskUpdate::TabConnected {
+                            if let Err(error) = sender.send(Command::Task(TaskUpdate::TabConnected {
                                 tab_id,
+                                attempt,
+                                client: client.clone(),
                                 result: Box::new(result),
-                            }));
+                            })) && let Command::Task(TaskUpdate::TabConnected { result, .. }) = error.0
+                                && let Ok(connected) = *result
+                            {
+                                let _ = disconnect_session(&client, &connected.connection_id).await;
+                            }
                         });
                     }
                     Command::CloseTabSession { tab_id } => {
@@ -2473,10 +2504,15 @@ async fn worker_loop(
                             eprintln!("[query] 忽略主键读取：标签 {tab_id} 不存在");
                             continue;
                         };
+                        if tab.session_id != object.session_id {
+                            continue;
+                        }
+                        let session_id = object.session_id.clone();
                         let Some(active_session) = session.as_ref() else {
                             let _ = events
                                 .send(Event::QueryEdit {
                                     tab_id,
+                                    session_id,
                                     result: Err("尚未连接数据库".to_string()),
                                 })
                                 .await;
@@ -2486,6 +2522,7 @@ async fn worker_loop(
                             let _ = events
                                 .send(Event::QueryEdit {
                                     tab_id,
+                                    session_id,
                                     result: Err("该标签的会话尚未建立".to_string()),
                                 })
                                 .await;
@@ -2504,7 +2541,7 @@ async fn worker_loop(
                                 Err(error) => Err(error.message().to_string()),
                             };
                             let _ = events_for_task
-                                .send(Event::QueryEdit { tab_id, result })
+                                .send(Event::QueryEdit { tab_id, session_id, result })
                                 .await;
                         });
                     }
@@ -2803,25 +2840,21 @@ async fn worker_loop(
                         });
                     }
                     Command::Task(update) => match update {
-                        TaskUpdate::TabConnected { tab_id, result } => match *result {
+                        TaskUpdate::TabConnected { tab_id, attempt, client, result } => match *result {
                             Ok(connected) => {
-                                let Some(tab) = tabs.get_mut(&tab_id) else {
+                                let Some(tab) = tabs.get_mut(&tab_id).filter(|tab| tab.attempt == attempt) else {
                                     // 标签在连接期间被关闭：把会话立刻还回去，不留孤儿连接。
                                     eprintln!(
                                         "[tabs] 标签 {tab_id} 已关闭，释放迟到的会话 {}",
                                         short_session(&connected.session_id)
                                     );
-                                    if let Some(active_session) = session.as_ref() {
-                                        let client = active_session.client.clone();
-                                        let connection_id = connected.connection_id.clone();
-                                        tokio::spawn(async move {
-                                            if let Err(error) =
-                                                disconnect_session(&client, &connection_id).await
-                                            {
-                                                eprintln!("[tabs] 释放迟到会话失败：{error}");
-                                            }
-                                        });
-                                    }
+                                    tokio::spawn(async move {
+                                        if let Err(error) =
+                                            disconnect_session(&client, &connected.connection_id).await
+                                        {
+                                            eprintln!("[tabs] 释放迟到会话失败：{error}");
+                                        }
+                                    });
                                     continue;
                                 };
                                 tab.connection_id = connected.connection_id.clone();
@@ -2837,6 +2870,7 @@ async fn worker_loop(
                                 let _ = events
                                     .send(Event::TabSession {
                                         tab_id: tab_id.clone(),
+                                        attempt,
                                         result: Ok(TabSessionOpened {
                                             tab_id,
                                             session_id: connected.session_id,
@@ -2850,6 +2884,9 @@ async fn worker_loop(
                                     .await;
                             }
                             Err(failure) => {
+                                if tabs.get(&tab_id).is_none_or(|tab| tab.attempt != attempt) {
+                                    continue;
+                                }
                                 tabs.remove(&tab_id);
                                 slots.close(&tab_id);
                                 eprintln!(
@@ -2860,6 +2897,7 @@ async fn worker_loop(
                                 let _ = events
                                     .send(Event::TabSession {
                                         tab_id,
+                                        attempt,
                                         result: Err(failure),
                                     })
                                     .await;

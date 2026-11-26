@@ -37,6 +37,8 @@ use gtk::prelude::*;
 pub struct Entry {
     /// 显示文案。
     pub label: String,
+    /// Stable semantic action ID for menu items exported through GTK accessibility.
+    id: Option<&'static str>,
     /// 是否可点（`false` → 原生禁用样式）。
     pub enabled: bool,
     /// 点下去做什么；有子菜单时为 `None`。
@@ -51,10 +53,16 @@ impl Entry {
     pub fn action(label: &str, enabled: bool, run: Rc<dyn Fn()>) -> Self {
         Self {
             label: label.to_owned(),
+            id: None,
             enabled,
             run: Some(run),
             children: Vec::new(),
         }
+    }
+
+    pub fn with_id(mut self, id: &'static str) -> Self {
+        self.id = Some(id);
+        self
     }
 
     /// 带子菜单的条目（GTK 原生二级菜单：悬停 / 右击展开，方向由 GTK 决定）。
@@ -62,6 +70,7 @@ impl Entry {
     pub fn submenu(label: &str, enabled: bool, children: Vec<Entry>) -> Self {
         Self {
             label: label.to_owned(),
+            id: None,
             enabled,
             run: None,
             children,
@@ -208,7 +217,9 @@ fn fill(
         let Some(run) = entry.run else {
             continue;
         };
-        let name = format!("m{}", index.borrow().len());
+        let name = entry
+            .id
+            .map_or_else(|| format!("m{}", index.borrow().len()), str::to_owned);
         let action = gio::SimpleAction::new(&name, None);
         action.set_enabled(entry.enabled);
         {
