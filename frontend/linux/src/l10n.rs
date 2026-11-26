@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(t("tabs.query_btn_execute"), "执行");
         assert_eq!(
             t("tabs.query_btn_execute_tip"),
-            "执行编辑器中的 SQL（Ctrl+Enter）"
+            "执行编辑器中的全部 SQL（Ctrl+Enter）"
         );
         assert_eq!(t("tabs.results_status_idle"), "尚未执行查询");
         assert_eq!(t("tabs.picker_catalog_a11y"), "当前库");
