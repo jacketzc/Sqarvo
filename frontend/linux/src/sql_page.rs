@@ -685,14 +685,18 @@ impl SqlPage {
             }
         });
 
-        // GtkTextView::set_extra_menu appends after the native items. Prepend to
-        // the lazily created GtkPopoverMenu model, preserving GTK's items and actions.
+        // GtkTextView::set_extra_menu appends after the native items. GTK currently
+        // parents its lazily constructed GtkPopoverMenu directly under GtkTextView.
+        // Observe that child via public APIs and copy its model items in order, so
+        // GTK retains ownership of menu presentation and its native actions.
         let selection_menu = self.selection_menu.clone();
         self.editor_children
             .connect_items_changed(move |children, start, _, added| {
                 for index in start..start + added {
                     if let Some(popover) = children.item(index).and_downcast::<gtk::PopoverMenu>()
                         && let Some(native) = popover.menu_model()
+                        && native.item_link(0, gio::MENU_LINK_SECTION).as_ref()
+                            != Some(selection_menu.upcast_ref())
                     {
                         let model = gio::Menu::new();
                         model.append_section(None, &selection_menu);
@@ -703,6 +707,15 @@ impl SqlPage {
                     }
                 }
             });
+    }
+
+    /// For QA waiting on this tab's own connection, surface a terminal failure
+    /// with the same display-safe reason as the disconnected banner.
+    pub(crate) fn qa_session_ready(&self) -> Result<bool, String> {
+        if self.state.get() == PageState::Disconnected {
+            return Err(format!("查询标签会话不可用：{}", self.banner.title()));
+        }
+        Ok(self.session_ready.get())
     }
 
     fn can_execute(&self) -> bool {
@@ -751,17 +764,17 @@ impl SqlPage {
     }
 
     /// 执行按钮、快捷键和 QA 共用的入口。
-    pub fn execute(self: &Rc<Self>) {
-        self.execute_editor_sql(false);
+    pub fn execute(self: &Rc<Self>) -> bool {
+        self.execute_editor_sql(false)
     }
 
-    fn execute_editor_sql(self: &Rc<Self>, selection_required: bool) {
+    fn execute_editor_sql(self: &Rc<Self>, selection_required: bool) -> bool {
         if !self.can_execute() {
-            return;
+            return false;
         }
         let sql = match self.selected_sql() {
             Some(sql) => sql,
-            None if selection_required => return,
+            None if selection_required => return false,
             None => self.sql(),
         };
         if sql.trim().is_empty() {
@@ -772,10 +785,11 @@ impl SqlPage {
             self.banner
                 .set_title(l10n::t("tabs.query_banner_empty_sql"));
             self.banner.set_revealed(true);
-            return;
+            return false;
         }
         eprintln!("[query] t=+{}ms 点击执行", qa::elapsed_ms());
         self.execute_sql(sql);
+        true
     }
 
     /// 真正发出一条 SQL（执行按钮、Ctrl+Enter、提交后自动重跑共用）。

@@ -23,6 +23,26 @@ def _run_query(app, sql):
     return frame, page
 
 
+def test_qa_execute_and_followup(ui_instance):
+    """注册表组件: tabs.query.actions, tabs.query.editor。"""
+    app = ui_instance("qa_sql")
+    first = app.home / "first.sql"
+    second = app.home / "second.sql"
+    first.write_text("INSERT INTO widgets (name, qty) VALUES ('qa first', 71);")
+    second.write_text("SELECT qty FROM widgets WHERE name = 'qa first';")
+    app.start(autoconnect=True, extra_args=(
+        "--qa-sql-file", str(first), "--qa-execute",
+        "--qa-second-sql-file", str(second), "--qa-execute-again-after-ms", "1000",
+    ))
+    frame = app.frame()
+    with step("qa_executes_on_ready_tab_and_then_runs_followup"):
+        A.wait_until(lambda: ops.query_tab_names(frame), 10, "QA 查询标签")
+        page = ops.active_query_page(frame, ops.query_tab_names(frame)[0])
+        rows = ops.wait_query_done(page)
+        expect(rows == [["1", "71"]], "第二条 SQL 能读取首轮写入的值", rows)
+        expect(app.log_text().count("[query] SQL 共 ") == 2, "首轮与后续各执行一次", app.log_text())
+
+
 def test_selection_rerun_after_commit(ui_instance):
     """注册表组件: tabs.query.actions, tabs.query.editor。"""
     app = ui_instance("selection_commit").start(
@@ -452,7 +472,7 @@ def _execute_selected_button(page):
     return A.find_one(page, role_in=("button",), name="执行选中内容", timeout=5)
 
 
-@pytest.mark.parametrize("entry", ["button", "shortcut", "menu"])
+@pytest.mark.parametrize("entry", ["button", "shortcut", "menu", "mouse-button", "mouse-menu"])
 def test_execute_selection(app_connected, entry):
     """注册表组件: tabs.query.actions, tabs.query.editor。"""
     frame = app_connected.frame()
@@ -467,8 +487,9 @@ def test_execute_selection(app_connected, entry):
             _execute_selected_button(page)
             _select_sql(editor, 0, 0)
             A.find_one(page, role_in=("button",), name="执行", timeout=5)
-            if entry == "menu":
-                items = _open_editor_menu(editor)
+            mouse_menu = entry == "mouse-menu"
+            if entry in ("menu", "mouse-menu"):
+                items = _open_editor_menu(editor, mouse=mouse_menu)
                 native_item_count = len(items)
                 _close_editor_menu(editor)
             _select_sql(editor, len(before), len(before + selected))
@@ -477,16 +498,30 @@ def test_execute_selection(app_connected, entry):
             A.wait_enabled(button, 15)
             if entry == "button":
                 A.click(button)
+            elif entry == "mouse-button":
+                A.mouse_click(button)
             elif entry == "shortcut":
                 A.wait_until(lambda: "focused" in A.states(editor), 5, "编辑器获得焦点")
                 A.press_keys("Control_L", "Return")
             else:
-                items = _open_editor_menu(editor)
+                items = _open_editor_menu(editor, mouse=mouse_menu, alternate=True)
+                if mouse_menu:
+                    for reopen in range(2):
+                        expect(len(items) == native_item_count + 1,
+                               "每次打开只加一个选区执行项", len(items))
+                        _close_editor_menu(editor)
+                        items = _open_editor_menu(editor, mouse=True, alternate=bool(reopen))
+                    bounds = A.Atspi.Text.get_selection(editor, 0)
+                    expect((bounds.start_offset, bounds.end_offset) == (len(before), len(before + selected)),
+                           "右击后选区边界不变", (bounds.start_offset, bounds.end_offset))
                 # GTK does not expose model-item names in AT-SPI. The extra item
                 # must be first: click it and verify it executes the selected SQL.
                 expect(len(items) == native_item_count + 1,
                        "有选区时比原生菜单多一项", len(items))
-                A.click(items[0])
+                if mouse_menu:
+                    A.mouse_click(items[0])
+                else:
+                    A.click(items[0])
             rows = ops.wait_query_done(page)
             expect(rows == [["1", "选中"]], "第一条选中语句的结果", rows)
             expect(ops.result_picker_labels(page) == ["结果 1", "结果 2"],
@@ -499,13 +534,22 @@ def test_execute_selection(app_connected, entry):
                    "只记录实际执行的 SQL", messages)
             expect(A.text_value(editor) == sql and A.Atspi.Text.get_n_selections(editor) == 1,
                    "原文和选区保留", A.text_value(editor))
+            if mouse_menu:
+                _select_sql(editor, 0, 0)
+                items = _open_editor_menu(editor, mouse=True)
+                expect(len(items) == native_item_count, "取消选区后恢复原生菜单", len(items))
+                _close_editor_menu(editor)
     finally:
         _close(frame)
 
 
-def _open_editor_menu(editor):
-    actions = A.action_names(editor)
-    assert A.Atspi.Action.do_action(editor, actions.index("menu.popup"))
+def _open_editor_menu(editor, *, mouse=False, alternate=False):
+    if mouse:
+        # Two successive presses at one point can be interpreted as a double-click.
+        A.mouse_click(editor, button=3, horizontal_fraction=0.7 if alternate else 0.3)
+    else:
+        actions = A.action_names(editor)
+        assert A.Atspi.Action.do_action(editor, actions.index("menu.popup"))
     return A.wait_until(lambda: _editor_menu_items(editor), 5, "编辑器原生上下文菜单")
 
 

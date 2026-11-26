@@ -27,8 +27,9 @@ tests/ui/
 
 ## 统一契约（三端都必须一致）
 
-1. **选择器只用语义**（可访问角色 + 名称/automation id），禁止坐标点击、截图识别、
-   OCR 或视觉模型定位；名称对齐 `docs/ui-specification/components/*.toml` 的
+1. **选择器只用语义**（可访问角色 + 名称/automation id）。需要验证真实鼠标手势时，
+   从语义定位的控件读取运行时边界，禁止硬编码坐标、截图识别、OCR 或视觉模型定位。
+   名称对齐 `docs/ui-specification/components/*.toml` 的
    `a11y.name`，不发明第二套。
 2. **输出**：正常执行只打摘要——
 

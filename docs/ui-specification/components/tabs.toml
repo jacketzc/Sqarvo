@@ -430,7 +430,7 @@ platform_notes.windows = "取消键是 `Ctrl+.`（Linux 是 Esc）；Windows 是
 [component.sync.linux]
 state = "done"
 spec_hash = "6cbef17eba8a"
-evidence = "隔离 AT-SPI：test_03_sql.py 的 test_execute_sql、test_execute_selection、test_whitespace_selection_and_tab_independence、test_execute_selection_ignores_duplicate_requests 和 test_selection_rerun_after_commit 通过。断言全文与选区结果、可访问名切换、空白不提交、重复请求不提交、提交后按上次 SQL 重跑。"
+evidence = "隔离 AT-SPI：test_03_sql.py 的 test_execute_sql、test_execute_selection、test_whitespace_selection_and_tab_independence、test_execute_selection_ignores_duplicate_requests 和 test_selection_rerun_after_commit 通过。断言全文与选区结果、可访问名切换、空白不提交、重复请求不提交、提交后按上次 SQL 重跑。隔离 XTEST 的 test_execute_selection[mouse-button] 通过，真实鼠标点击仅执行选区。"
 
 [component.sync.windows]
 state = "partial"
@@ -585,7 +585,7 @@ source = "src/sql_page.rs:273、src/sql_page.rs:1362"
 [component.sync.linux]
 state = "done"
 spec_hash = "4cb7e941952a"
-evidence = "隔离 AT-SPI：test_03_sql.py 的 test_execute_selection、test_execute_selection_exact_bounds 和 test_whitespace_selection_and_tab_independence 通过。通过原生 menu.popup 打开菜单，点击首项仅返回选中语句的两个结果集；取消选区后没有附加项，纯空白选区时首项禁用。覆盖多行、Unicode、正反选区、部分语句与全文选区。"
+evidence = "隔离 AT-SPI：test_03_sql.py 的 test_execute_selection、test_execute_selection_exact_bounds 和 test_whitespace_selection_and_tab_independence 通过。通过原生 menu.popup 打开菜单，点击首项仅返回选中语句的两个结果集；取消选区后没有附加项，纯空白选区时首项禁用。覆盖多行、Unicode、正反选区、部分语句与全文选区。隔离 XTEST 的 test_execute_selection[mouse-menu] 通过：真实右击保留选区边界，反复开关只出现一个附加项，鼠标点击首项只执行选区，取消选区后恢复原生项数。"
 
 [component.sync.windows]
 state = "partial"

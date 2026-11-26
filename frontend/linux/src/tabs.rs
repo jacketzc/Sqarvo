@@ -300,6 +300,8 @@ pub struct QueryBinding {
     bound: RefCell<String>,
     /// 进行中的重绑。
     pending: RefCell<Option<Rebind>>,
+    // Changes even when a failed rebind returns to the original connection.
+    generation: Cell<u64>,
 }
 
 impl QueryBinding {
@@ -309,6 +311,7 @@ impl QueryBinding {
         Self {
             bound: RefCell::new(base.to_owned()),
             pending: RefCell::new(None),
+            generation: Cell::new(0),
         }
     }
 
@@ -325,6 +328,7 @@ impl QueryBinding {
         if self.pending.borrow().is_some() || self.bound() == target {
             return false;
         }
+        self.generation.set(self.generation.get() + 1);
         self.pending.replace(Some(Rebind {
             from: self.bound(),
             to: target.to_owned(),
@@ -3320,7 +3324,7 @@ impl TabSet {
         }
     }
 
-    /// 标签会话已建立：表标签接着打开表，查询标签接着跑排队的 SQL。
+    /// 标签会话已建立：表标签接着打开表，查询标签允许执行。
     pub fn on_session(self: &Rc<Self>, opened: &TabSessionOpened) {
         let Some(tab) = self.by_id(&opened.tab_id) else {
             eprintln!(
@@ -4388,11 +4392,25 @@ impl TabSet {
                 Ok(format!("第 {tab} 个标签已填入 SQL（{path}）"))
             }
             QaStep::Execute(index) => {
-                let sql = self
-                    .sql_page_at(*index)
+                let tab = self
+                    .by_index(*index)
+                    .filter(|tab| tab.sql.is_some())
                     .ok_or_else(|| format!("第 {index} 个标签不是查询标签"))?;
-                sql.execute();
-                Ok(format!("第 {index} 个查询标签执行"))
+                let target = QaQueryTarget::new(self, &tab);
+                glib::spawn_future_local(async move {
+                    match target.wait().await {
+                        Ok((sql, _)) if sql.execute() => {
+                            eprintln!("[qa] 查询标签 {} 已发起执行", target.tab_id);
+                        }
+                        Ok(_) => {
+                            eprintln!("[qa] 查询标签 {} 执行失败：忙碌或 SQL 为空", target.tab_id)
+                        }
+                        Err(reason) => {
+                            eprintln!("[qa] 查询标签 {} 执行失败：{reason}", target.tab_id)
+                        }
+                    }
+                });
+                Ok(format!("查询标签 {} 等待会话就绪", tab.id))
             }
             QaStep::Cancel(index) => {
                 // 页内的「取消」按钮已删（改动确认单 #7）：取消只在状态栏行 1 的那枚
@@ -5009,6 +5027,73 @@ fn qa_operator(name: &str) -> Result<crate::browse_view::Operator, String> {
         "null" => Ok(Operator::IsNull),
         "notnull" => Ok(Operator::IsNotNull),
         other => Err(format!("未知筛选算子：{other}")),
+    }
+}
+
+/// A QA execute step is bound to one tab and one connection binding.
+#[derive(Clone)]
+pub(crate) struct QaQueryTarget {
+    tabs: Weak<TabSet>,
+    tab_id: String,
+    generation: u64,
+    session_at_start: Option<String>,
+}
+
+impl QaQueryTarget {
+    pub(crate) fn new(tabs: &Rc<TabSet>, tab: &TabHandle) -> Self {
+        Self {
+            tabs: Rc::downgrade(tabs),
+            tab_id: tab.id.clone(),
+            generation: tab.binding.generation.get(),
+            session_at_start: tab.session(),
+        }
+    }
+
+    pub(crate) fn session(&self) -> Result<Option<(Rc<SqlPage>, String)>, String> {
+        let tabs = self.tabs.upgrade().ok_or("查询工作区已关闭")?;
+        if tabs.widget().root().is_none() {
+            return Err("查询工作区已关闭".to_owned());
+        }
+        let tab = tabs.by_id(&self.tab_id).ok_or("目标查询标签已关闭")?;
+        if tab.binding.generation.get() != self.generation || tab.binding.pending().is_some() {
+            return Err("目标查询标签的连接已重绑".to_owned());
+        }
+        let page = tab.sql.as_ref().ok_or("目标标签没有查询编辑器")?;
+        if !page.qa_session_ready()? {
+            return Ok(None);
+        }
+        let Some(session) = tab.session() else {
+            return Ok(None);
+        };
+        if self
+            .session_at_start
+            .as_ref()
+            .is_some_and(|id| id != &session)
+        {
+            return Err("目标查询标签的会话已更换".to_owned());
+        }
+        Ok(Some((Rc::clone(page), session)))
+    }
+
+    pub(crate) async fn wait(&self) -> Result<(Rc<SqlPage>, String), String> {
+        wait_for_qa_query(Duration::from_secs(15), || self.session()).await
+    }
+}
+
+async fn wait_for_qa_query<T>(
+    timeout: Duration,
+    probe: impl Fn() -> Result<Option<T>, String>,
+) -> Result<T, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(ready) = probe()? {
+            return Ok(ready);
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("等待查询标签会话就绪超时".to_owned());
+        }
+        glib::timeout_future(remaining.min(Duration::from_millis(50))).await;
     }
 }
 
@@ -5877,6 +5962,127 @@ fn rest_of(parts: &[&str], at: usize, line: usize, what: &str) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qa_query_waits_past_the_old_delay_and_reports_session_failure() {
+        let context = glib::MainContext::new();
+        context.block_on(async {
+            let start = std::time::Instant::now();
+            let ready = wait_for_qa_query(Duration::from_secs(2), || {
+                Ok((start.elapsed() >= Duration::from_millis(550)).then_some("query tab"))
+            })
+            .await;
+            assert_eq!(ready.as_deref(), Ok("query tab"));
+
+            let probes = Cell::new(0);
+            let failed = wait_for_qa_query::<()>(Duration::from_secs(2), || {
+                probes.set(probes.get() + 1);
+                if probes.get() == 1 {
+                    Ok(None)
+                } else {
+                    Err("session rejected".to_owned())
+                }
+            })
+            .await;
+            assert_eq!(failed.unwrap_err(), "session rejected");
+
+            let timeout = wait_for_qa_query::<()>(Duration::ZERO, || Ok(None)).await;
+            assert!(timeout.unwrap_err().contains("超时"));
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn qa_query_target_tracks_the_original_tab_session() {
+        gtk::test_synced(|| {
+            adw::init().unwrap();
+            let runtime = tempfile::tempdir().unwrap();
+            let endpoint = runtime.path().join("backend-endpoint.json");
+            let (worker, _events) = WorkerHandle::spawn(endpoint.clone()).unwrap();
+            let (registry, _browse_events) = ConnectionRegistry::load(endpoint).unwrap();
+            let key = registry.upsert_profile(crate::config::SavedConnection {
+                profile_id: "qa-profile".to_owned(),
+                name: "QA SQLite".to_owned(),
+                driver: "sqlite".to_owned(),
+                file_path: runtime.path().join("qa.db").display().to_string(),
+                ..Default::default()
+            });
+            registry.set_active(Some(&key), None);
+            let tabs = TabSet::new(TabContext {
+                worker,
+                on_column: Rc::new(|_, _, _| {}),
+                on_rows: Rc::new(|_, _| {}),
+                connection_name: String::new(),
+                driver_label: String::new(),
+                subtitle: String::new(),
+                catalog: String::new(),
+                registry: Some(registry),
+                backend_failure: Rc::new(|| {}),
+                resolve_table: Rc::new(|_| None),
+                selected_catalog: Rc::new(|| None),
+                on_status: Rc::new(|_| {}),
+                on_title: Rc::new(|_, _| {}),
+                qa: None,
+                status_cancel: Rc::new(|| false),
+            });
+            let window = gtk::Window::new();
+            window.set_child(Some(tabs.widget()));
+            let id = tabs.new_query_tab().unwrap();
+            let tab = tabs.by_id(&id).unwrap();
+            let target = QaQueryTarget::new(&tabs, &tab);
+            assert!(matches!(target.session(), Ok(None)));
+
+            // Deliver a synthetic success through the same callback as a worker reply.
+            let reply = TabSessionOpened {
+                tab_id: id,
+                session_id: "synthetic-session".to_owned(),
+                connection_id: "synthetic-connection".to_owned(),
+                driver_id: "sqlite".to_owned(),
+                capabilities: Vec::new(),
+                latency_millis: 550,
+                adopted: false,
+            };
+            let clock = std::time::Instant::now();
+            let delivered = Cell::new(false);
+            let context = glib::MainContext::new();
+            let (page, session) = context
+                .block_on(wait_for_qa_query(Duration::from_secs(2), || {
+                    if clock.elapsed() >= Duration::from_millis(reply.latency_millis)
+                        && !delivered.replace(true)
+                    {
+                        tabs.on_session(&reply);
+                    }
+                    target.session()
+                }))
+                .unwrap();
+            assert_eq!(session, reply.session_id);
+            page.set_sql("SELECT 1");
+            assert!(page.execute());
+            assert!(!page.execute());
+
+            assert!(tab.binding.begin("different profile"));
+            tab.binding.finish(false);
+            assert!(matches!(target.session(), Err(reason) if reason.contains("重绑")));
+
+            let id = tabs.new_query_tab().unwrap();
+            let tab = tabs.by_id(&id).unwrap();
+            let failed = QaQueryTarget::new(&tabs, &tab);
+            assert!(matches!(failed.session(), Ok(None)));
+            tabs.on_session_failed(
+                &id,
+                &TableFailure::SessionLost {
+                    message: "synthetic session rejection".to_owned(),
+                },
+            );
+            assert!(
+                matches!(failed.session(), Err(reason) if reason.contains("synthetic session rejection"))
+            );
+            assert!(!tab.sql.as_ref().unwrap().execute());
+            tabs.close_current();
+            assert!(matches!(failed.session(), Err(reason) if reason.contains("标签已关闭")));
+            window.close();
+        });
+    }
 
     fn snapshot(dirty: usize, txn: &str) -> StatusSnapshot {
         StatusSnapshot {

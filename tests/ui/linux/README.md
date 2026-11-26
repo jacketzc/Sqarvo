@@ -19,7 +19,7 @@
 dpkg -l bash coreutils grep util-linux systemd dbus-user-session dbus-daemon \
   xvfb openbox xauth x11-utils libglib2.0-bin at-spi2-core gnome-keyring \
   python3 python3-gi gir1.2-atspi-2.0 gir1.2-secret-1 libgtk-4-1 libadwaita-1-0
-command -v Xvfb openbox xauth xdpyinfo xprop dbus-run-session gdbus gnome-keyring-daemon flock
+command -v Xvfb openbox xauth xdpyinfo xprop xwininfo dbus-run-session gdbus gnome-keyring-daemon flock
 systemctl --user show -p ControlGroup -- -.slice
 /usr/bin/python3 -c 'import gi; gi.require_version("Atspi", "2.0"); gi.require_version("Secret", "1")'
 ```
@@ -122,7 +122,7 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
 | 场景 | `test_*.py` | 组合 ops 断言用户可观察行为；夹具在 `conftest.py` |
 
 选择器命名一律对齐 `docs/ui-specification/components/*.toml` 的 `a11y.name`；不依赖
-坐标、颜色、字号、布局位置。
+硬编码坐标、颜色、字号、布局位置。鼠标手势用例从已定位控件的 AT-SPI 边界换算输入点。
 
 ## 隔离与确定性
 
@@ -136,7 +136,10 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
 - 正常退出、失败、超时和信号中断均按本次 scope 停止进程并清除临时目录。外层入口
   被 SIGKILL 时，scope 有运行时限。后续启动会检查当前用户的旧运行目录，仅在取得
   实例锁、确认 scope 已结束且 cgroup 不存在后删除。无法确认的目录会保留并提示，
-  包括旧版入口遗留、没有本版标记的目录。测试通过语义 API 定位和操作控件。SQL 快捷键通过同一私有 Xvfb 的 XTEST 发送到当前焦点，无 `/dev/uinput` 依赖。
+  包括旧版入口遗留、没有本版标记的目录。测试通过语义 API 定位控件。SQL 快捷键和鼠标手势
+  通过同一私有 Xvfb 的 XTEST 发送，注入前核对运行作用域、DISPLAY 和 Xauthority，
+  无 `/dev/uinput` 依赖。GTK 的 AT-SPI 提供窗口内边界，鼠标适配层通过
+  `xprop` 和 `xwininfo` 获取私有显示上的活动窗口原点。
 
 入口回归测试可用 `/usr/bin/python3 tests/ui/linux/runner_regression.py` 独立执行。
 在依赖安装完成、systemd 用户会话可用的主机上，可加 `--host` 实测并行与 SIGKILL 回收。
@@ -144,8 +147,8 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
 ## 现有用例限制
 
 - 测试沿用 AT-SPI Action、EditableText 和 GAction。建 SQLite 档案走 `--qa-profile`，
-  由同一控件回调处理。鼠标手势入口仍未纳入现有覆盖，主动断开菜单保留显式 skip，
-  关窗、后端会话回收及重启未连接仍由现有用例验证。
+  由同一控件回调处理。SQL 选区执行覆盖工具栏按钮和编辑器上下文菜单的鼠标路径。
+  主动断开菜单保留显式 skip，关窗、后端会话回收及重启未连接仍由现有用例验证。
 - 新行编辑器双击入口保留原有 skip，初始状态规则由 Linux Rust 单测覆盖。
 - 功能验收范围为交互、状态及可访问性语义。
 - MCP HTTP 用例的端口由内核临时分配，释放后再交给应用绑定。并行时若被其他本机进程

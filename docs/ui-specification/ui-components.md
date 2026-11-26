@@ -2822,7 +2822,7 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `gap_md`、`gap_sm`、`min_target`
 - 无障碍：可访问名「查询动作」
-- 同步：Linux done（隔离 AT-SPI：test_03_sql.py 的 test_execute_sql、test_execute_selection、test_whitespace_selection_and_tab_independence、test_execute_selection_ignores_duplicate_requests 和 test_selection_rerun_after_commit 通过。断言全文与选区结果、可访问名切换、空白不提交、重复请求不提交、提交后按上次 SQL 重跑。）；Windows partial（按钮仍为整段执行（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889）；待接入选区范围及标签、可访问名和 tooltip 的动态切换。）；macOS none
+- 同步：Linux done（隔离 AT-SPI：test_03_sql.py 的 test_execute_sql、test_execute_selection、test_whitespace_selection_and_tab_independence、test_execute_selection_ignores_duplicate_requests 和 test_selection_rerun_after_commit 通过。断言全文与选区结果、可访问名切换、空白不提交、重复请求不提交、提交后按上次 SQL 重跑。隔离 XTEST 的 test_execute_selection[mouse-button] 通过，真实鼠标点击仅执行选区。）；Windows partial（按钮仍为整段执行（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889）；待接入选区范围及标签、可访问名和 tooltip 的动态切换。）；macOS none
 - 实现备注：页内只有一枚动作按钮「执行」：可执行时可点，执行中置灰（**不再变成「取消」**，也不再有并排的取消按钮——改动确认单 #7）。取消搬到状态栏行 1 的两用「取消」上（`status_bar.row1.ops.cancel`），与 `Esc`、QA 脚本是同一个方法，可重复点击（第二次起只记日志、不发 RPC）。同一按钮按当前标签的选区实时切换为「执行」或「执行选中内容」，可访问名和 tooltip 同步。有选区时严格执行选中的文本，无选区执行全文。执行后保留文本和选区。会话未就绪、断开或查询执行中禁用执行，重复触发直接忽略，不排队。动作行左端依次是 `tabs.query.connection_picker`（连接选择器）与 `tabs.query.database_picker`（库选择器），两枚都**没有可见文字**（可访问名「当前连接」/「当前库」，Tab 位不变）；其后是会话信息（有真实会话信息时才占位），右端才是「执行」。执行时把标签的**请求** catalog 带进 `ExecuteQueryRequest.catalog`（空 = 不改变会话当前库）；执行成功后回读一次 `GetSessionContext` 刷新显示。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2871,7 +2871,7 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_md`、`gap_sm`、`font_data_cell`、`query_editor_min_height`、`query_editor_ratio`
 - 无障碍：可访问名「SQL 编辑器」；Tab 新建查询标签后自动获得焦点
 - 原生控件：gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—
-- 同步：Linux done（隔离 AT-SPI：test_03_sql.py 的 test_execute_selection、test_execute_selection_exact_bounds 和 test_whitespace_selection_and_tab_independence 通过。通过原生 menu.popup 打开菜单，点击首项仅返回选中语句的两个结果集；取消选区后没有附加项，纯空白选区时首项禁用。覆盖多行、Unicode、正反选区、部分语句与全文选区。）；Windows partial（Ctrl+Enter 仍执行整段（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889），待接入选区范围及上下文菜单首项；新建标签后焦点仍需手动进入编辑器。）；macOS none
+- 同步：Linux done（隔离 AT-SPI：test_03_sql.py 的 test_execute_selection、test_execute_selection_exact_bounds 和 test_whitespace_selection_and_tab_independence 通过。通过原生 menu.popup 打开菜单，点击首项仅返回选中语句的两个结果集；取消选区后没有附加项，纯空白选区时首项禁用。覆盖多行、Unicode、正反选区、部分语句与全文选区。隔离 XTEST 的 test_execute_selection[mouse-menu] 通过：真实右击保留选区边界，反复开关只出现一个附加项，鼠标点击首项只执行选区，取消选区后恢复原生项数。）；Windows partial（Ctrl+Enter 仍执行整段（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889），待接入选区范围及上下文菜单首项；新建标签后焦点仍需手动进入编辑器。）；macOS none
 - 实现备注：等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。最小高度随密度档（query_editor_min_height），没有固定上限：编辑器与结果区用可拖动 GtkPaned 分配页高（见 tabs.query.splitter）；新标签结果区隐藏时编辑器占满整页。Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

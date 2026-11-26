@@ -10,7 +10,13 @@
 """
 from __future__ import annotations
 
+import ctypes as C
+import os
+import re
+import subprocess
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from fnmatch import fnmatchcase
 
 import gi
@@ -209,29 +215,42 @@ def click(acc, action_index: int = 0):
     return names[idx]
 
 
-def press_keys(*names: str):
-    """Send a key chord to the focused control on the runner's private X server."""
-    import ctypes as C
-    import os
-
-    run_dir = os.environ.get("SQARVO_UI_RUN_DIR")
-    if not run_dir or os.environ.get("XAUTHORITY") != f"{run_dir}/Xauthority":
-        raise UIError("key input requires the isolated UI runner")
+@contextmanager
+def _xtest_display():
+    """Open only the display provisioned by the isolated UI runner."""
+    run = os.environ.get("SQARVO_UI_RUN_DIR")
+    scope = os.environ.get("SQARVO_UI_SCOPE")
+    display_name = os.environ.get("DISPLAY")
+    if not (
+        run and scope and os.environ.get("XAUTHORITY") == f"{run}/Xauthority"
+        and Path("/proc/self/cgroup").read_text().strip().endswith(f"/{scope}")
+        and display_name == f":{(Path(run) / 'display').read_text().strip()}"
+    ):
+        raise UIError("XTEST input requires the isolated UI runner")
     x11 = C.CDLL("libX11.so.6")
     xtest = C.CDLL("libXtst.so.6")
     x11.XOpenDisplay.argtypes = [C.c_char_p]
     x11.XOpenDisplay.restype = C.c_void_p
     x11.XCloseDisplay.argtypes = [C.c_void_p]
-    x11.XStringToKeysym.argtypes = [C.c_char_p]
-    x11.XStringToKeysym.restype = C.c_ulong
-    x11.XKeysymToKeycode.argtypes = [C.c_void_p, C.c_ulong]
-    x11.XKeysymToKeycode.restype = C.c_ubyte
     x11.XSync.argtypes = [C.c_void_p, C.c_int]
-    xtest.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
-    display = x11.XOpenDisplay(None)
+    display = x11.XOpenDisplay(display_name.encode())
     if not display:
         raise UIError("cannot open the isolated X display")
     try:
+        yield x11, xtest, display
+    finally:
+        x11.XSync(display, False)
+        x11.XCloseDisplay(display)
+
+
+def press_keys(*names: str):
+    """Send a key chord to the focused control on the runner's private X server."""
+    with _xtest_display() as (x11, xtest, display):
+        x11.XStringToKeysym.argtypes = [C.c_char_p]
+        x11.XStringToKeysym.restype = C.c_ulong
+        x11.XKeysymToKeycode.argtypes = [C.c_void_p, C.c_ulong]
+        x11.XKeysymToKeycode.restype = C.c_ubyte
+        xtest.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
         codes = [x11.XKeysymToKeycode(display, x11.XStringToKeysym(name.encode()))
                  for name in names]
         if not all(codes):
@@ -240,9 +259,37 @@ def press_keys(*names: str):
             xtest.XTestFakeKeyEvent(display, code, True, 0)
         for code in reversed(codes):
             xtest.XTestFakeKeyEvent(display, code, False, 0)
-        x11.XSync(display, False)
-    finally:
-        x11.XCloseDisplay(display)
+
+
+def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5):
+    """Click the AT-SPI bounds of a semantically located control."""
+    # GTK4 reports (0, 0) for SCREEN coordinates. Offset its window-relative
+    # AT-SPI bounds by the active X11 client's origin on the private display.
+    bounds = Atspi.Component.get_extents(acc, Atspi.CoordType.WINDOW)
+    if bounds.width <= 0 or bounds.height <= 0 or "showing" not in states(acc):
+        raise UIError(f"no visible bounds for {role(acc)}|{nm(acc)}")
+    with _xtest_display() as (_, xtest, display):
+        xtest.XTestFakeMotionEvent.argtypes = [
+            C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_ulong,
+        ]
+        xtest.XTestFakeButtonEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+        env = dict(os.environ, LC_ALL="C")
+        prop = subprocess.check_output(["xprop", "-root", "_NET_ACTIVE_WINDOW"], env=env, text=True)
+        window = re.search(r"0x[0-9a-f]+", prop)
+        if not window or int(window[0], 16) == 0:
+            raise UIError("no active X11 window")
+        geometry = subprocess.check_output(["xwininfo", "-id", window[0]], env=env, text=True)
+        origin = re.findall(r"Absolute upper-left [XY]:\s*(-?\d+)", geometry)
+        if len(origin) != 2:
+            raise UIError("cannot read active X11 window origin")
+        x = int(origin[0]) + bounds.x + int(bounds.width * horizontal_fraction)
+        y = int(origin[1]) + bounds.y + bounds.height // 2
+        if not xtest.XTestFakeMotionEvent(display, -1, x, y, 0):
+            raise UIError("XTEST pointer motion failed")
+        if not xtest.XTestFakeButtonEvent(display, button, True, 0):
+            raise UIError("XTEST pointer press failed")
+        if not xtest.XTestFakeButtonEvent(display, button, False, 0):
+            raise UIError("XTEST pointer release failed")
 
 
 def set_text(acc, text: str):
