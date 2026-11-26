@@ -66,6 +66,10 @@ MCP Server 是**给外部 AI Agent 用的第二个入口**，不是第二套数�
 | 5. serve | `rmcp` 走 stdio，等 `initialize` 或 2026-07-28 的无握手 `_meta` 请求 | 握手前对端关闭 = 按 EOF 正常收尾，**exit 0**（#220） |
 | 6. 退出 | stdin EOF / `SIGINT` / `SIGTERM` → `close_all()`（清查询登记 + 关全部会话）→ **exit 0** | 主循环异常仍走 exit 0 收尾路径，异常只进日志 |
 
+Unix stdio 在接收协议消息之前注册 `SIGINT` 与 `SIGTERM`。`serve_with_ct` 用同一个取消令牌
+覆盖握手和主循环，握手前收到信号也走退出清理。`stdio_skeleton` 用握手前的 `ping` 回执确认
+传输已启动，然后保持 stdin 打开并验证信号退出码。
+
 - 退出等待有上限：`main` 手写 Tokio runtime 并 `shutdown_timeout(2s)`。rmcp 的 stdio 读线程是
   阻塞线程，`Runtime` 默认 drop 会无限期等它，于是出现「优雅关停已完成、进程却挂着不走」。
 - 客户端关窗后进程必须自己退出（没有守护化、没有 detach）。
@@ -287,14 +291,9 @@ SQLite 按自身方言解析并在驱动核对引擎语句边界。配置与方�
 
 ### 10.2 rmcp / 依赖造成的缺口
 
-11. **握手前收到 `SIGTERM` 仍走系统默认处置**：信号处理器在 `serve()` 返回**之后**才注册，而
-    `serve()` 会一直等 initialize。这段窗口里进程被立即终止——此时既无会话也无在途查询，无需
-    清理，但不是「优雅关停」。要覆盖它需要 `tokio-util` 的 `CancellationToken`（本包按改动
-    确认单只能用 workspace 既有依赖，故改用 `serve()` + `RunningService::cancellation_token()`
-    + `waiting()` 这条等价路径），把 `tokio-util` 纳入 workspace 依赖才能修。
-12. **Windows 没有可捕获的 SIGTERM**：只有 Ctrl-C（与 ADR 0002 附记同口径）。
-13. **Windows 审计跨进程锁未实机验证**。共用文件锁在 Unix 使用 `flock`，Windows 使用 `LockFileEx`。
-14. **`psm`/`stacker` 含汇编产物**：`sqlparser` 的递归保护依赖它，Windows 构建风险由 #218
+11. **Windows 没有可捕获的 SIGTERM**：只有 Ctrl-C（与 ADR 0002 附记同口径）。
+12. **Windows 审计跨进程锁未实机验证**。共用文件锁在 Unix 使用 `flock`，Windows 使用 `LockFileEx`。
+13. **`psm`/`stacker` 含汇编产物**：`sqlparser` 的递归保护依赖它，Windows 构建风险由 #218
     跟踪的 Windows Rust CI 作业负责暴露；失败回退方案（去掉 recursive-protection 特性 + 自设
     输入规模边界）需要新 ADR，因为那会把 fail-closed 语义从「递归上限」换成「输入规模上限」。
 

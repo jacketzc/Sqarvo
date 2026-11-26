@@ -8,17 +8,8 @@
 //!
 //! # 优雅关停怎么接
 //!
-//! spike 建议用 `serve_with_ct`，但它的参数是 `tokio_util::sync::CancellationToken`；
-//! 本包按改动确认单只允许引用 workspace 已有依赖（`tokio-util` 不在其中），无法直接
-//! 构造该类型。等价做法是用 `serve()` 拿到 `RunningService` 之后取
-//! `cancellation_token()`：`RunningService::close()` 的内部实现正是
-//! 「`cancellation_token.cancel()` + 等 JoinHandle」，所以「取消 + `waiting()`」与
-//! `serve_with_ct` 的关停语义相同（rmcp 3.10.0 `service.rs:1109/1130-1188`）。
-//!
-//! **已知缺口**：信号处理器在 `serve()` 返回之后才注册，而 `serve()` 会一直等
-//! initialize。也就是说「客户端连上但还没握手就收到 SIGTERM」时进程走系统默认处置
-//! （立即终止）。此时既没有会话也没有在途查询，不需要清理；若要覆盖这一段，需要把
-//! `tokio-util` 加进 workspace 依赖（见 ADR 0032「已知限制」）。
+//! Unix 信号处理器在 stdio 开始收发消息前注册。`serve_with_ct` 的同一个取消令牌
+//! 覆盖协议握手和已建立会话，接到信号后统一关闭事务、DDL 与数据库会话。
 //!
 //! # 工具路由（#209）与资源（#210）
 //!
@@ -432,6 +423,13 @@ impl ServerHandler for SqarvoMcpServer {
 /// 之后 EOF 经 `waiting()` 得到 `Ok(Closed)`——本判据不会把它误伤
 /// （回归钉死见 `tests/protocol_matrix.rs::bare_requests_with_draft_meta_work_without_any_handshake`）。
 pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
+    let signal = shutdown_signal().map_err(|error| {
+        Error::new(
+            ErrorCode::MCP_INTERNAL,
+            ErrorCategory::Internal,
+            format!("Failed to register shutdown signals: {error}"),
+        )
+    })?;
     let context = Arc::new(ServerContext::bootstrap(config_path).await?);
     let server = SqarvoMcpServer::new(Arc::clone(&context));
     tracing::info!(
@@ -440,8 +438,24 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
         "Starting the stdio MCP server"
     );
 
-    let running = match Box::pin(server.serve(rmcp::transport::stdio())).await {
-        Ok(running) => running,
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let watcher = tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move {
+            signal.await;
+            tracing::info!("Received a shutdown signal. Starting graceful shutdown");
+            shutdown.cancel();
+        }
+    });
+    let result = match Box::pin(server.serve_with_ct(rmcp::transport::stdio(), shutdown)).await {
+        Ok(running) => {
+            match running.waiting().await {
+                Ok(reason) => tracing::info!(reason = ?reason, "MCP session ended"),
+                Err(error) => tracing::warn!(%error, "The MCP main loop exited unexpectedly"),
+            }
+            Ok(())
+        }
+        Err(rmcp::service::ServerInitializeError::Cancelled) => Ok(()),
         // 握手前对端关闭 = EOF 收尾，见函数文档；其余 serve 错误照旧非零 + 诊断。
         Err(rmcp::service::ServerInitializeError::ConnectionClosed(waiting_on))
             if waiting_on.contains("initialize") =>
@@ -449,66 +463,50 @@ pub async fn run_stdio(config_path: Option<&Path>) -> Result<()> {
             tracing::info!(
                 "The client disconnected before the handshake (connection closed: {waiting_on}). Treating this as normal EOF (V3.1 §13, exit 0)"
             );
-            context.shutdown().await;
-            return Ok(());
+            Ok(())
         }
-        Err(error) => {
-            return Err(Error::new(
-                ErrorCode::MCP_INTERNAL,
-                ErrorCategory::Internal,
-                format!("Failed to initialize the MCP session: {error}"),
-            ));
-        }
+        Err(error) => Err(Error::new(
+            ErrorCode::MCP_INTERNAL,
+            ErrorCategory::Internal,
+            format!("Failed to initialize the MCP session: {error}"),
+        )),
     };
-
-    // 信号 → 取消 serve 循环。`RunningService::close()` 内部就是
-    // 「cancel 这个 token + 等 JoinHandle」，所以下面等价于 serve_with_ct。
-    let shutdown = running.cancellation_token();
-    tokio::spawn(async move {
-        wait_for_shutdown_signal().await;
-        tracing::info!("Received a shutdown signal. Starting graceful shutdown");
-        shutdown.cancel();
-    });
-
-    let quit = running.waiting().await;
-    match quit {
-        Ok(reason) => tracing::info!(reason = ?reason, "MCP session ended"),
-        Err(error) => tracing::warn!(%error, "The MCP main loop exited unexpectedly"),
-    }
-
+    watcher.abort();
     context.shutdown().await;
-    Ok(())
+    result
 }
 
-/// 等第一个退出信号：Ctrl-C（全平台）或 SIGTERM（仅 Unix）。
-pub(crate) async fn wait_for_shutdown_signal() {
+/// 在 Unix 上同步注册信号处理器，返回可独立等待的 Future。
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = ()>> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate = match signal(SignalKind::terminate()) {
-            Ok(signal) => signal,
-            Err(error) => {
-                // 注册失败不致命：至少保留 Ctrl-C。
-                tracing::warn!(%error, "Failed to register the SIGTERM handler. Only Ctrl-C will be handled");
-                let _ = tokio::signal::ctrl_c().await;
-                return;
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut terminate = signal(SignalKind::terminate())?;
+        Ok(async move {
+            tokio::select! {
+                _ = interrupt.recv() => {}
+                _ = terminate.recv() => {}
             }
-        };
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => {
-                if let Err(error) = result {
-                    tracing::warn!(%error, "Failed to wait for Ctrl-C");
-                }
-            }
-            _ = terminate.recv() => {}
-        }
+        })
     }
     #[cfg(not(unix))]
-    {
-        // Windows 没有可被普通进程捕获的 SIGTERM；Ctrl-C 与控制台关闭事件由
-        // `ctrl_c()` 覆盖（见 ADR 0002 附记的同类口径）。
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::warn!(%error, "Failed to wait for Ctrl-C");
+    Ok(wait_for_ctrl_c())
+}
+
+async fn wait_for_ctrl_c() {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        tracing::warn!(%error, "Failed to wait for Ctrl-C");
+    }
+}
+
+/// HTTP 保持信号注册失败时回退到 Ctrl-C 的现有行为。
+pub(crate) async fn wait_for_shutdown_signal() {
+    match shutdown_signal() {
+        Ok(signal) => signal.await,
+        Err(error) => {
+            tracing::warn!(%error, "Failed to register shutdown signals. Only Ctrl-C will be handled");
+            wait_for_ctrl_c().await;
         }
     }
 }

@@ -505,6 +505,10 @@ def _execute_selected_button(page):
 @pytest.mark.parametrize("entry", ["button", "shortcut", "menu", "mouse-button", "mouse-menu"])
 def test_execute_selection(app_connected, entry):
     """注册表组件: tabs.query.actions, tabs.query.editor。"""
+    _execute_selection(app_connected, entry)
+
+
+def _execute_selection(app_connected, entry):
     frame = app_connected.frame()
     page = ops.open_sql_page(frame)
     try:
@@ -549,7 +553,9 @@ def test_execute_selection(app_connected, entry):
                 expect(len(items) == native_item_count + 1,
                        "有选区时比原生菜单多一项", len(items))
                 if mouse_menu:
-                    A.mouse_click(items[0])
+                    popup = A.find_one(editor, role_in=("menu",))
+                    A.mouse_click(items[0], within=popup)
+                    A.wait_gone(lambda: _editor_menu_items(editor), 5, "真实点击后菜单关闭")
                 else:
                     A.click(items[0])
             rows = ops.wait_query_done(page)
@@ -644,11 +650,17 @@ def test_execute_selection_ignores_duplicate_requests(app_connected):
             count = app_connected.log_text().count("[query] SQL 共 ")
             with step("ignore_execute_while_running"):
                 A.click(button)
-                A.wait_until(lambda: "sensitive" not in A.states(button), 5,
-                             "执行中按钮禁用")
-                A.window_action(frame, "win.execute")
+                def busy():
+                    return "sensitive" not in A.states(button) and "win.execute" not in A.action_names(frame)
+
+                A.wait_until(lambda: busy() and app_connected.log_text().count("[query] SQL 共 ") == count + 1,
+                             5, "第一次请求已发出且执行控件禁用")
+                A.wait_until(lambda: "focused" in A.states(editor), 5, "编辑器获得焦点")
+                A.press_keys("Control_L", "Return")
+                expect(lock.in_transaction and busy(), "真实快捷键输入期间 SQLite 写锁仍在且查询仍在执行")
                 lock.rollback()
                 A.wait_enabled(button, 15)
+                A.wait_until(lambda: "win.execute" in A.action_names(frame), 5, "窗口执行动作恢复可用")
                 expect(app_connected.log_text().count("[query] SQL 共 ") == count + 1,
                        "只有一次提交", app_connected.log_text().count("[query] SQL 共 "))
                 values = lock.execute("SELECT label FROM selection_runs").fetchall()

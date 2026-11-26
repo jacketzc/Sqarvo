@@ -137,6 +137,12 @@ class UiInstance:
     def frame(self):
         return ops.frame_of(self.app, timeout=READY_TIMEOUT)
 
+    def wait_autoconnected(self):
+        """The QA profile has no alias, so its SQLite row uses the file name."""
+        frame = self.frame()
+        ops.wait_connected(frame, self.db.name, timeout=READY_TIMEOUT)
+        return frame
+
     def app_alive(self):
         return self.proc is not None and self.proc.poll() is None
 
@@ -209,9 +215,11 @@ def app_bare():
 def app_connected():
     """SQLite 已连接实例：连接状态 / SQL / 结果 / 树导航测试共用。"""
     inst = UiInstance("conn").start(autoconnect=True)
-    ops.wait_connected(inst.frame(), "uitest.db", timeout=READY_TIMEOUT)
-    yield inst
-    inst.dispose()
+    try:
+        inst.wait_autoconnected()
+        yield inst
+    finally:
+        inst.dispose()
 
 
 # ---------- 失败诊断 ----------

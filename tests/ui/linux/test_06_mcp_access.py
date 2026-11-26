@@ -25,7 +25,7 @@ def app_with_profile():
     inst = UiInstance("mcp_policy")
     try:
         inst.start(autoconnect=True)
-        ops.wait_connected(inst.frame(), str(inst.db), timeout=30)
+        inst.wait_autoconnected()
         yield inst
     finally:
         inst.dispose()

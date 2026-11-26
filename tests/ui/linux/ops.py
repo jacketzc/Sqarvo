@@ -260,12 +260,15 @@ def sql_summary(frame):
 
 # ---------- 连接状态 / 窗口 ----------
 
-def wait_connected(frame, conn_hint: str, timeout=30):
+def wait_connected(frame, display_label: str, timeout=30):
+    """Wait for the resolved tree label to report its exact connection status."""
     def probe():
-        rows = tree_rows(frame)
-        return any(any(conn_hint in t for t in r) and any("已连接" in t for t in r)
-                   for r in rows)
-    wait_until(probe, timeout, f"tree shows connected row containing '{conn_hint}'")
+        matches = [label for row in query(frame, role_in=("list item",))
+                   for label in query(row, role_in=("label",), name=display_label, max_depth=8)
+                   if description(label) == "已连接"]
+        expect(len(matches) <= 1, "连接行显示名唯一", len(matches))
+        return bool(matches)
+    wait_until(probe, timeout, f"tree shows '{display_label}' with status '已连接'")
 
 
 def close_window(frame):

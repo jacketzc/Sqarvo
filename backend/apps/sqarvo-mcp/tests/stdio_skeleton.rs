@@ -349,21 +349,50 @@ fn sigterm_shuts_down_gracefully_with_exit_zero() {
     );
     let mut server = Server::spawn(&config, dir.path());
     server.send(&initialize_message(5));
-    let _ = server.next_message();
+    assert_eq!(server.next_message()["id"], 5);
+    assert_graceful_shutdown(server, "-TERM");
+}
 
+#[cfg(unix)]
+#[test]
+fn sigterm_before_initialize_shuts_down_gracefully() {
+    assert_shutdown_before_initialize("-TERM");
+}
+
+#[cfg(unix)]
+#[test]
+fn sigint_before_initialize_shuts_down_gracefully() {
+    assert_shutdown_before_initialize("-INT");
+}
+
+#[cfg(unix)]
+fn assert_shutdown_before_initialize(signal: &str) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path(), r#"{"connections":[]}"#);
+    let mut server = Server::spawn(&config, dir.path());
+    // A ping proves the transport is serving while initialize is still pending.
+    server.send(&serde_json::json!({"jsonrpc": "2.0", "id": 6, "method": "ping"}));
+    let response = server.next_message();
+    assert_eq!(response["id"], 6);
+    assert_eq!(response["result"], serde_json::json!({}));
+    assert_graceful_shutdown(server, signal);
+}
+
+#[cfg(unix)]
+fn assert_graceful_shutdown(server: Server, signal: &str) {
     let pid = server.child.id();
     let status = Command::new("kill")
-        .arg("-TERM")
+        .arg(signal)
         .arg(pid.to_string())
         .status()
         .expect("调用 kill");
-    assert!(status.success(), "发送 SIGTERM 失败");
+    assert!(status.success(), "发送 {signal} 失败");
 
     // 不再关闭 stdin：SIGTERM 自己必须能让 serve 循环停下来。
     let outcome = server.wait();
     assert!(
         outcome.status.success(),
-        "SIGTERM 必须走优雅关停（exit 0）而不是被信号杀死：{:?}\nstderr:\n{}",
+        "{signal} 必须走优雅关停（exit 0）：{:?}\nstderr:\n{}",
         outcome.status,
         outcome.stderr
     );

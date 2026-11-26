@@ -261,13 +261,30 @@ def press_keys(*names: str):
             xtest.XTestFakeKeyEvent(display, code, False, 0)
 
 
-def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5, count: int = 1):
+def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5,
+                count: int = 1, within=None):
     """Click the AT-SPI bounds of a semantically located control."""
+    def visible_bounds():
+        bounds = Atspi.Component.get_extents(acc, Atspi.CoordType.WINDOW)
+        if bounds.width <= 0 or bounds.height <= 0 or "showing" not in states(acc):
+            return None
+        if within is not None:
+            # GTK can expose a reopened menu item before relocating it into the
+            # popup. Never inject a click at those stale editor coordinates.
+            popup = Atspi.Component.get_extents(within, Atspi.CoordType.WINDOW)
+            if ("showing" not in states(within)
+                    or not (popup.x <= bounds.x and bounds.x + bounds.width <= popup.x + popup.width
+                            and popup.y <= bounds.y and bounds.y + bounds.height <= popup.y + popup.height)):
+                return None
+        return bounds
+
+    target = f"{role(acc)}|{nm(acc)}"
+    bounds = (visible_bounds() if within is None else
+              wait_until(visible_bounds, 5, f"{target} allocated inside {role(within)}|{nm(within)}"))
+    if bounds is None:
+        raise UIError(f"no visible bounds for {target}")
     # GTK4 reports (0, 0) for SCREEN coordinates. Offset its window-relative
     # AT-SPI bounds by the active X11 client's origin on the private display.
-    bounds = Atspi.Component.get_extents(acc, Atspi.CoordType.WINDOW)
-    if bounds.width <= 0 or bounds.height <= 0 or "showing" not in states(acc):
-        raise UIError(f"no visible bounds for {role(acc)}|{nm(acc)}")
     with _xtest_display() as (_, xtest, display):
         xtest.XTestFakeMotionEvent.argtypes = [
             C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_ulong,
