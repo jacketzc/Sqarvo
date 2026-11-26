@@ -209,6 +209,42 @@ def click(acc, action_index: int = 0):
     return names[idx]
 
 
+def press_keys(*names: str):
+    """Send a key chord to the focused control on the runner's private X server."""
+    import ctypes as C
+    import os
+
+    run_dir = os.environ.get("SQARVO_UI_RUN_DIR")
+    if not run_dir or os.environ.get("XAUTHORITY") != f"{run_dir}/Xauthority":
+        raise UIError("key input requires the isolated UI runner")
+    x11 = C.CDLL("libX11.so.6")
+    xtest = C.CDLL("libXtst.so.6")
+    x11.XOpenDisplay.argtypes = [C.c_char_p]
+    x11.XOpenDisplay.restype = C.c_void_p
+    x11.XCloseDisplay.argtypes = [C.c_void_p]
+    x11.XStringToKeysym.argtypes = [C.c_char_p]
+    x11.XStringToKeysym.restype = C.c_ulong
+    x11.XKeysymToKeycode.argtypes = [C.c_void_p, C.c_ulong]
+    x11.XKeysymToKeycode.restype = C.c_ubyte
+    x11.XSync.argtypes = [C.c_void_p, C.c_int]
+    xtest.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+    display = x11.XOpenDisplay(None)
+    if not display:
+        raise UIError("cannot open the isolated X display")
+    try:
+        codes = [x11.XKeysymToKeycode(display, x11.XStringToKeysym(name.encode()))
+                 for name in names]
+        if not all(codes):
+            raise UIError(f"unmapped key chord: {names}")
+        for code in codes:
+            xtest.XTestFakeKeyEvent(display, code, True, 0)
+        for code in reversed(codes):
+            xtest.XTestFakeKeyEvent(display, code, False, 0)
+        x11.XSync(display, False)
+    finally:
+        x11.XCloseDisplay(display)
+
+
 def set_text(acc, text: str):
     """EditableText 写入（entry / text-view）。"""
     if not Atspi.EditableText.set_text_contents(acc, text):

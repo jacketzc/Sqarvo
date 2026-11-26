@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
 
 use crate::backend::query::{
     CatalogKind, QueryFailure, RowView, StatementPosition, StatementView, UNSPECIFIED_PICKER_LABEL,
@@ -182,6 +182,10 @@ pub struct SqlPage {
     /// 是 GtkPaned 的钳制不是用户拖动，不记录。
     awaiting_first_allocate: Cell<bool>,
     execute_button: gtk::Button,
+    execute_selection_action: gio::SimpleAction,
+    selection_menu: gio::Menu,
+    // GTK only keeps a weak reference to the observer.
+    editor_children: gio::ListModel,
     session_label: gtk::Label,
     results: Rc<ResultsView>,
     state: Cell<PageState>,
@@ -300,7 +304,7 @@ impl SqlPage {
 
         let execute_button = gtk::Button::with_label(l10n::t("tabs.query_btn_execute"));
         execute_button.add_css_class("suggested-action");
-        execute_button.set_tooltip_text(Some(l10n::t("tabs.query_btn_execute_tip")));
+        execute_button.set_focus_on_click(false);
 
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
         toolbar.set_margin_top(gap(Gap::Sm));
@@ -335,6 +339,11 @@ impl SqlPage {
         editor.set_bottom_margin(gap(Gap::Sm));
         editor.add_css_class("sqarvo-sql-editor");
         editor.set_accepts_tab(true);
+        let editor_children = editor.observe_children();
+        let execute_selection_action = gio::SimpleAction::new("execute-selected", None);
+        let editor_actions = gio::SimpleActionGroup::new();
+        editor_actions.add_action(&execute_selection_action);
+        editor.insert_action_group("query", Some(&editor_actions));
 
         // #189：编辑器最小高度随密度档（metrics）；去掉 220px 上限——编辑器与
         // 结果区按可拖动分隔分配页高，编辑器不再固定封顶。
@@ -393,6 +402,9 @@ impl SqlPage {
             applying_split: Cell::new(false),
             awaiting_first_allocate: Cell::new(false),
             execute_button,
+            execute_selection_action,
+            selection_menu: gio::Menu::new(),
+            editor_children,
             session_label,
             results,
             state: Cell::new(PageState::Idle),
@@ -421,12 +433,7 @@ impl SqlPage {
             qa_probe_scheduled: Cell::new(false),
         });
 
-        {
-            // 按钮与 Ctrl+Enter 走同一个方法：不存在「只有按钮能用」的旁路。
-            let button = page.execute_button.clone();
-            let page = Rc::clone(&page);
-            button.connect_clicked(move |_| page.execute());
-        }
+        page.connect_execute_controls();
         {
             // #231：结果集下拉的选中变化 → 换网格与列（与用户点选同一个入口）。
             let weak = Rc::downgrade(&page);
@@ -588,6 +595,7 @@ impl SqlPage {
     pub fn set_session_ready(&self, ready: bool) {
         self.session_ready.set(ready);
         self.apply_catalog_gate();
+        self.sync_execute_controls();
     }
 
     /// 重算选择器的可用性（会话就绪 + 没有未提交事务 + 读到过真值）。
@@ -647,9 +655,115 @@ impl SqlPage {
         self.editor.grab_focus();
     }
 
-    /// 执行按钮与 Ctrl+Enter 共用的入口。
+    fn connect_execute_controls(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.execute_button.connect_clicked(move |_| {
+            if let Some(page) = weak.upgrade() {
+                page.execute();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.execute_selection_action.connect_activate(move |_, _| {
+            if let Some(page) = weak.upgrade() {
+                page.execute_editor_sql(true);
+            }
+        });
+
+        let buffer = self.editor.buffer();
+        let weak = Rc::downgrade(self);
+        buffer.connect_mark_set(move |buffer, _, mark| {
+            if (*mark == buffer.get_insert() || *mark == buffer.selection_bound())
+                && let Some(page) = weak.upgrade()
+            {
+                page.sync_execute_controls();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        buffer.connect_changed(move |_| {
+            if let Some(page) = weak.upgrade() {
+                page.sync_execute_controls();
+            }
+        });
+
+        // GtkTextView::set_extra_menu appends after the native items. Prepend to
+        // the lazily created GtkPopoverMenu model, preserving GTK's items and actions.
+        let selection_menu = self.selection_menu.clone();
+        self.editor_children
+            .connect_items_changed(move |children, start, _, added| {
+                for index in start..start + added {
+                    if let Some(popover) = children.item(index).and_downcast::<gtk::PopoverMenu>()
+                        && let Some(native) = popover.menu_model()
+                    {
+                        let model = gio::Menu::new();
+                        model.append_section(None, &selection_menu);
+                        for index in 0..native.n_items() {
+                            model.append_item(&gio::MenuItem::from_model(&native, index));
+                        }
+                        popover.set_menu_model(Some(&model));
+                    }
+                }
+            });
+    }
+
+    fn can_execute(&self) -> bool {
+        let state = self.state.get();
+        self.session_ready.get() && !state.is_active() && state != PageState::Disconnected
+    }
+
+    fn sync_execute_controls(&self) {
+        let selection = self.editor.buffer().selection_bounds();
+        let (label, tooltip) = if selection.is_some() {
+            (
+                "tabs.query_btn_execute_selected",
+                "tabs.query_btn_execute_selected_tip",
+            )
+        } else {
+            ("tabs.query_btn_execute", "tabs.query_btn_execute_tip")
+        };
+        let label = l10n::t(label);
+        if self.execute_button.label().as_deref() != Some(label)
+            || self.execute_button.tooltip_text().is_none()
+        {
+            self.execute_button.set_label(label);
+            // GtkButton derives its accessible name from this label.
+            self.execute_button.set_tooltip_text(Some(l10n::t(tooltip)));
+        }
+        self.execute_button.set_sensitive(self.can_execute());
+        self.execute_selection_action.set_enabled(
+            self.can_execute()
+                && selection.is_some_and(|(mut start, end)| {
+                    !start.char().is_whitespace()
+                        || start.forward_find_char(|ch| !ch.is_whitespace(), Some(&end))
+                }),
+        );
+        if selection.is_some() && self.selection_menu.n_items() == 0 {
+            self.selection_menu
+                .append(Some(label), Some("query.execute-selected"));
+        } else if selection.is_none() && self.selection_menu.n_items() != 0 {
+            self.selection_menu.remove(0);
+        }
+    }
+
+    fn selected_sql(&self) -> Option<String> {
+        let buffer = self.editor.buffer();
+        let (start, end) = buffer.selection_bounds()?;
+        Some(buffer.text(&start, &end, false).to_string())
+    }
+
+    /// 执行按钮、快捷键和 QA 共用的入口。
     pub fn execute(self: &Rc<Self>) {
-        let sql = self.sql();
+        self.execute_editor_sql(false);
+    }
+
+    fn execute_editor_sql(self: &Rc<Self>, selection_required: bool) {
+        if !self.can_execute() {
+            return;
+        }
+        let sql = match self.selected_sql() {
+            Some(sql) => sql,
+            None if selection_required => return,
+            None => self.sql(),
+        };
         if sql.trim().is_empty() {
             // 前端校验拒绝：不产生 Execute 响应，结果区保持隐藏（#189 编排者裁定）。
             // 提示走页面 banner——写进隐藏的结果区用户看不见。此场景 banner 不带
@@ -658,10 +772,6 @@ impl SqlPage {
             self.banner
                 .set_title(l10n::t("tabs.query_banner_empty_sql"));
             self.banner.set_revealed(true);
-            return;
-        }
-        if self.state.get().is_active() {
-            // 已经在执行：忽略重复的 Ctrl+Enter，避免两条查询排在会话里。
             return;
         }
         eprintln!("[query] t=+{}ms 点击执行", qa::elapsed_ms());
@@ -700,8 +810,8 @@ impl SqlPage {
     /// 内容：提交的是那条语句的结果，用户可能已经在编辑器里改了别的 SQL，拿新文本重跑
     /// 会答非所问。重跑会重建结果区，所以「已提交 N 行」这句话要跨过重置补回去。
     fn rerun_after_commit(self: &Rc<Self>, note: &str) {
-        if self.state.get().is_active() {
-            eprintln!("[query] 提交后重跑跳过：已有查询在跑");
+        if !self.can_execute() {
+            eprintln!("[query] 提交后重跑跳过：当前标签不可执行");
             return;
         }
         let sql = self.results.statement();
@@ -2224,8 +2334,7 @@ impl SqlPage {
     fn set_state(self: &Rc<Self>, state: PageState, _note: Option<&str>) {
         self.state.set(state);
         let active = state.is_active();
-        self.execute_button
-            .set_sensitive(!active && !matches!(state, PageState::Disconnected));
+        self.sync_execute_controls();
         // #189：执行中（Loading/Streaming）结果区关闭按钮置灰——关闭会释放游标，
         // 必须先取消；空闲时恢复可用，tooltip 说明动作。
         let close = self.results.close_button();

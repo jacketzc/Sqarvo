@@ -273,6 +273,7 @@
 | 中文 | English | 备注 |
 |---|---|---|
 | 执行 | Execute | 查询页按钮与状态句；「正在执行…」Executing… |
+| 执行选中内容 | Execute selected | SQL 编辑器有选区时的执行按钮及上下文菜单项 |
 | 语句 | Statement | 摘要、切换行条目与 tooltip 同词 |
 | 结果集 | Result Set | 「空结果集」Empty Result Set；切换行类型词作 Result set |
 | 无结果集 | No Result Set | 占位页标题与状态行同词 |

@@ -2680,7 +2680,7 @@ kind `control` · status `active` · parent `status_bar.row2`
 | `tabs.strip.new` | 　　「＋」新建查询标签 | control | active | done | partial | — |
 | `tabs.limit` | 　「无法新建标签」提示 | control | active | done | partial | — |
 | `tabs.query` | 　查询标签页 | container | active | done | partial | — |
-| `tabs.query.actions` | 　　动作行（连接选择器 · 库选择器 · 执行） | control | active | done | done | — |
+| `tabs.query.actions` | 　　动作行（连接选择器 · 库选择器 · 执行） | control | active | done | partial | — |
 | `tabs.query.connection_picker` | 　　查询标签的连接选择器 | control | active | done | — | — |
 | `tabs.query.database_picker` | 　　查询标签的库选择器 | control | active | done | — | — |
 | `tabs.query.editor` | 　　SQL 编辑器（行号沟 + 等宽文本） | control | active | done | partial | — |
@@ -2822,14 +2822,14 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `gap_md`、`gap_sm`、`min_target`
 - 无障碍：可访问名「查询动作」
-- 同步：Linux done（真机 QA（独立 app id `io.sqarvo.Sqarvo.QA186.*` + 隔离 XDG_CONFIG_HOME，MariaDB 127.0.0.1:53306 无默认库档案 + SQLite 临时库）：日志「[query] 动作行左端：当前连接（可访问名）→ 当前库（可访问名），两枚都不带可见文字」；`expect-connection 1 qa-mariadb` / `expect-connection 1 qa-sqlite` 从控件读到选择器文字（切换前后各一次）；页内已无取消按钮（`SqlPage` 的 `cancel_button` 字段与创建、append、可用性同步全部删除，`grep -rn cancel_button src/` 只剩一个测试名），执行中只有「执行」置灰，取消走状态栏：`SELECT SLEEP(10)` 后 `cancel 1` 读到「[qa] 点了状态栏的「取消」（第 1 个查询标签）」与「[query] 状态行：已取消 · 已保留 0 行」。单测 action_row_pickers_have_no_visible_text_and_connection_comes_first、status_bar_cancel_is_enabled_only_while_a_query_runs（cargo test --bin sqarvo-desktop：466 passed）。）；Windows done（执行 / 取消走同一按钮（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:289/1093/700）。Wave1 新接入编辑器与窗口级 Esc 取消（ShellView.Query.cs:508 的 VirtualKey.Escape 分支、:1471 的 KeyboardAccelerator）。原 evidence 的交互证据来自前序 #172 已确认部分；Wave1 新增部分dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。）；macOS none
-- 实现备注：页内只有一枚动作按钮「执行」：可执行时可点，执行中置灰（**不再变成「取消」**，也不再有并排的取消按钮——改动确认单 #7）。取消搬到状态栏行 1 的两用「取消」上（`status_bar.row1.ops.cancel`），与 `Esc`、QA 脚本是同一个方法，可重复点击（第二次起只记日志、不发 RPC）。空 SQL 只写一行说明，不清掉已有结果；执行中再按执行 / Ctrl+Enter 直接忽略，不排队。动作行左端依次是 `tabs.query.connection_picker`（连接选择器）与 `tabs.query.database_picker`（库选择器），两枚都**没有可见文字**（可访问名「当前连接」/「当前库」，Tab 位不变）；其后是会话信息（有真实会话信息时才占位），右端才是「执行」。执行时把标签的**请求** catalog 带进 `ExecuteQueryRequest.catalog`（空 = 不改变会话当前库）；执行成功后回读一次 `GetSessionContext` 刷新显示。
+- 同步：Linux done（隔离 AT-SPI：test_03_sql.py 的 test_execute_sql、test_execute_selection、test_whitespace_selection_and_tab_independence、test_execute_selection_ignores_duplicate_requests 和 test_selection_rerun_after_commit 通过。断言全文与选区结果、可访问名切换、空白不提交、重复请求不提交、提交后按上次 SQL 重跑。）；Windows partial（按钮仍为整段执行（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889）；待接入选区范围及标签、可访问名和 tooltip 的动态切换。）；macOS none
+- 实现备注：页内只有一枚动作按钮「执行」：可执行时可点，执行中置灰（**不再变成「取消」**，也不再有并排的取消按钮——改动确认单 #7）。取消搬到状态栏行 1 的两用「取消」上（`status_bar.row1.ops.cancel`），与 `Esc`、QA 脚本是同一个方法，可重复点击（第二次起只记日志、不发 RPC）。同一按钮按当前标签的选区实时切换为「执行」或「执行选中内容」，可访问名和 tooltip 同步。有选区时严格执行选中的文本，无选区执行全文。执行后保留文本和选区。会话未就绪、断开或查询执行中禁用执行，重复触发直接忽略，不排队。动作行左端依次是 `tabs.query.connection_picker`（连接选择器）与 `tabs.query.database_picker`（库选择器），两枚都**没有可见文字**（可访问名「当前连接」/「当前库」，Tab 位不变）；其后是会话信息（有真实会话信息时才占位），右端才是「执行」。执行时把标签的**请求** catalog 带进 `ExecuteQueryRequest.catalog`（空 = 不改变会话当前库）；执行成功后回读一次 `GetSessionContext` 刷新显示。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 没有查询在跑，编辑器里有 SQL | 执行编辑器里的 SQL；执行中这枚按钮置灰（取消在状态栏行 1，不在页内）；成功后结果区进入「执行中…」并等首批 | `src/sql_page.rs:187、src/sql_page.rs:283、src/sql_page.rs:464、src/sql_page.rs:481、src/sql_page.rs:1203` |
-| click | 编辑器为空或只有空白 | 只写一行「SQL 不能为空：请输入后按 Ctrl+Enter」，不清掉已有结果、不发请求 | `src/sql_page.rs:346` |
-| key Ctrl+Enter | 没有查询在跑 | 与点「执行」同一条方法（不存在「只有按钮能用」的旁路） | `src/sql_page.rs:301、src/sql_page.rs:344` |
+| click | 会话就绪且空闲，待执行范围内有 SQL | 按选区或全文执行；按钮置灰，等待结果首批 | `src/sql_page.rs:SqlPage::execute_editor_sql` |
+| click | 待执行范围为空或只有空白 | 只写一行「SQL 不能为空：请输入后按 Ctrl+Enter」，保留已有结果，不发请求；空白选区也不会执行全文 | `src/sql_page.rs:SqlPage::execute_editor_sql` |
+| key Ctrl+Enter | 没有查询在跑 | 与查询页执行按钮使用同一执行范围和状态校验 | `src/sql_page.rs:SqlPage::execute` |
 | key Esc | 有查询在跑 | 取消查询：与状态栏行 1 的「取消」同一个方法（发 Cancel、立即进入「已取消」，已取到的行保留；重复按幂等）。空闲时同一按键分流为「清空结果区行选中」 | `src/sql_page.rs:521、src/sql_page.rs:69、src/results.rs:463` |
 
 ### `tabs.query.connection_picker` 查询标签的连接选择器
@@ -2871,13 +2871,14 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_md`、`gap_sm`、`font_data_cell`、`query_editor_min_height`、`query_editor_ratio`
 - 无障碍：可访问名「SQL 编辑器」；Tab 新建查询标签后自动获得焦点
 - 原生控件：gtk:GtkTextView（等宽） / winui:TextBox（AcceptsReturn） / swift:—
-- 同步：Linux done（§5.11 版面收敛；editing TextView（等宽、不折行、Ctrl+Enter 捕获阶段）；#189 src/sql_page.rs:240 min_content_height 读 query_editor_min_height、去掉 220px 上限；隔离 QA 截图 189-01（新标签只见编辑器）/ 189-04（分栏占比 0.40））；Windows partial（行号沟 + 等宽不折行 TextBox（AcceptsReturn、自动滚动条）已实现；#189 最小高度 / 默认比例 / 隐藏时占满已实现。Esc 取消（#5）已接入编辑器与窗口级（保留 Ctrl+.）。dotnet 8.0.428 编译通过（Debug+Release x64，0 error/0 warning），Core 107 测试通过；GUI 交互未实机运行，待 Windows 实机确认。但新建查询标签后焦点不落编辑器（Focus 只在 --qa-query 探针里调），要先手点一次才能输入。）；macOS none
+- 同步：Linux done（隔离 AT-SPI：test_03_sql.py 的 test_execute_selection、test_execute_selection_exact_bounds 和 test_whitespace_selection_and_tab_independence 通过。通过原生 menu.popup 打开菜单，点击首项仅返回选中语句的两个结果集；取消选区后没有附加项，纯空白选区时首项禁用。覆盖多行、Unicode、正反选区、部分语句与全文选区。）；Windows partial（Ctrl+Enter 仍执行整段（frontend/windows/Sqarvo.Windows/Views/ShellView.Query.cs:889），待接入选区范围及上下文菜单首项；新建标签后焦点仍需手动进入编辑器。）；macOS none
 - 实现备注：等宽文本、不折行、自动竖向滚动条；没有语法高亮，也不假装有（纯文本）。最小高度随密度档（query_editor_min_height），没有固定上限：编辑器与结果区用可拖动 GtkPaned 分配页高（见 tabs.query.splitter）；新标签结果区隐藏时编辑器占满整页。Linux 的编辑器没有行号沟（只有等宽 TextView）；行号沟是 §7.1 记录的 Windows 口径，本端待收敛。编辑器上方不写「当前为纯文本编辑，语法高亮将在后续版本提供」（v0.2.5 去掉）：没有语法高亮不靠一句自称说明，编辑器就是等宽纯文本。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 新建查询标签成功 | 键盘焦点直接落在编辑器上，可以马上输入 SQL | `src/tabs.rs:1915、src/sql_page.rs:339` |
-| key Ctrl+Enter | 编辑器有焦点 | 执行编辑器里的 SQL（与动作行的「执行」同一方法）；执行中重复按被忽略 | `src/sql_page.rs:301、src/sql_page.rs:344` |
+| key Ctrl+Enter | 编辑器有焦点 | 有选区仅执行选区，无选区执行全文；与动作行共用状态校验 | `src/sql_page.rs:SqlPage::execute` |
+| right_click | 编辑器存在非空文本选区 | 首项显示「执行选中内容」，原生编辑项保持原顺序；纯空白选区或不能执行时首项禁用。动作触发时重新读取选区，若选区已失效则忽略。无选区时不显示该项。 | `src/sql_page.rs:SqlPage::connect_execute_controls` |
 | load | 新建查询标签（尚无任何 Execute 响应） | 编辑器占满整个内容区：结果区与分隔把手隐藏（GtkPaned 对隐藏子节点不测量也不绘制把手） | `src/sql_page.rs:273、src/sql_page.rs:1362` |
 
 ### `tabs.query.state` 结果区状态行（五态）
@@ -2934,8 +2935,8 @@ kind `control` · status `active` · parent `tabs.query.results`
 - 样式：尺寸 `gap_sm`、`gap_xl`
 - 无障碍：可访问名「语句日志」
 - 原生控件：gtk:GtkTextView（只读、等宽）∈ GtkScrolledWindow（横向策略 Never） / winui:— / swift:—
-- 同步：Linux done（tests/ui/linux/test_03_sql.py::test_message_page_format PASS：4 语句脚本（2 多行 INSERT + 2 SELECT）消息页 4 段 / 17 行，首段逐字『INSERT INTO widgets (name, qty)\nVALUES ('qa1', 1)\n> Affected rows: 1\n> Query Time: 0.008 seconds』；断言「> Affected rows: 1」2 处、「> OK」2 处、「> Query Time:」4 处且全部匹配 `^> Query Time: \d+\.\d{3} seconds$`、段间正好 3 处空行、首段是完整 SQL 且全文无「（预览）」；tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：20 条多行 INSERT → 20 段、20 行「> Affected rows: 1」、20 行耗时全部合规；QA 只读探针 `[qa] 消息页全文：…`；纯函数 message_log_text / seconds_text / split_statements 的单测在 src/statements.rs（cargo test 494 passed，编排者复核））；Windows none（#232 跟进：消息页未接入。按本条目做：只读日志页，逐条语句一段（完整 SQL + `> OK` / `> Affected rows: N` / `> Error: …` + `> Query Time: N.NNN seconds`，段间空行，未测量不写耗时行），文案取 l10n tabs.results_msg_* key，行为与 Linux 一致；耗时字段已由契约 #238（StatementSummary.elapsed_millis）提供。）；macOS none
-- 实现备注：每条语句一段，段内顺序固定：**完整 SQL**（按分号切分编辑器脚本得到的原文，末尾分号去掉）→ 结论行 → 耗时行；段与段之间空一行（`\n\n`）。文本由纯函数 message_log_text 组装，整段替换写进只读 GtkTextView（不按语句追加，避免残留上一轮结论）。结论行三种：查询类 / 已执行成功 → `> OK`（l10n tabs.results_msg_ok）；写语句 → `> Affected rows: N`（l10n tabs.results_msg_affected；影响行数未知时写 `> OK`，不拿 0 冒充「影响 0 行」）；失败 → `> Error: <可安全展示文案>`（l10n tabs.results_msg_error_line，文案与状态行 / tooltip 同源 `QueryFailure::message()`，可诊断但不泄露凭据与连接串，根 §9）。耗时行 `> Query Time: N.NNN seconds`（l10n tabs.results_msg_query_time；整数运算出三位小数，不经浮点）。数据源只有 `StatementSummary.elapsed_millis`（#238）：**0 = 未测量 → 整行不写**，绝不把未测量渲染成 0 秒。语句文本用完整 SQL：前端 split_statements 按分号切分编辑器脚本（跳过字符串 / 注释里的分号），与后端 statement_index 按位置对齐；切出的条数与 statements.len() 不一致时整条退回后端 sql_preview 并在行首加「（预览）」前缀——绝不错位显示别人的 SQL。已知边界：不处理 MySQL 反斜杠转义 `\'`（按标准 `''` 计），含此类转义的脚本会退回预览。横向策略 Never + 按词换行（WordChar）+ 等宽字体，长 SQL 在页内换行，宽度永不把窗口撑开——这就是本单存在的理由（不撑宽回归条款见 tabs.query.results.statements 的退役背景与本条 sync.linux evidence）。页面可访问名「语句日志」挂在滚动容器上（GtkScrolledWindow 的 Label 属性），内层只读 TextView 不带名字：功能用例按「只读 + multi-line + 非 editable 的 text 节点」定位。
+- 同步：Linux done（tests/ui/linux/test_03_sql.py::test_message_page_format PASS：4 语句脚本（2 多行 INSERT + 2 SELECT）消息页 4 段 / 17 行，首段逐字『INSERT INTO widgets (name, qty)\nVALUES ('qa1', 1)\n> Affected rows: 1\n> Query Time: 0.008 seconds』；断言「> Affected rows: 1」2 处、「> OK」2 处、「> Query Time:」4 处且全部匹配 `^> Query Time: \d+\.\d{3} seconds$`、段间正好 3 处空行、首段是完整 SQL 且全文无「（预览）」；tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：20 条多行 INSERT → 20 段、20 行「> Affected rows: 1」、20 行耗时全部合规；QA 只读探针 `[qa] 消息页全文：…`；纯函数 message_log_text / seconds_text / split_statements 的单测在 src/statements.rs（cargo test 494 passed，编排者复核）；test_execute_selection 的按钮、快捷键和菜单用例均断言消息页只含实际执行的选中语句。）；Windows none（#232 跟进：消息页未接入。按本条目做：只读日志页，逐条语句一段（完整 SQL + `> OK` / `> Affected rows: N` / `> Error: …` + `> Query Time: N.NNN seconds`，段间空行，未测量不写耗时行），文案取 l10n tabs.results_msg_* key，行为与 Linux 一致；耗时字段已由契约 #238（StatementSummary.elapsed_millis）提供。）；macOS none
+- 实现备注：每条语句一段，段内顺序固定：**完整 SQL**（按分号切分实际执行的脚本得到的原文，末尾分号去掉）→ 结论行 → 耗时行；段与段之间空一行（`\n\n`）。文本由纯函数 message_log_text 组装，整段替换写进只读 GtkTextView（不按语句追加，避免残留上一轮结论）。结论行三种：查询类 / 已执行成功 → `> OK`（l10n tabs.results_msg_ok）；写语句 → `> Affected rows: N`（l10n tabs.results_msg_affected；影响行数未知时写 `> OK`，不拿 0 冒充「影响 0 行」）；失败 → `> Error: <可安全展示文案>`（l10n tabs.results_msg_error_line，文案与状态行 / tooltip 同源 `QueryFailure::message()`，可诊断但不泄露凭据与连接串，根 §9）。耗时行 `> Query Time: N.NNN seconds`（l10n tabs.results_msg_query_time；整数运算出三位小数，不经浮点）。数据源只有 `StatementSummary.elapsed_millis`（#238）：**0 = 未测量 → 整行不写**，绝不把未测量渲染成 0 秒。语句文本用完整 SQL：前端 split_statements 按分号切分实际执行的脚本（跳过字符串 / 注释里的分号），与后端 statement_index 按位置对齐；切出的条数与 statements.len() 不一致时整条退回后端 sql_preview 并在行首加「（预览）」前缀——绝不错位显示别人的 SQL。已知边界：不处理 MySQL 反斜杠转义 `\'`（按标准 `''` 计），含此类转义的脚本会退回预览。横向策略 Never + 按词换行（WordChar）+ 等宽字体，长 SQL 在页内换行，宽度永不把窗口撑开——这就是本单存在的理由（不撑宽回归条款见 tabs.query.results.statements 的退役背景与本条 sync.linux evidence）。页面可访问名「语句日志」挂在滚动容器上（GtkScrolledWindow 的 Label 属性），内层只读 TextView 不带名字：功能用例按「只读 + multi-line + 非 editable 的 text 节点」定位。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2950,7 +2951,7 @@ kind `container` · status `active` · parent `tabs.query.results`
 - 样式：尺寸 `gap_sm`、`gap_md`、`gap_xl`
 - 无障碍：可访问名「执行摘要」
 - 原生控件：gtk:键值行 Box（键 Label + 值 selectable Label）∈ GtkScrolledWindow（横向策略 Never） / winui:— / swift:—
-- 同步：Linux done（tests/ui/linux/test_03_sql.py::test_summary_two_columns PASS：4 语句脚本摘要六项 {已执行语句=4, 成功=4, 失败=0, 开始时间=12:08:21, 结束时间=12:08:21, 总耗时=0.017 s}；断言三行计数 4/4/0、开始/结束匹配 `^\d{2}:\d{2}:\d{2}$`、总耗时匹配 `^\d+\.\d{3} s$`，并用可访问性父容器 path 断言「已执行语句/成功/失败」同属一列、「开始时间/结束时间/总耗时」同属另一列（两列不同）；tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：20 条 INSERT → 20 · 20 · 0、结束时间已写、总耗时「N.NNN s」、底部「客户端计时」口径行在；QA 只读探针 `[qa] 摘要取值：…`；纯函数 totals 的单测在 src/statements.rs（cargo test 494 passed，编排者复核））；Windows none（#232 跟进：摘要页未接入。按本条目做：两列三行（左 已执行语句/成功/失败，右 开始时间/结束时间/总耗时）+ 底部口径行，文案取 l10n tabs.results_summary_* key；计数可由既有 QueryModel 逐语句状态组装，计时同为客户端墙钟 + 单调钟口径。）；macOS none
+- 同步：Linux done（tests/ui/linux/test_03_sql.py::test_summary_two_columns PASS：4 语句脚本摘要六项 {已执行语句=4, 成功=4, 失败=0, 开始时间=12:08:21, 结束时间=12:08:21, 总耗时=0.017 s}；断言三行计数 4/4/0、开始/结束匹配 `^\d{2}:\d{2}:\d{2}$`、总耗时匹配 `^\d+\.\d{3} s$`，并用可访问性父容器 path 断言「已执行语句/成功/失败」同属一列、「开始时间/结束时间/总耗时」同属另一列（两列不同）；tests/ui/linux/test_03_sql.py::test_multi_insert_message_and_summary PASS：20 条 INSERT → 20 · 20 · 0、结束时间已写、总耗时「N.NNN s」、底部「客户端计时」口径行在；QA 只读探针 `[qa] 摘要取值：…`；纯函数 totals 的单测在 src/statements.rs（cargo test 494 passed，编排者复核）；test_execute_selection 的按钮、快捷键和菜单用例均断言消息页只含实际执行的选中语句。）；Windows none（#232 跟进：摘要页未接入。按本条目做：两列三行（左 已执行语句/成功/失败，右 开始时间/结束时间/总耗时）+ 底部口径行，文案取 l10n tabs.results_summary_* key；计数可由既有 QueryModel 逐语句状态组装，计时同为客户端墙钟 + 单调钟口径。）；macOS none
 - 实现备注：**两列三行**，列内顺序固定：左列 已执行语句 / 成功 / 失败，右列 开始时间 / 结束时间 / 总耗时（两列等宽、值右对齐且 selectable，用户能取走时间文本）。键 dim-label，未到结论的项显示占位「—」（l10n tabs.results_summary_pending）。计数由纯函数 totals：已执行 = 已有逐语句结论的条数（成功脚本 = 全量条目；失败脚本 = 到失败语句为止），失败 = 失败态条数，成功 = 其余。计时口径（决策 D3，明示限制）：**客户端计时**（提交 Execute → 到达终态，含 IPC 与渲染），不代表数据库服务端执行时间；**逐语句**的数据库侧耗时是消息页的 `Query Time`（协议 `StatementSummary.elapsed_millis`，#238）。页面底部一行写明这条口径（l10n tabs.results_summary_timing_note）。时间为本地墙钟 HH:MM:SS（秒精度），总耗时为 `HH:MM:SS` 之外的「N.NNN s」（l10n tabs.results_summary_duration_value，三位小数）；后到的终态覆盖先到的结束时刻；断连不改结束时间。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |

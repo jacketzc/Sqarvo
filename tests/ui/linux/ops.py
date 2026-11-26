@@ -22,6 +22,7 @@ from adapter import (
     wait_until,
     walk,
     window_action,
+    wait_enabled,
     nm,
     role,
 )
@@ -163,7 +164,7 @@ def active_query_page(frame, title: str):
     def probe():
         hits = [p for p in walk(frame)
                 if role(p) == "panel" and nm(p) == title
-                and any(role(x) == "button" and nm(x) == "执行"
+                and any(role(x) == "button" and nm(x) in ("执行", "执行选中内容")
                         for x in query(p, role_in=("button",)))]
         return hits[0] if hits else None
     return wait_until(probe, 15, f"query page panel '{title}'")
@@ -201,7 +202,7 @@ def write_sql(page, sql):
 def execute_sql(page):
     """点页内「执行」按钮；成功返回后由调用方等待结果。"""
     btn = find_one(page, role_in=("button",), name="执行", timeout=10)
-    expect("sensitive" in states(btn), "「执行」按钮可用", "sensitive" in states(btn))
+    wait_enabled(btn, 15, "查询会话就绪后「执行」可用")
     click(btn)
 
 

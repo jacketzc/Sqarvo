@@ -58,7 +58,7 @@ apps/sqarvo-mcp ──► connection / query-engine / local-store / drivers / dr
 
 ## 数据流：执行一次查询（目标形态）
 
-1. 前端在 SQL 编辑器中执行当前语句，调用 `QueryService.Execute(session_id, sql)`；
+1. 前端提交 SQL 编辑器的本次执行范围，调用 `QueryService.Execute(session_id, sql)`；
 2. 后端 `QueryRegistry` 登记查询（并发上限、批次上限），获取 `query_id`；
 3. `SessionManager` 找到对应 `DriverSession`，由驱动执行；
 4. 驱动返回首批行 + 游标；后端只把首批 + 列元数据返回前端；

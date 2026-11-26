@@ -561,8 +561,6 @@ pub struct TabHandle {
     session: RefCell<Option<String>>,
     /// 会话建立后要打开的表（表标签）。
     pending_open: RefCell<Option<TableEntry>>,
-    /// 会话建立后要执行的 SQL（查询标签）。
-    pending_sql: RefCell<Option<String>>,
     /// 「保存并关闭」的进度（脏行 → 事务 → 关标签）。
     close_phase: Cell<ClosePhase>,
     /// 查询标签最近一次摘要（状态栏行 2 左段）。
@@ -2309,7 +2307,6 @@ impl TabSet {
             sql: None,
             session: RefCell::new(None),
             pending_open: RefCell::new(None),
-            pending_sql: RefCell::new(None),
             close_phase: Cell::new(ClosePhase::Idle),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
@@ -2379,7 +2376,6 @@ impl TabSet {
             sql: None,
             session: RefCell::new(None),
             pending_open: RefCell::new(Some(entry)),
-            pending_sql: RefCell::new(None),
             close_phase: Cell::new(ClosePhase::Idle),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
@@ -2439,7 +2435,6 @@ impl TabSet {
             sql: Some(Rc::clone(&sql)),
             session: RefCell::new(None),
             pending_open: RefCell::new(None),
-            pending_sql: RefCell::new(None),
             close_phase: Cell::new(ClosePhase::Idle),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
@@ -2857,15 +2852,14 @@ impl TabSet {
         })
     }
 
-    /// 查询标签里的「执行」：会话还没建立时先把 SQL 记下来，建立后跑一次。
+    /// 把查询标签提交的 SQL 转发给其已就绪的会话。
     fn execute_in_tab(self: &Rc<Self>, tab_id: &str, sql: String) {
         let Some(tab) = self.by_id(tab_id) else {
             eprintln!("[tabs] 忽略执行：标签 {tab_id} 已关闭");
             return;
         };
         if tab.session().is_none() {
-            eprintln!("[tabs] 标签 {tab_id} 的会话尚未建立：SQL 已排队，建立后执行");
-            tab.pending_sql.replace(Some(sql));
+            eprintln!("[tabs] 忽略执行：标签 {tab_id} 的会话尚未建立");
             return;
         }
         // 用户意图（选择器 / 打开标签时的默认库）随请求一起走；空 = 不改会话当前库。
@@ -3405,12 +3399,6 @@ impl TabSet {
             reference.session_id.clone_from(&opened.session_id);
             self.context.worker.open_table(&opened.tab_id, reference);
         }
-        if let Some(sql) = tab.pending_sql.borrow_mut().take() {
-            let catalog = tab.catalog.request();
-            self.context
-                .worker
-                .execute_sql(&opened.tab_id, sql, catalog);
-        }
         self.refresh_current();
     }
 
@@ -3733,10 +3721,6 @@ impl TabSet {
         sql.request_cancel();
         // b. 关游标：页面只有在拿到过 query_id 时才发 Close。
         sql.close_query();
-        // 排队等会话建立后执行的 SQL 属于旧连接：不搬到新连接上执行。
-        if tab.pending_sql.borrow_mut().take().is_some() {
-            eprintln!("[tabs] 标签 {tab_id} 的排队 SQL 随重绑丢弃（那是旧连接的请求）");
-        }
         // c. 断开旧会话（worker 侧 CloseTabSession 会先 Cancel 再 Close 再 Disconnect）。
         tab.session.replace(None);
         sql.set_session_ready(false);

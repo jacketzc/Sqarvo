@@ -136,7 +136,7 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
 - 正常退出、失败、超时和信号中断均按本次 scope 停止进程并清除临时目录。外层入口
   被 SIGKILL 时，scope 有运行时限。后续启动会检查当前用户的旧运行目录，仅在取得
   实例锁、确认 scope 已结束且 cgroup 不存在后删除。无法确认的目录会保留并提示，
-  包括旧版入口遗留、没有本版标记的目录。测试通过语义 API 操作控件，无 `/dev/uinput` 依赖。
+  包括旧版入口遗留、没有本版标记的目录。测试通过语义 API 定位和操作控件。SQL 快捷键通过同一私有 Xvfb 的 XTEST 发送到当前焦点，无 `/dev/uinput` 依赖。
 
 入口回归测试可用 `/usr/bin/python3 tests/ui/linux/runner_regression.py` 独立执行。
 在依赖安装完成、systemd 用户会话可用的主机上，可加 `--host` 实测并行与 SIGKILL 回收。

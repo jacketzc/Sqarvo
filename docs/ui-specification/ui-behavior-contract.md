@@ -85,7 +85,7 @@
 | 刷新当前表 / 对象树 | `F5` | 当前标签是表数据页 → 刷当前表（保持排序 / 筛选、回到第 1 页；脏行守卫照旧）；否则刷整棵对象树。**菜单里已不列「视图 → 刷新」**，只保留这条快捷键 | `src/ui.rs:296`、`src/ui.rs:2422-2457`、`src/ui.rs:4582` |
 | 聚焦对象搜索 | `Ctrl+F` | 焦点交给窗口左下角（状态栏左边沟）的对象树搜索框 | `src/ui.rs:298` |
 | 导出当前标签 | `Ctrl+Shift+E` | CSV（表标签先选范围） | `src/ui.rs:329`、`src/ui.rs:4702` |
-| 执行 SQL | `Ctrl+Enter` | 编辑器内生效：执行整段（不是「当前语句」）。**菜单「查询」整项不挂**，只保留快捷键与查询页按钮 | `src/sql_page.rs:229-245`、`src/ui.rs:4604`（`win.execute`） |
+| 执行 SQL | `Ctrl+Enter` | 有选区执行选区，无选区执行全文。快捷键、查询页按钮和编辑器上下文菜单遵循同一状态限制。见 `tabs.query.actions`、`tabs.query.editor`。 | `src/sql_page.rs`、`src/ui.rs`（`win.execute`） |
 | 取消查询 | `Esc` | 编辑器内生效；幂等（重复点不报错、不发 RPC）。**菜单「查询」整项不挂**，只保留快捷键与查询页按钮 | `src/sql_page.rs:239-245`、`src/sql_page.rs:308-325`、`src/ui.rs:4616`（`win.cancel`） |
 | 关闭筛选面板 / 收起条件编辑 | `Esc` | 只在筛选面板内生效：先收起行内编辑，没有编辑态时关面板 | `src/data_page.rs:1320-1339` |
 | 列表移动 / 激活 | `↑` `↓` / `Enter` | GTK 默认；`Enter` 等同双击（树与 `Objects` 页三列表格） | `src/tree.rs:1813`、`src/tabs.rs:909-925` |
@@ -161,6 +161,8 @@ macOS 前端尚未接入。行为与同步记录见 [策略组件](components/wo
 | 「新增 / 删除」行按钮 | **不渲染**（不是置灰） | `Views/ShellView.xaml` 删 `ButtonRowAdd` / `ButtonRowDelete`（:622 / :625）及接线与 tooltip；`Ctrl+S` / `Ctrl+Z` 仍是提交 / 撤销入口 | `status_bar.row1.ops.add` / `.delete` 的 `sync.windows` 改 `na` + note |
 | 行 2 会话格 | 与 Linux 一致：当前标签是表数据标签时整格不出现 | `Views/ShellView.Chrome.cs` 的 `ApplyStatusChrome` 按当前标签切可见性，切标签即时刷新 | `status_bar.row2.session` 去掉「恒写入」差异 |
 
+Windows 的执行按钮和 `Ctrl+Enter` 仍执行全文，尚待同步基于选区的执行范围、动态按钮文案和编辑器上下文菜单。macOS 接入时继承同一规范。
+
 还有一条是实现缺口、不阻塞文档：Windows 侧栏与信息面板拖动未实现（`object_tree` / `inspector` 的
 `sync.windows` 仍是 `partial`），归 `docs/planning/windows-frontend-parity-plan.md`。
 
@@ -176,7 +178,7 @@ macOS 前端尚未接入。行为与同步记录见 [策略组件](components/wo
 | 搜索的取数上限 | 目录层与每个库的搜索都只取第一页（`NODE_PAGE_SIZE = 500`），不翻页；库数量或单个库的命中数超过一页时结果不完整（日志写明「目录层还有下一页」），后续需要按库翻页或服务端子树搜索 | §2.4 |
 | Windows 端连接面（#169） | 只有连接配置、测试连接、建立会话与对象树连接层；元数据树、查询面、表数据面尚未实现，入口保持禁用并在 tooltip 里逐项说明原因 | §7.1 |
 | Windows 端元数据面（#171） | 已实现对象树的库 / 分组 / 对象三层与 200 条分页、`Objects` 页三列表格、信息面板三态；仍未实现：表节点下的 `Fields` / `Indexes` / `Foreign Keys` / `Triggers` 四组、工具条四个种类入口的联动、对象树搜索、表数据标签（`Enter` 只同步信息面板并在状态栏说明数据标签尚未实现）、`PageInfo.total_size` 不可用因而不显示总数 | §7.1 |
-| Windows 端查询面（#172） | 已实现查询标签（新建 / 关闭 / `*` 未执行标记 / 上限 8）、等宽多行编辑器 + 行号、选中优先执行、执行 / 取消（同一入口切换）、结果网格（列头 + 行号 + 视口虚拟化 + 横向同步）、200 行一批的 `Execute` + `FetchBatch` 续拉、五态与状态栏行 2 摘要。**已在 Windows 上以 dotnet 8.0.428 编译通过**（Debug + Release x64，0 error / 0 warning；Core 单测 107 全过），但 GUI 交互未实机运行，事件签名（`TabView.SelectionChanged` / `TabCloseRequested`）、`InputKeyboardSource.GetKeyStateForCurrentThread`（`Ctrl+.`）与行号沟滚动同步的交互待 Windows 实机确认 | §7.1 |
+| Windows 端查询面（#172） | 已实现查询标签（新建 / 关闭 / `*` 未执行标记 / 上限 8）、等宽多行编辑器 + 行号、执行 / 取消（同一入口切换）、结果网格（列头 + 行号 + 视口虚拟化 + 横向同步）、200 行一批的 `Execute` + `FetchBatch` 续拉、五态与状态栏行 2 摘要。**已在 Windows 上以 dotnet 8.0.428 编译通过**（Debug + Release x64，0 error / 0 warning；Core 单测 107 全过），但 GUI 交互未实机运行，事件签名（`TabView.SelectionChanged` / `TabCloseRequested`）、`InputKeyboardSource.GetKeyStateForCurrentThread`（`Ctrl+.`）与行号沟滚动同步的交互待 Windows 实机确认 | §7.1 |
 | Windows 端表数据面（#173） | 已实现数据页（打开 / 复用 / 关页、200 行 offset 分页 + 加载更多、NULL 与空串区分、主键列标记、单元格暂存与 `Ctrl+S` / `Ctrl+Z`、事务状态与关页 / 关窗守卫、数据行右键菜单与标记删除（`data_page.row_menu` / `.delete` / `.copy_insert`）、删除随提交一起走 `ApplyRowChanges.deletes`）。**未实现**：排序 / 筛选下推（服务端能力位未开）、新增行、导出 CSV、跨标签同库事务提示；**已知边界**：主键列不可编辑（改主键会改变行身份）、就地编辑只覆盖文本 / 整数 / 小数 / 布尔 / JSON / UUID、数据页复用该连接已有的数据库会话（不另建标签会话）；**确认形态**：§8.2 的「含删除必须确认」已改为 WinUI 原生 `ContentDialog` 模态确认（`ConfirmDestructiveAsync`，破坏性按钮默认「取消」；>100 行与含删除共用同一对话框，正文单列删除行数）。**dotnet 8.0.428 编译通过（Debug + Release x64，0 error / 0 warning；Core 单测 107 全过），GUI 交互未实机运行**，待 Windows 实机确认，故仍按 partial 记；「复制为 INSERT」的标识符固定双引号（MySQL / MariaDB 未开 `ANSI_QUOTES` 时不可直接执行）、时间值不带时区偏移，同为 partial 差异；切密度档会重建外壳，数据页不随快照恢复（查询页按 SQL 文本恢复，表数据页需要重新打开）。 | §5、§7.1 |
 | Windows 端查询标签布局（#189） | 已实现结果区显隐（新标签隐藏 / 任何 Execute 响应后显示 / 关闭后回隐藏）、关闭按钮（`SymbolIcon(Cancel)`、可访问名「关闭结果区」、执行中置灰 + tooltip「查询执行中，请先取消」、Close RPC 幂等 + 清网格态、SQL 文本保留）、自绘拖动把手（WinUI 3 无原生 splitter，`PointerPressed/Moved/Released` 调 `RowDefinition` 高度；两端最小高度与默认比例读生成常量，比例按标签内存态保持不持久化）。脏行丢弃确认已接线（同数据页 ContentDialog 口径），但当前结果网格只读（`DirtyRowCount` 恒 0）不会触发。**未在 Windows 上构建 / 运行**：本机只过了真类型探针（真实 WinUI 2.6.5 引用程序集 + XAML 编译产物替身）编译 0 警告 0 错误；拖动手感、弹窗 / 置灰观感待人工确认 | §4、§7.1 |
 | Windows 端多语句结果（#190） | 已实现语句切换行（序号 · 类型词 · 行数/影响行数，完整预览进 tooltip）、默认选中已成功语句中最后一条 SELECT、全写脚本「无结果集」占位页（切换行仍列各写语句影响行数）、失败场景「前 N-1 条已执行，第 N 条失败」+ 失败条目默认选中 + 已执行条目「结果未返回」占位（ADR 0006 原子失败契约：不返回部分结果、metadata 无语句类型，已执行条目无类型/预览——改善需后端契约变更）、逐语句 FetchBatch(statement_index) 续拉与独立游标、单语句现状不变。**未在 Windows 上构建 / 运行**：本机只过了真类型探针（真实 WinUI 2.6.5 引用程序集 + XAML 编译产物替身，红→绿）0 警告 0 错误 + Sqarvo.Core.Tests 120 passed（基线 107 + 新增 13）；三档密度切换行间距/命中区观感、destructive 浅色主题对比度、长 SQL tooltip 可读性待人工确认 | §7.1 |

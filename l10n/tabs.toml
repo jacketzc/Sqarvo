@@ -160,8 +160,20 @@ status = "done"
 
 [[entry]]
 key = "tabs.query_btn_execute_tip"
-zh = "执行编辑器中的 SQL（Ctrl+Enter）"
-en = "Execute the SQL in the editor (Ctrl+Enter)"
+zh = "执行编辑器中的全部 SQL（Ctrl+Enter）"
+en = "Execute all SQL in the editor (Ctrl+Enter)"
+status = "done"
+
+[[entry]]
+key = "tabs.query_btn_execute_selected"
+zh = "执行选中内容"
+en = "Execute selected"
+status = "done"
+
+[[entry]]
+key = "tabs.query_btn_execute_selected_tip"
+zh = "仅执行选中的 SQL（Ctrl+Enter）"
+en = "Execute only the selected SQL (Ctrl+Enter)"
 status = "done"
 
 [[entry]]

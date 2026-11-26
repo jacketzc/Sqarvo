@@ -23,6 +23,37 @@ def _run_query(app, sql):
     return frame, page
 
 
+def test_selection_rerun_after_commit(ui_instance):
+    """注册表组件: tabs.query.actions, tabs.query.editor。"""
+    app = ui_instance("selection_commit").start(
+        autoconnect=True, extra_args=("--qa-query-edit", "0:qty:91", "--qa-query-apply"),
+    )
+    frame = app.frame()
+    ops.wait_connected(frame, "uitest.db")
+    page = ops.open_sql_page(frame)
+    try:
+        with step("run_editable_selection"):
+            before = "SELECT 'outside';\n"
+            editor = ops.write_sql(page, before + SQL)
+            _select_sql(editor, len(before), len(before + SQL))
+            button = _execute_selected_button(page)
+            A.wait_enabled(button, 10)
+            A.click(button)
+            ops.wait_query_done(page, min_rows=3)
+            different = "SELECT 'different';"
+            ops.write_sql(page, different)
+            _select_sql(editor, 0, len(different))
+        with step("rerun_uses_last_executed_sql"):
+            A.wait_until(lambda: "提交后自动重跑" in app.log_text(), 12,
+                         "提交成功后自动重跑")
+            A.wait_until(lambda: len(ops.data_rows(page)) == 3
+                         and ops.data_rows(page)[0][-1] == "91", 15,
+                         "原结果集重跑后包含已提交的值")
+            expect(A.text_value(editor) == different, "编辑器保留新的 SQL", A.text_value(editor))
+    finally:
+        _close(frame)
+
+
 def test_execute_sql(app_connected):
     """执行 SELECT：结果网格按行返回，行数正确。
 
@@ -404,5 +435,173 @@ def test_result_picker_folds_multiple_result_sets(app_connected):
                          "切回结果 1 仍只有 1 行（各自网格状态保留）")
             expect([tuple(r) for r in ops.data_rows(page)] == [tuple(rows[0])],
                    "切回后仍是结果 1 自己的那一行", ops.data_rows(page))
+    finally:
+        _close(frame)
+
+def _select_sql(editor, start, end):
+    text = A.Atspi.Text
+    if start == end:
+        assert text.set_caret_offset(editor, start)
+    elif text.get_n_selections(editor):
+        assert text.set_selection(editor, 0, start, end)
+    else:
+        assert text.add_selection(editor, start, end)
+
+
+def _execute_selected_button(page):
+    return A.find_one(page, role_in=("button",), name="执行选中内容", timeout=5)
+
+
+@pytest.mark.parametrize("entry", ["button", "shortcut", "menu"])
+def test_execute_selection(app_connected, entry):
+    """注册表组件: tabs.query.actions, tabs.query.editor。"""
+    frame = app_connected.frame()
+    page = ops.open_sql_page(frame)
+    try:
+        before = "SELECT 'unselected-before';\n"
+        selected = "SELECT\n '选中';\nSELECT 'second';"
+        sql = before + selected + "\nSELECT 'unselected-after';"
+        editor = ops.write_sql(page, sql)
+        with step("selection_changes_button_name"):
+            _select_sql(editor, len(before), len(before + selected))
+            _execute_selected_button(page)
+            _select_sql(editor, 0, 0)
+            A.find_one(page, role_in=("button",), name="执行", timeout=5)
+            if entry == "menu":
+                items = _open_editor_menu(editor)
+                native_item_count = len(items)
+                _close_editor_menu(editor)
+            _select_sql(editor, len(before), len(before + selected))
+        with step("execute_only_selection"):
+            button = _execute_selected_button(page)
+            A.wait_enabled(button, 15)
+            if entry == "button":
+                A.click(button)
+            elif entry == "shortcut":
+                A.wait_until(lambda: "focused" in A.states(editor), 5, "编辑器获得焦点")
+                A.press_keys("Control_L", "Return")
+            else:
+                items = _open_editor_menu(editor)
+                # GTK does not expose model-item names in AT-SPI. The extra item
+                # must be first: click it and verify it executes the selected SQL.
+                expect(len(items) == native_item_count + 1,
+                       "有选区时比原生菜单多一项", len(items))
+                A.click(items[0])
+            rows = ops.wait_query_done(page)
+            expect(rows == [["1", "选中"]], "第一条选中语句的结果", rows)
+            expect(ops.result_picker_labels(page) == ["结果 1", "结果 2"],
+                   "仅有选区内两条语句的结果", ops.result_picker_labels(page))
+            ops.pick_result(page, "结果 2")
+            A.wait_until(lambda: ops.data_rows(page) == [["1", "second"]], 10, "第二条选中语句")
+            ops.switch_results_tab(page, "消息")
+            messages = ops.messages_log_text(page)
+            expect("unselected" not in messages and "选中" in messages and "second" in messages,
+                   "只记录实际执行的 SQL", messages)
+            expect(A.text_value(editor) == sql and A.Atspi.Text.get_n_selections(editor) == 1,
+                   "原文和选区保留", A.text_value(editor))
+    finally:
+        _close(frame)
+
+
+def _open_editor_menu(editor):
+    actions = A.action_names(editor)
+    assert A.Atspi.Action.do_action(editor, actions.index("menu.popup"))
+    return A.wait_until(lambda: _editor_menu_items(editor), 5, "编辑器原生上下文菜单")
+
+
+def _editor_menu_items(editor):
+    return [item for item in A.query(editor, role_in=("menu item",))
+            if "showing" in A.states(item)]
+
+
+def _close_editor_menu(editor):
+    A.press_keys("Escape")
+    A.wait_gone(lambda: _editor_menu_items(editor), 5, "编辑器上下文菜单关闭")
+
+
+def test_whitespace_selection_and_tab_independence(app_connected):
+    """注册表组件: tabs.query.actions, tabs.query.editor。"""
+    frame = app_connected.frame()
+    page = ops.open_sql_page(frame)
+    try:
+        editor = ops.write_sql(page, "SELECT 'must not run';\n  ")
+        _select_sql(editor, 0, 6)
+        _execute_selected_button(page)
+        _select_sql(editor, len(A.text_value(editor)) - 2, len(A.text_value(editor)))
+        with step("whitespace_does_not_execute"):
+            items = _open_editor_menu(editor)
+            expect("sensitive" not in A.states(items[0]),
+                   "纯空白选区的菜单首项禁用", A.states(items[0]))
+            _close_editor_menu(editor)
+            count = app_connected.log_text().count("[query] SQL 共 ")
+            button = _execute_selected_button(page)
+            A.wait_enabled(button, 15)
+            A.click(button)
+            A.find_one(page, name="SQL 不能为空：请输入后按 Ctrl+Enter", timeout=5)
+            expect(app_connected.log_text().count("[query] SQL 共 ") == count,
+                   "没有发送查询请求", app_connected.log_text().count("[query] SQL 共 "))
+        with step("independent_query_tabs"):
+            other = ops.open_sql_page(frame)
+            try:
+                A.find_one(other, role_in=("button",), name="执行", timeout=5)
+            finally:
+                _close(frame)
+            _execute_selected_button(page)
+    finally:
+        _close(frame)
+
+
+def test_execute_selection_ignores_duplicate_requests(app_connected):
+    """注册表组件: tabs.query.actions, tabs.query.editor。"""
+    import sqlite3
+
+    frame = app_connected.frame()
+    page = ops.open_sql_page(frame)
+    try:
+        with sqlite3.connect(app_connected.db) as lock:
+            lock.execute("CREATE TABLE IF NOT EXISTS selection_runs (label TEXT)")
+            lock.execute("BEGIN IMMEDIATE")
+            before = "INSERT INTO selection_runs VALUES ('outside');\n"
+            selected = "INSERT INTO selection_runs VALUES ('inside');"
+            editor = ops.write_sql(page, before + selected)
+            _select_sql(editor, len(before), len(before + selected))
+            button = _execute_selected_button(page)
+            A.wait_enabled(button, 15)
+            count = app_connected.log_text().count("[query] SQL 共 ")
+            with step("ignore_execute_while_running"):
+                A.click(button)
+                A.wait_until(lambda: "sensitive" not in A.states(button), 5,
+                             "执行中按钮禁用")
+                A.window_action(frame, "win.execute")
+                lock.rollback()
+                A.wait_enabled(button, 15)
+                expect(app_connected.log_text().count("[query] SQL 共 ") == count + 1,
+                       "只有一次提交", app_connected.log_text().count("[query] SQL 共 "))
+                values = lock.execute("SELECT label FROM selection_runs").fetchall()
+                expect(values == [("inside",)], "仅执行一次选中 INSERT", values)
+    finally:
+        _close(frame)
+
+
+@pytest.mark.parametrize(("selection", "value"), [("reverse_partial", "7"), ("all", "18")])
+def test_execute_selection_exact_bounds(app_connected, selection, value):
+    """注册表组件: tabs.query.actions, tabs.query.editor。"""
+    frame = app_connected.frame()
+    page = ops.open_sql_page(frame)
+    try:
+        sql = "SELECT 7 + 11"
+        editor = ops.write_sql(page, sql)
+        if selection == "all":
+            _select_sql(editor, 0, len(sql))
+        else:
+            _select_sql(editor, len("SELECT 7"), len("SELECT 7"))
+            A.wait_until(lambda: "focused" in A.states(editor), 5, "编辑器获得焦点")
+            # Select back to the start from the middle of the statement.
+            A.press_keys("Shift_L", "Home")
+        button = _execute_selected_button(page)
+        A.wait_enabled(button, 15)
+        A.click(button)
+        rows = ops.wait_query_done(page)
+        expect(rows == [["1", value]], "严格按选区边界执行", rows)
     finally:
         _close(frame)
