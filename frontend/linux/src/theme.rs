@@ -785,6 +785,14 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
            颜色（标签 dim）与分节间距，不再用 Medium / Semibold。 */
         .sqarvo-panel-text {{ font-size: {panel_font}px; font-weight: {fw_ui}; }}
 
+        .objects-filter {{
+            min-height: {objects_filter_height}px;
+            padding-top: 0;
+            padding-bottom: 0;
+            border-radius: {radius_sm}px;
+        }}
+        .objects-filter > image {{ -gtk-icon-size: {objects_filter_icon}px; }}
+
         /* 信息面板的 [DDL] / [表信息]（v0.2.3.3）：两个独立 toggle，选中态是贴着
            文字的**小圆角块，四个角都圆**。不用 `.linked` 分段容器：分段样式只圆外侧
            两个角、命中块比文字大一圈。命中区仍不小于 24（§11），缩的是内边距。 */
@@ -983,6 +991,8 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         column_header_min_height = m.column_header_min_height,
         frame_border_width = m.frame_border_width,
         radius_sm = m.radius_sm,
+        objects_filter_height = m.objects_filter_height,
+        objects_filter_icon = m.icon_box,
         radius_md = m.radius_md,
         pill_radius = m.pill_radius,
         objects_min_width = m.objects_min_width,

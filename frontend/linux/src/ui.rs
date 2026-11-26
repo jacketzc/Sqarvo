@@ -376,6 +376,7 @@ pub fn activate(app: &adw::Application) {
     app.set_accels_for_action("win.refresh", &["F5"]);
     // 对象搜索（§10）：Ctrl+F 聚焦树的搜索框。
     app.set_accels_for_action("win.focus-search", &["<primary>f"]);
+    app.set_accels_for_action("win.focus-objects-filter", &["<primary><shift>f"]);
     // 标签快捷键（§10）：Ctrl+T 新建查询标签、Ctrl+W 关闭当前标签。
     app.set_accels_for_action("win.new-tab", &["<primary>t"]);
     app.set_accels_for_action("win.close-tab", &["<primary>w"]);
@@ -5565,6 +5566,16 @@ fn install_window_actions(
         });
     }
 
+    let focus_objects_filter = gio::SimpleAction::new("focus-objects-filter", None);
+    {
+        let state = Rc::clone(state);
+        focus_objects_filter.connect_activate(move |_, _| {
+            if let Some(workspace) = state.workspace.borrow().as_ref() {
+                workspace.tabs.focus_objects_filter();
+            }
+        });
+    }
+
     let execute = gio::SimpleAction::new("execute", None);
     {
         let state = Rc::clone(state);
@@ -5762,6 +5773,7 @@ fn install_window_actions(
         &tab_prev,
         &toggle_sidebar,
         &focus_search,
+        &focus_objects_filter,
         &refresh,
         &execute,
         &cancel,

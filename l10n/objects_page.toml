@@ -52,8 +52,8 @@ status = "done"
 
 [[entry]]
 key = "objects_page.status_total"
-zh = "共 {total} 个对象{more_note}"
-en = "{total} objects{more_note}"
+zh = "显示 {matched} / {total} 个已加载对象{more_note}"
+en = "Showing {matched} of {total} loaded objects{more_note}"
 status = "done"
 
 [[entry]]
@@ -64,8 +64,8 @@ status = "done"
 
 [[entry]]
 key = "objects_page.status_empty"
-zh = "（这个库里没有这类对象）"
-en = "(No objects of this kind in this database)"
+zh = "（当前范围没有这类对象）"
+en = "(No objects of this kind in this scope)"
 status = "done"
 
 [[entry]]
@@ -114,4 +114,23 @@ status = "done"
 key = "objects_page.unavailable_queries_body"
 zh = "本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。"
 en = "This version has no \"saved queries\" layer: queries exist only inside open query tabs."
+status = "done"
+
+
+[[entry]]
+key = "objects_page.filter_placeholder"
+zh = "筛选对象…"
+en = "Filter objects..."
+status = "done"
+
+[[entry]]
+key = "objects_page.no_matches"
+zh = "已加载的对象中没有匹配项"
+en = "No matching loaded objects"
+status = "done"
+
+[[entry]]
+key = "objects_page.btn_retry"
+zh = "重试"
+en = "Retry"
 status = "done"

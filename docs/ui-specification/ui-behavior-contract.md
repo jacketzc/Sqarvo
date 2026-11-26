@@ -40,8 +40,7 @@
 
 ## 3. Objects 固定页
 
-已迁入组件注册表 → [`components/objects_page.toml`](components/objects_page.toml)（10 个组件：
-固定页签、三列表格、状态行、加载更多、空态）。
+已迁入组件注册表 → [`components/objects_page.toml`](components/objects_page.toml)（固定页签、检索框、三列表格、对象行菜单、状态行、分页与空态）。
 
 ## 4. 标签
 
@@ -80,8 +79,10 @@
 | 下一个标签 | `Ctrl+Tab` | 选中 `AdwTabView` 的下一个标签；最后一个再往后**回绕到第一个**（`Objects` 也在循环里）。`AdwTabView` 自带的同名快捷键已摘掉，只剩这一条路径 | `src/ui.rs:305`、`src/ui.rs:4535`、`src/tabs.rs:2004` |
 | 上一个标签 | `Ctrl+Shift+Tab` | 与上一行反向：第一个再往前回绕到最后一个 | `src/ui.rs:306`、`src/ui.rs:4544`、`src/tabs.rs:2004` |
 | 直选第 N 个标签 | `Alt+1`…`Alt+9` | 选中第 N 个标签（1 起，`Objects` 算第 1 个）；超出当前标签数时**什么都不做**（不弹框、不崩），只记一行 `[tabs] Alt+3：只有 2 个标签，忽略` | `src/ui.rs:307-309`、`src/ui.rs:4554-4566`、`src/tabs.rs:2024` |
-| 刷新当前表 / 对象树 | `F5` | 当前标签是表数据页 → 刷当前表（保持排序 / 筛选、回到第 1 页；脏行守卫照旧）；否则刷整棵对象树。**菜单里已不列「视图 → 刷新」**，只保留这条快捷键 | `src/ui.rs:296`、`src/ui.rs:2422-2457`、`src/ui.rs:4582` |
-| 聚焦对象搜索 | `Ctrl+F` | 工作区外壳中请求展开导航并聚焦对象树搜索框 | `src/ui.rs:298` |
+| 刷新当前表 / 对象树 | `F5` | 当前标签是表数据页 → 刷当前表（保持排序 / 筛选、回到第 1 页；脏行守卫照旧）；否则刷整棵对象树；Objects 活动时也刷新其当前范围。**菜单里已不列「视图 → 刷新」**，只保留这条快捷键 | `src/ui.rs:296`、`src/ui.rs:2422-2457`、`src/ui.rs:4582` |
+| 聚焦导航搜索 | `Ctrl+F` | 工作区外壳中请求展开导航并聚焦对象树搜索框 | `src/ui.rs`（`win.focus-search`） |
+| 聚焦 Objects 检索 | `Ctrl+Shift+F` | 固定 Objects 页活动时聚焦页内检索框 | `src/ui.rs`（`win.focus-objects-filter`） |
+| 清除 Objects 检索 | `Esc` | 检索框内清空关键词，保持输入焦点 | `src/tabs.rs::ObjectsPage::new` |
 | 导出当前标签 | `Ctrl+Shift+E` | CSV（表标签先选范围） | `src/ui.rs:329`、`src/ui.rs:4702` |
 | 执行 SQL | `Ctrl+Enter` | 有选区执行选区，无选区执行全文。快捷键、查询页按钮和编辑器上下文菜单遵循同一状态限制。见 `tabs.query.actions`、`tabs.query.editor`。 | `src/sql_page.rs`、`src/ui.rs`（`win.execute`） |
 | 取消查询 | `Esc` | 编辑器内生效；幂等（重复点不报错、不发 RPC）。**菜单「查询」整项不挂**，只保留快捷键与查询页按钮 | `src/sql_page.rs:239-245`、`src/sql_page.rs:308-325`、`src/ui.rs:4616`（`win.cancel`） |

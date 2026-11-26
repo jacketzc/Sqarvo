@@ -161,6 +161,8 @@
 | 表名 | Name | Objects 表头按列内容译；与「名称」同译 |
 | 行号 | Row | Objects / 数据网格第一列表头 |
 | 双击打开 | Double-click to open | Objects 行 tooltip 后缀 |
+| 筛选对象… | Filter objects... | Objects 固定页本地检索入口 |
+| 已加载的对象中没有匹配项 | No matching loaded objects | Objects 检索无匹配 |
 | 主键 | Primary Key | 表信息分节 |
 | 主键列 | Primary Key Columns | 表信息行标签 |
 | 无主键 | No Primary Key | 主键空态值 |

@@ -45,6 +45,7 @@ def resize(width, height):
 
 @pytest.mark.parametrize("connected", [False, True])
 def test_focus_and_navigation(ui_instance, connected):
+    """shell.layout, objects_page.filter: the fixed filter is reachable at the window minimum."""
     instance = ui_instance("layoutconn" if connected else "layoutbare")
     instance.start(autoconnect=connected, extra_args=("--window-size", "1220x750"))
     frame = instance.frame()
@@ -66,6 +67,14 @@ def test_focus_and_navigation(ui_instance, connected):
         for name in ("连接", "新建查询"):
             button = A.find_one(frame, role_in=("button",), name=name)
             ops.expect("showing" in A.states(button), f"{name}可达", A.states(button))
+        objects = A.find_one(frame, role_in=("grouping",), name="Objects")
+        search = A.find_one(objects, role_in=("entry", "text"), name="筛选对象…")
+        A.press_keys("Control_L", "Shift_L", "f")
+        A.wait_until(lambda: "focused" in A.states(search), 5, "最小窗口可聚焦 Objects 检索")
+        A.set_text(search, "narrow")
+        ops.expect(A.text_value(search) == "narrow", "最小窗口可输入检索词")
+        A.press_keys("Escape")
+        A.wait_until(lambda: A.text_value(search) == "", 5, "最小窗口可清空 Objects 检索")
         ops.expect(pressed(frame, nav), "导航仍可见", pressed(frame, nav))
         A.click(layout_button(frame, inspector))
         A.wait_until(lambda: pressed(frame, inspector) and not pressed(frame, nav),

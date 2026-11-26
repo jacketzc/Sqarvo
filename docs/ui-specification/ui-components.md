@@ -7,7 +7,7 @@
 
 前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：Linux Active、Windows Rewriting、macOS Planned。同步列仅显示 Active 平台。
 
-共 233 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 236 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。
@@ -1861,19 +1861,22 @@ kind `control` · status `active` · parent `object_tree.search`
 
 ## Objects 固定页（`objects_page`）
 
-工作区最左侧的固定页：标题「Objects」+ 三列表格（行号 · 表名 · 类型）+ 状态行 +「加载更多…」。列表内容由主动 Browse 命令改变作用域，页面自己发 ListNodes 并持有自己的分页 token；不新建会话、不反写树的选中。
+工作区最左侧的固定页：标题「Objects」、固定本地检索、三列表格、计数和分页。主动 Browse 决定连接、库、Schema 与分类；列表使用现有浏览会话并独立持有分页 token。
 
 | 组件 | 名称 | kind | 状态 | Linux |
 |---|---|---|---|---|
 | `objects_page` | Objects 固定页 | area | active | done |
 | `objects_page.tab` | 　固定页页签（pinned，无关闭按钮） | control | active | done |
+| `objects_page.filter` | 　Objects 检索框 | control | active | done |
 | `objects_page.table` | 　三列表格（行号 · 表名 · 类型） | container | active | done |
 | `objects_page.table.row` | 　　行模板（行号 · 图标 + 名称 · 类型） | row | active | done |
+| `objects_page.table.row.menu` | 　　　对象行菜单 | container | active | done |
+| `objects_page.table.row.menu.open` | 　　　　打开 | control | active | done |
 | `objects_page.table.row.number` | 　　　行号格 | cell | active | done |
 | `objects_page.table.row.name` | 　　　表名格（图标 + 名称） | cell | active | done |
 | `objects_page.table.row.kind` | 　　　类型格 | cell | active | done |
 | `objects_page.status` | 　状态行 | control | active | done |
-| `objects_page.more` | 　「加载更多…」 | control | active | done |
+| `objects_page.more` | 　「加载更多…」与「重试」 | control | active | done |
 | `objects_page.empty` | 　空态页 | control | active | done |
 
 ### `objects_page` Objects 固定页
@@ -1882,8 +1885,8 @@ kind `area` · status `active`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_xl`、`gap_md`
 - 无障碍：可访问名「Objects」
-- 同步：Linux done（§3 页面结构逐条对照 tabs.rs（ObjectsPage::new 的 root 只有 title + stack））
-- 实现备注：页内自上而下只有四件东西：标题「Objects」、三列表格、状态行、「加载更多…」；标题是静态标签（13 semibold，无交互），v0.2.3.3 起页面没有作用域说明行 —— 作用域只由列表内容表达。页面没有自己的数据库会话：列表读这条连接的浏览会话（MetadataHub），与标签会话无关；关掉标签也不会动它。启动态（未连接）用同一个 ObjectsPage 实现，只换空态文案（见 objects_page.empty）。页内距 12 / 元素间距 8（gap_xl / gap_md），与数据页不同：这里没有工具条。
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_filter_keeps_selection_and_scope_local：Objects 分组、检索和列表独立可达。test_10_layout.py::test_focus_and_navigation：最小窗口下可聚焦、输入、清除。）
+- 实现备注：页首为静态标题和右侧检索框，列表独立滚动，列表下方呈现分页和状态。页面没有自己的数据库会话：列表读这条连接的浏览会话（MetadataHub），与标签会话无关；关掉标签也不会动它。启动态（未连接）用同一个 ObjectsPage 实现，只换空态文案（见 objects_page.empty）。页内距和元素间距分别取 gap_xl 与 gap_md。
 
 ### `objects_page.tab` 固定页页签（pinned，无关闭按钮）
 
@@ -1892,15 +1895,33 @@ kind `control` · status `active` · parent `objects_page`
 - 样式：槽位 `workspace.tabstrip`；尺寸 `objects_min_width`、`tab_strip_height`
 - 无障碍：可访问名「Objects」；Tab 可聚焦；固定在标签条首位
 - 图标：`tab.objects`
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：服务失效后恢复同一 SQL 编辑器，Objects 单页使用重新连接并保留单例。）
-- 实现备注：固定页独立持有已确认的浏览范围和当前请求范围。普通标签激活和树的被动选择不会改动浏览范围。AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。启动态建的是同款固定页：startup.rs 自建 ObjectsPage 后同样 set_page_pinned(true)，并另装一个兜底 close-page 拦截（日志同一句）——两档的固定页语义与文案只有一份。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。重新进入 / F5 走 reload_objects：从第一页重查并递增 generation；当前请求范围服务分页与刷新，只有匹配的成功响应才能确认范围。空态或不支持页会清空范围，不恢复历史列表。同一作用域已有在飞请求时，树选中与重复「加载更多」都不叠加请求。
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_reentry_reuses_list_and_f5_refreshes_external_ddl：普通重入不请求，F5 读取外部 DDL。test_sql_editor_ddl_refreshes_objects_on_reentry：待刷新首页失败，重新进入发起一次重试。test_18_unbound_query.py：始终保留固定 Objects，未绑定草稿与会话额度规则通过隔离用例。）
+- 实现备注：固定页独立持有已确认的浏览范围和当前请求范围。普通标签激活和树的被动选择不会改动浏览范围。AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。握手后的启动态与连接态复用 TabSet 和同一固定页。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。重入保留有效列表、检索词与行选择。F5 和已知元数据失效才重读第一页。与当前代次匹配的成功首页响应确认范围。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 工作区建立 / 启动态落地 | 在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表 | `src/tabs.rs::TabSet::add_objects_page` |
-| click | 页签可见 | 切到本页：清掉行选中，并按当前有效作用域从第一页重新查询 ListNodes（重新进入即刷新）；保持原库与原对象种类，窗口标题 / 状态栏 / 工具条高亮按当前种类刷新 | `src/tabs.rs:2090、src/tabs.rs:2099` |
+| click | 页签可见 | 切回固定页，恢复原浏览范围、已有分页列表和检索词。范围已待刷新且没有在途请求时重读其第一页。固定页不可关闭或拖动。 | `src/tabs.rs::TabSet::enter_objects` |
 | key Ctrl+W | 当前页是 Objects | 拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框 | `src/tabs.rs:2674、src/tabs.rs:2686` |
 | click | 中键点页签，或任何程序化 close_page 请求（当前页是 Objects） | 与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论 | `src/tabs.rs:1393、src/tabs.rs:2684` |
+
+### `objects_page.filter` Objects 检索框
+
+kind `control` · status `active` · parent `objects_page`
+
+- 样式：槽位 `workspace.content`；尺寸 `objects_filter_width`、`objects_filter_min_width`、`objects_filter_max_width`、`objects_filter_height`、`radius_sm`、`icon_box`
+- 无障碍：可访问名「筛选对象…」；Tab 页首可聚焦，随后可进入列表
+- 原生控件：gtk:GtkSearchEntry
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_filter_keeps_selection_and_scope_local：输入、改词、程序化选中变化、清词的业务 RPC 增量均为零；方向键进入列表并保持当前页，Ctrl+F、Ctrl+Shift+F 分别聚焦导航和检索。test_objects_filter_is_not_restored_at_startup：同一配置重启检索词为空。test_10_layout.py::test_focus_and_navigation：最小窗口检索可用且 Ctrl+F 仍聚焦导航。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | Objects 固定页活动 | 页首右侧显示检索框，列表独立滚动。非空时提供原生清除入口。 | `src/tabs.rs::ObjectsPage::new` |
+| key 文本输入 | 输入、改词或删除关键词 | 按对象名称做不区分大小写的普通子串匹配。当前范围的所有已加载页应用同一条件，继承原序、保留源行和分页 token。过滤和由此产生的选中变化发出零业务 RPC，导航选择和其他工作区绑定保持原样。 | `src/tabs.rs::ObjectsPage::apply_filter` |
+| click | 检索词非空 | 原生清除入口恢复全部已加载行与原顺序，业务 RPC 增量为零。 | `src/tabs.rs::ObjectsPage::apply_filter` |
+| key Ctrl+Shift+F | Objects 固定页活动 | 聚焦检索框。Ctrl+F 继续聚焦导航搜索。 | `src/ui.rs（win.focus-objects-filter）` |
+| key Esc / ↓ | 检索框有焦点 | Esc 清词；有匹配行时按 ↓ 进入列表。输入框中的 Enter 不打开对象。 | `src/tabs.rs::ObjectsPage::new` |
+| load | 重入、重复 Browse、刷新、分页或布局改变 | 同一连接、库、Schema 和分类保留关键词；作用域变更、失效并清空或重启时清词。纯显示名称变化保留关键词。 | `src/tabs.rs::ObjectsPage::show、TabSet::browse_objects` |
 
 ### `objects_page.table` 三列表格（行号 · 表名 · 类型）
 
@@ -1910,7 +1931,7 @@ kind `container` · status `active` · parent `objects_page`
 - 无障碍：可访问名「对象列表」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
 - 原生控件：gtk:GtkColumnView
 - 自绘：WinUI 3 没有等价的列式表格控件：GridView 不支持「虚拟化 + 可拖列宽 + 行号列」三者组合，ItemsControl 的虚拟化不带列宽状态；这里按 Linux 同口径自绘虚拟化三列表格（§7.1）。
-- 同步：Linux done（test_15_refresh_regressions.py::test_objects_scope_survives_connection_selection：只选连接保留范围与数据。test_15_refresh_regressions.py::test_navigation_selection_survives_projection_without_requests：模型恢复不发被动 RPC。test_16_workspace_context.py::test_navigation_target_and_clear_selection：分类操作使用 Peer。）
+- 同步：Linux done（test_15_refresh_regressions.py：同范围重入和只选连接保持列表；F5、应用内 DDL、部分失败脚本、事务提交和回滚各触发一次适用的首页请求。test_16_workspace_context.py：A 的 DDL 不刷新 B 的列表，范围失效后不改投其它库。）
 - 实现备注：GtkColumnView + GtkSingleSelection：autoselect(false)、can_unselect(true) —— 进页不自动选中首行，选中是用户的动作、也是信息面板的输入。列序固定「行号 → 表名 → 类型」，set_reorderable(false)：拖不乱；表头文本就是这三个词，单行。行号列 fixed_width 取 row_number_width 且 resizable(false)（不可拖）；表名列 expand + 可拖，初值 column_width；「类型」列 fixed_width 120 是代码常量 OBJECTS_KIND_COLUMN_WIDTH，未进 metrics.toml（P1 补齐）。行高 row_height_data，行 / 列分隔线由 GTK 画（颜色同源 @sqarvo_separator）；外框挂在 ScrolledWindow 上（.sqarvo-table-frame：frame_border_width + radius_md，overflow hidden 裁首末行底色），行与单元格不加整线。横竖滚动条常驻可见（overlay_scrolling(false)）：把「表名」拖宽后仍能滚回行号列。换密度档时只重设行号 / 表名两列宽度（reapply_tier），不重建列表、不重发请求。整个表格与数据网格逐像素同口径：行高、表头高度、悬停 / 选中底色、外框都是同一组选择器（theme.stylesheet 里 .sqarvo-grid 与 .sqarvo-objects 并列）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1921,9 +1942,9 @@ kind `container` · status `active` · parent `objects_page`
 | load | 单击 Views 分组正文，或主动点击 Views 入口 | 列出该库的视图（[VIEW, MATERIALIZED_VIEW]） | `src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366` |
 | load | 主动单击 Functions / Queries 分组正文或对应工具条入口 | 不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token | `src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984` |
 | load | 只选择连接、具体对象、辅助行或显式清除选择 | 维持已有的 Objects 浏览范围。单纯选择、程序化定位或重建不派发列表请求 | `src/ui.rs:1377、src/tabs.rs:1016` |
-| load | 重复主动浏览已加载的同一个库或 Schema 及分类 | 不重发 ListNodes：行保留、列表不闪；只清掉行高亮（高亮属于上一次浏览） | `src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050` |
-| load | 从别的标签切回本页 | 清掉行选中，并按当前有效作用域从第一页重新查询列表；右侧信息面板按当前标签目标更新，不复用上一次进入时的列表 | `src/tabs.rs:2090、src/tabs.rs:2099` |
-| key F5 | 当前页是 Objects | 强制重新查询当前作用域第一页；保留对象树刷新职责，旧分页响应按 generation 丢弃，树事件不会因同作用域在飞请求再发一份 | `src/ui.rs:2846、src/tabs.rs:2099` |
+| load | 重复主动浏览已加载的同一个库或 Schema 及分类 | 有效范围沿用已加载行、检索词与选中项。在途的相同请求不会叠加。 | `src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050` |
+| load | 从别的标签切回本页 | 保留有效列表与检索。非结果集 SQL（含提交、回滚）或已执行部分语句的失败脚本可能使同连接的元数据失效。重新进入时请求该范围的首页，在途时复用，成功后清除待刷新标记。右侧信息面板仍按现有工作区和导航契约更新。 | `src/tabs.rs::TabSet::enter_objects、TabSet::route_query` |
+| key F5 | 当前页是 Objects | 强制重查当前范围第一页并保留检索词。成功后替换数据；旧分页响应按请求代次丢弃。对象树与 Inspector 沿用 F5 原有刷新路径。 | `src/ui.rs::Workspace::refresh、src/tabs.rs::ObjectsPage::reload` |
 
 ### `objects_page.table.row` 行模板（行号 · 图标 + 名称 · 类型）
 
@@ -1931,14 +1952,37 @@ kind `row` · status `active` · parent `objects_page.table`
 
 - 样式：槽位 `workspace.content`；尺寸 `row_height_data`、`gap_sm`、`gap_md`、`icon_box`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「（行内容：行号 + 对象名 + 种类）」
-- 同步：Linux done（§3 单击行 / 双击回车行 + theme.stylesheet 的行状态规则）
+- 同步：Linux done（test_15_refresh_regressions.py：主动选择触发正确 Inspector DDL；过滤导致选中位移或消失的请求增量为零；双击打开匹配资源。）
 - 实现备注：hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid，与对象树行、数据网格行同一条规则（三个选择器并列，选中在前、hover 在后靠顺序让中档赢）。行只由可见行创建控件（GtkColumnView 虚拟化），几百行也不卡主线程；模型里只放数据。单元格上下内距归零，行高才落在 row_height_data（否则「图标 + 名称」的格子会被 Adwaita 撑到 35）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行存在 | 只选中：进入选中态并同步右侧信息面板；不反写树的选中（会形成回环并跳走浏览位置），不打开、不发请求 | `src/tabs.rs:917、src/tabs.rs:1011` |
-| double_click | 行存在 | 打开表数据标签（GtkColumnView::activate → 与树双击同一条 open_table；同一张表复用已有标签，不新建会话、不重载数据） | `src/tabs.rs:938、src/tabs.rs:1824` |
+| click | 行存在 | 用户选中可沿用 Inspector 预览请求；导航选择和当前范围保持。投影变动后的行位置只用于定位可见行，预览使用行的完整资源引用。 | `src/tabs.rs:917、src/tabs.rs:1011` |
+| double_click | 行存在 | 使用命中可见行的完整资源身份打开或复用数据标签（GtkColumnView::activate → open_table）。 | `src/tabs.rs:938、src/tabs.rs:1824` |
 | hover | 行存在 | 底色换成品牌浅档（alpha 55%），前景不动；已选中的行 hover 仍是中档，不会退回系统强调色 | `src/theme.rs:314` |
+
+### `objects_page.table.row.menu` 对象行菜单
+
+kind `container` · status `active` · parent `objects_page.table.row`
+
+- 无障碍：可访问名「（对象行的操作菜单）」
+- 原生控件：gtk:GtkPopoverMenu
+- 同步：Linux done（tests/ui/linux/test_15_refresh_regressions.py::test_objects_filter_keeps_selection_and_scope_local：鼠标右键定位已过滤行，打开菜单后改词仍使用此前捕获的资源。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| right_click | 可见对象行 | 捕获点击行的对象引用和作用域请求代次，打开对象菜单。 | `src/tabs.rs::ObjectsPage::open_row_menu` |
+
+### `objects_page.table.row.menu.open` 打开
+
+kind `control` · status `active` · parent `objects_page.table.row.menu`
+
+- 无障碍：可访问名「打开」
+- 同步：Linux done（tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：过滤后右键打开 A 的同名资源、双击打开 B 的同名资源。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 对象菜单打开 | 沿用数据标签打开命令，使用菜单打开时捕获的对象身份。浏览范围或请求代次失效后旧菜单动作失效。 | `src/tabs.rs::ObjectsPage::open_row_menu、TabSet::open_table` |
 
 ### `objects_page.table.row.number` 行号格
 
@@ -1977,30 +2021,30 @@ kind `control` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `font_status`、`gap_sm`
 - 无障碍：可访问名「对象列表状态」
-- 同步：Linux done（GTK objects_pagination_preserves_retry_and_discards_stale_responses 分别验证首页与续页错误）
-- 实现备注：单行 Label，可换行（set_wrap(true)），dim-label + caption，左对齐；v0.2.4 起在「加载更多…」下方。「共 N 个对象」的 N 是**已加载行数**，不是服务端 total_size —— 协议只给「还有更多」，页面不编造总数。五种状态互斥且都有文案：读取中 / 有结果 / 空结果 / 读取失败 / 没有浏览会话；状态行与空态页也不共存（空态时状态行清空）。
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_filter_manual_pagination_and_retry：首批 0 / 500、锁定失败后保留 500 行、重试后 1 / 514。test_sql_editor_ddl_refreshes_objects_on_reentry：待刷新首页失败后检索零请求；重新进入时重试并保留关键词。）
+- 实现备注：分页下方显示已加载计数与列表状态。未匹配提示只说明已加载集合，分页在途或失败时仍保留有效计数。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 作用域已变、请求在飞 | 写「正在读取…」（首次首页与「加载更多…」续页都写这一句） | `src/tabs.rs:1070、src/tabs.rs:1083` |
-| load | 首页或续页返回、有行 | 写「共 N 个对象」；还有下一页时追加「（还有更多）」 | `src/tabs.rs:1131` |
-| load | 请求成功但 0 条（本页与累计都是空） | 写「（这个库里没有这类对象）」 | `src/tabs.rs:1135、src/tabs.rs:1136` |
-| load | 请求失败 | 写「读取失败：<headline>（<code>）」。首页失败可刷新或重入恢复。续页失败保留已加载的行与分页 token，恢复「加载更多…」供手动重试 | `src/tabs.rs::ObjectsPage::finish_page` |
+| load | 首页或续页返回、有行 | 显示「显示 X / Y 个已加载对象」；X 是匹配数，Y 是已加载数。有分页 token 时显示「（还有更多）」。关键词非空且 X 为零时显示「已加载的对象中没有匹配项」。 | `src/tabs.rs:1131` |
+| load | 请求成功但 0 条（本页与累计都是空） | 累计无行且没有更多页时显示「（当前范围没有这类对象）」。 | `src/tabs.rs:1135、src/tabs.rs:1136` |
+| load | 请求失败 | 显示「读取失败：<headline>（<code>）」和「重试」。保留已有行。分页失败使用原 token 重试；已加载列表的首页刷新失败后保留待刷新状态，可点击「重试」，也可离开后重新进入。检索输入仍只投影已有行。 | `src/tabs.rs::ObjectsPage::finish_page` |
 | load | 该连接没有浏览会话（展开连接前 / 已断开） | 写「这条连接没有浏览会话：展开连接后重试」，不发请求 | `src/tabs.rs:1065、src/tabs.rs:1067` |
 
-### `objects_page.more` 「加载更多…」
+### `objects_page.more` 「加载更多…」与「重试」
 
 kind `control` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `min_target`、`font_ui`、`gap_sm`
 - 无障碍：可访问名「加载更多」
-- 同步：Linux done（GTK objects_pagination_preserves_retry_and_discards_stale_responses 断言在途只提交一次、失败后重试及迟到响应隔离）
-- 实现备注：扁平按钮、左对齐、无图标；默认隐藏，只有服务端给了下一页 token 才出现。分页是「接着取」而不是翻页：新行接在现有行后面，不跳页、不清已加载行、不改变滚动位置以外的状态。
+- 同步：Linux done（test_15_refresh_regressions.py::test_objects_filter_manual_pagination_and_retry：无匹配仍可手动分页、失败保留数据和重试、重试只产生一个分页 RPC。隔离 GTK objects_pagination_preserves_retry_and_discards_stale_responses 验证失败后 token 保留且范围和会话的旧响应均丢弃。）
+- 实现备注：默认隐藏。有下一页 token 时显示「加载更多…」，请求失败时显示「重试」。分页是「接着取」而不是翻页：新行接在现有行后面，不跳页、不清已加载行、不改变滚动位置以外的状态。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 按钮可见（还有下一页） | 按当前作用域及分页 token 继续拉下一页，成功后追加到列表。在途时显示「正在读取…」，同一 token 只提交一次 | `src/tabs.rs::ObjectsPage::load` |
-| load | 首页或续页返回 | 有下一页时显示「加载更多…」。续页失败保留按钮与 token。首页失败、空结果和空态隐藏此按钮 | `src/tabs.rs::ObjectsPage::finish_page` |
+| click | 按钮可见（还有下一页） | 按当前范围和分页 token 读取下一页或重试失败页。续页成功后应用当前过滤并追加。在途同一 token 只提交一次。即使没有匹配，仍可使用适用的分页或重试入口。 | `src/tabs.rs::ObjectsPage::load` |
+| load | 首页或续页返回 | 成功时按是否还有下一页显示或隐藏；失败时保留重试入口。后到的旧范围或旧代次响应不更新当前列表。 | `src/tabs.rs::ObjectsPage::finish_page` |
 
 ### `objects_page.empty` 空态页
 
@@ -2008,12 +2052,12 @@ kind `control` · status `active` · parent `objects_page`
 
 - 样式：槽位 `workspace.content`；尺寸 `font_title`、`font_panel`
 - 无障碍：可访问名「对象列表空态」
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：启动态与只保留 Objects 的恢复；tests/ui/linux/results/run.3jtK5EPM/report.json S1 的 Objects 导航与独立作用域。）
+- 同步：Linux done（test_01_startup.py：握手后的空态工作区。test_16_workspace_context.py::test_navigation_target_and_clear_selection：浏览会话断开后清词并回到空态，不读取其它连接。）
 - 实现备注：adw::StatusPage，与「列表 + 状态行」在同一个 GtkStack 里互斥：要么列表，要么空态页，不存在半截。启动态与连接态是同一份实现，只换文案（set_empty_text 改的是默认文案）；未实现说明是临时文案，回到空态时恢复默认值，不残留。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 连接态、树里没有可用作用域（选中连接 / 占位行） | 标题「没有选中对象」，说明「在左侧对象树里选中一个库（或它下面的 Tables / Views），这里会列出该库的表或视图。」 | `src/tabs.rs:854、src/tabs.rs:1016` |
+| load | 没有已浏览范围，或其浏览会话已断开 | 标题「没有选中对象」，引导选择一个库或分类。仅选中连接或辅助行会保留已有效浏览范围；范围失效时清空关键词和旧数据。 | `src/tabs.rs::ObjectsPage::show_empty、TabSet::clear_objects_for_session` |
 | load | 启动态（未连接） | 标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」 | `src/tabs.rs::TabSet::set_initial_objects_hint、src/ui.rs::show_startup_workspace` |
 | load | 树里选中 Functions 分组 | 标题「函数列表尚未实现」，说明「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；列表与分页 token 一并清空 | `src/tabs.rs:520、src/tabs.rs:984` |
 | load | 树里选中 Queries 分组 | 标题「已保存的查询尚未实现」，说明「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」 | `src/tabs.rs:524、src/tabs.rs:984` |

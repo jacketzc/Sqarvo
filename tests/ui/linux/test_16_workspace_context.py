@@ -17,7 +17,9 @@ def test_navigation_target_and_clear_selection(ui_instance):
     shell.menu.new_tab, shell.toolbar.new_query, shell.toolbar.tables, shell.toolbar.views,
     shell.title, tabs.strip.tab.query, object_tree.ctx_menu, object_tree.ctx_menu.disconnect,
     object_tree.ctx_menu.delete_connection, object_tree.hint,
-    objects_page.table, inspector.connection, tabs.strip.tab.table, object_tree.tree.row.object,
+    objects_page.table, objects_page.filter, objects_page.table.row, objects_page.empty,
+    objects_page.table.row.menu, objects_page.table.row.menu.open,
+    inspector.connection, tabs.strip.tab.table, object_tree.tree.row.object,
     object_tree.ctx_menu.open, object_tree.ctx_menu.edit_connection.confirm.
     """
     inst = ui_instance("workspace_context")
@@ -136,6 +138,78 @@ def test_navigation_target_and_clear_selection(ui_instance):
         expect(inst.log_text().count("新建表标签") == 2, "同名表按档案区分为两个工作区")
         A.window_action(frame, "win.tab-2")
 
+    with step("objects_filter_never_crosses_profile_or_category"):
+        def objects():
+            return A.find_one(frame, role_in=("grouping",), name="Objects", timeout=10)
+
+        def filter_entry():
+            return A.find_one(objects(), role_in=("entry", "text"), name="筛选对象…", timeout=10)
+
+        def filtered_order():
+            A.set_text(filter_entry(), "OrDeRs")
+            return A.find_one(objects(), role_in=("label",), name="orders", timeout=10)
+
+        select_row("main", "库")
+        connect_calls = inst.log_text().count("[qa.rpc] dispatch Connect")
+        browse("Tables", "peer_only")
+        expect(inst.log_text().count("[qa.rpc] dispatch Connect") == connect_calls,
+               "Objects 使用既有浏览会话")
+        A.mouse_click(filtered_order(), count=2)
+        A.wait_until(lambda: A.nm(frame) == "orders @ Peer — Sqarvo", 10,
+                     "过滤后双击使用 B 的同名对象")
+        A.window_action(frame, "win.tab-1")
+        expect(A.text_value(filter_entry()) == "OrDeRs", "返回 B 保留检索词")
+        browse("Views", "peer_view")
+        expect(A.text_value(filter_entry()) == "", "同连接分类切换清词")
+        browse("Tables", "peer_only")
+        filtered_order()
+        with step("ddl_in_a_does_not_invalidate_b"):
+            before = inst.log_text().count("[qa.metadata] submit objects.nodes ")
+            A.window_action(frame, "win.tab-2")
+            sql = "CREATE TABLE primary_only_ddl(id INTEGER)"
+            ops.write_sql(first, sql)
+            ops.execute_sql(first)
+            ops.switch_results_tab(first, "消息")
+            A.wait_until(lambda: sql in ops.messages_log_text(first)
+                         and "> Query Time:" in ops.messages_log_text(first),
+                         20, "A 的 DDL 已完成")
+            with sqlite3.connect(inst.db.as_uri() + "?mode=ro", uri=True) as con:
+                expect(con.execute("SELECT 1 FROM sqlite_master WHERE name='primary_only_ddl'")
+                       .fetchone() == (1,), "独立连接确认 A 的结构已提交")
+            A.window_action(frame, "win.tab-1")
+            expect(A.text_value(filter_entry()) == "OrDeRs", "B 保留检索词")
+            A.find_one(objects(), role_in=("label",), name="orders", timeout=10)
+            expect(inst.log_text().count("[qa.metadata] submit objects.nodes ") == before,
+                   "A 的 DDL 不触发 B 的列表刷新")
+        ops.expand_tree_row(ops.find_row(frame, "Peer", "已连接", timeout=10))
+        A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "折叠 B 以定位 A")
+        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
+        select_row("main", "库")
+        browse("Tables", "widgets")
+        expect(A.text_value(filter_entry()) == "", "同名数据库和分类换连接清词")
+        expect(not A.query(objects(), role_in=("label",), name="peer_only"),
+               "B 的独有对象不出现在 A")
+        A.mouse_click(filtered_order(), button=3)
+        menu = A.wait_until(lambda: next(
+            (menu for menu in A.query(objects(), role_in=("menu",))
+             if "ctx.open-object" in A.action_names(menu)), None), 10, "Objects 右键菜单")
+        A.window_action(menu, "ctx.open-object")
+        A.wait_until(lambda: A.nm(frame) == "orders @ uitest.db — Sqarvo", 10,
+                     "过滤后右键使用 A 的同名对象")
+        expect(inst.log_text().count("新建表标签") == 2, "两个精确身份分别复用已有工作区")
+        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
+        A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "恢复 B 树视图前折叠 A")
+        ops.expand_tree_row(ops.find_row(frame, "Peer", "已连接", timeout=10))
+        main = select_row("main", "库")
+        browse("Tables", "peer_only")
+        if ops.find_row(frame, exact_name="Tables") is None:
+            ops.expand_tree_row(main)
+        if ops.find_row(frame, "orders", "表") is None:
+            ops.expand_tree_row(ops.find_row(frame, exact_name="Tables", timeout=10))
+        ops.find_row(frame, "orders", "表", timeout=10)
+        filtered_order()
+        A.window_action(frame, "win.tab-2")
+
     with step("menu_keeps_its_target_and_rejects_renamed_row"):
         menu = capture_tree_menu("ctx.open-object", "orders", "表")
         primary = ops.find_row(frame, "uitest.db", "已连接", timeout=10)
@@ -181,6 +255,13 @@ def test_navigation_target_and_clear_selection(ui_instance):
         A.click(A.find_one(dialog, role_in=("button",), name="断开连接"))
         A.wait_until(lambda: "连接「Peer」的浏览会话已断开" in inst.log_text(),
                      15, "B 的浏览会话已断开")
+        before_objects = inst.log_text().count("[qa.metadata] submit objects.nodes ")
+        A.window_action(frame, "win.tab-1")
+        A.find_one(objects(), role_in=("label",), name="没有选中对象", timeout=10)
+        expect(A.text_value(filter_entry()) == "", "范围失效清空检索词")
+        expect(inst.log_text().count("[qa.metadata] submit objects.nodes ") == before_objects,
+               "B 的范围失效后不改投 A")
+        A.window_action(frame, "win.tab-2")
         before = ops.query_tab_names(frame)
         ops.open_query_page_via_action(frame)
         A.find_one(frame, role_in=("label",), name="所选资源已不可用，请重新选择或清除选择。",

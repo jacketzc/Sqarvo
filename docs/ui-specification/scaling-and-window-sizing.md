@@ -130,6 +130,10 @@ GTK 的逻辑坐标：
 `gap_xs`、`radius_sm`、`tree_arrow_box`、
 `navigation_arrow_icon`、`status_dot_diameter`。箭头命中尺寸遵循 `min_target`。
 
+Objects 页首检索使用 `objects_filter_width`、`objects_filter_min_width`、
+`objects_filter_max_width` 与 `objects_filter_height`。原生布局在宽度不足时可收缩检索框；
+圆角和图标沿用 `radius_sm` 与 `icon_box`。
+
 三档之外不许新增档位；要新增必须先满足上表并回填 `metrics.toml`。
 
 ## 4. 字号（C 轴）的处理

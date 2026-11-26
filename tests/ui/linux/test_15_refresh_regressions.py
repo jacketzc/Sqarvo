@@ -56,10 +56,16 @@ def _select_tree_row(frame, *labels) -> None:
 
 
 def _browse_tables(frame):
+    def label():
+        return A.find_one(ops.find_row(frame, exact_name="Tables", timeout=15),
+                          role_in=("label",), name="Tables")
+
+    # Exercise the command even when the fixed page is already active or empty.
+    A.mouse_click(label(), horizontal_fraction=0.2)
     ops.click_tree_until(
-        lambda: A.find_one(ops.find_row(frame, exact_name="Tables", timeout=15),
-                           role_in=("label",), name="Tables"),
-        lambda: A.query(frame, role_in=("grouping",), name="Objects"),
+        label,
+        lambda: A.query(frame, role_in=("grouping",), name="Objects")
+        and "selected" in A.states(ops.find_row(frame, exact_name="Tables")),
         what="分类正文单击进入固定 Objects")
 
 
@@ -96,7 +102,7 @@ def _wait_list_loaded(inst: UiInstance) -> None:
         if _objects_grid(inst.frame()) is None:
             return None
         texts = _status_texts(_objects_page(inst.frame()))
-        if not any(text.startswith("共 ") for text in texts):
+        if not any("个已加载对象" in text for text in texts):
             return None
         if any("正在读取" in text or "读取失败" in text for text in texts):
             return None
@@ -124,49 +130,32 @@ def _external_ddl(inst: UiInstance, statement: str) -> None:
         con.close()
 
 
-def test_objects_list_refreshes_on_reentry_and_f5(ui_instance):
-    """外部 DDL 改结构后切回 Objects 见最新列表；DROP 后确认最终加载成功再断言。"""
+def test_objects_reentry_reuses_list_and_f5_refreshes_external_ddl(ui_instance):
+    """objects_page.tab, objects_page.table: reentry reuses rows; F5 sees external DDL."""
     inst = _start(ui_instance, "obj_reload")
-    with step("initial_list"):
-        _wait_list_loaded(inst)
-        expect("widgets" in _objects_labels(inst.frame()),
-               "初始列表含 widgets", _objects_labels(inst.frame()))
-        before = _submit_count(inst, "objects.nodes")
-
-    with step("create_and_reenter"):
-        _external_ddl(inst, "CREATE TABLE fresh_table(id INTEGER)")
+    _wait_list_loaded(inst)
+    frame = inst.frame()
+    before = _submit_count(inst, "objects.nodes")
+    with step("ordinary_reentry"):
         _sql_tab_roundtrip(inst)
-        _expect_submit(inst, "objects.nodes", before + 1)
-        expect("fresh_table" in _objects_labels(inst.frame()),
-               "切回 Objects 后看到新建表", _objects_labels(inst.frame()))
+        _expect_submit(inst, "objects.nodes", before)
+        expect("widgets" in _objects_labels(frame), "普通重入保留已有对象")
 
-    with step("rename_and_reenter"):
-        count = _submit_count(inst, "objects.nodes")
-        _external_ddl(inst, "ALTER TABLE fresh_table RENAME TO renamed_table")
-        _sql_tab_roundtrip(inst)
-        _expect_submit(inst, "objects.nodes", count + 1)
-        labels = _objects_labels(inst.frame())
-        expect("renamed_table" in labels and "fresh_table" not in labels,
-               "重命名后新旧表名正确更新", labels)
-
-    with step("drop_and_reenter"):
-        count = _submit_count(inst, "objects.nodes")
-        _external_ddl(inst, "DROP TABLE renamed_table")
-        _sql_tab_roundtrip(inst)
-        _expect_submit(inst, "objects.nodes", count + 1)
-        _wait_list_loaded(inst)
-        labels = _objects_labels(inst.frame())
-        expect("renamed_table" not in labels, "DROP 的表消失", labels)
-        expect("widgets" in labels and "widgets_empty" in labels,
-               "其它表仍在（列表成功加载而非空态）", labels)
-
-    with step("f5_force_reload"):
-        count = _submit_count(inst, "objects.nodes")
-        _tab_action(inst.frame(), "win.refresh")
-        _wait_list_loaded(inst)
-        _expect_submit(inst, "objects.nodes", count + 1)
-        expect("widgets" in _objects_labels(inst.frame()),
-               "F5 后列表保持当前作用域", _objects_labels(inst.frame()))
+    for sql, present, absent in (
+        ("CREATE TABLE fresh_table(id INTEGER)", "fresh_table", None),
+        ("ALTER TABLE fresh_table RENAME TO renamed_table", "renamed_table", "fresh_table"),
+        ("DROP TABLE renamed_table", None, "renamed_table"),
+    ):
+        with step(sql):
+            _external_ddl(inst, sql)
+            before = _submit_count(inst, "objects.nodes")
+            _tab_action(frame, "win.refresh")
+            _wait_list_loaded(inst)
+            labels = _objects_labels(frame)
+            expect("widgets" in labels and (present is None or present in labels)
+                   and (absent is None or absent not in labels),
+                   "显式刷新反映外部 DDL 并保留其它表", labels)
+            _expect_submit(inst, "objects.nodes", before + 1)
 
 
 def test_sql_editor_ddl_refreshes_objects_on_reentry(ui_instance):
@@ -220,6 +209,84 @@ def test_sql_editor_ddl_refreshes_objects_on_reentry(ui_instance):
             _expect_submit(inst, "objects.nodes", before["objects.nodes"] + 1)
             _expect_submit(inst, "nodes", before["nodes"])
 
+    for action, exists in (("COMMIT", True), ("ROLLBACK", False)):
+        name = f"txn_{action.lower()}_ddl"
+        for sql, marker, visible in ((f"BEGIN; CREATE TABLE {name}(id INTEGER);", name, False),
+                                     (f"{action};", action, exists)):
+            with step(sql):
+                _tab_action(frame, "win.tab-2")
+                page = ops.active_query_page(frame, ops.query_tab_names(frame)[-1])
+                ops.write_sql(page, sql)
+                before = _submit_count(inst, "objects.nodes")
+                ops.execute_sql(page)
+                ops.switch_results_tab(page, "消息")
+                A.wait_until(lambda: marker in ops.messages_log_text(page)
+                             and "> Query Time:" in ops.messages_log_text(page),
+                             20, "当前事务 SQL 已完成")
+                ops.switch_results_tab(page, "摘要")
+                expect(ops.summary_pairs(page).get("失败") == "0", "事务 SQL 无错误")
+                with sqlite3.connect(inst.db.as_uri() + "?mode=ro", uri=True) as con:
+                    found = con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name = ?", (name,)).fetchone()
+                expect(bool(found) == visible, "独立浏览会话只看到已提交结构", found)
+                _tab_action(frame, "win.tab-1")
+                _wait_list_loaded(inst)
+                _expect_submit(inst, "objects.nodes", before + 1)
+                expect((name in _objects_labels(frame)) == visible,
+                       "Objects 与事务后的真实结构一致", _objects_labels(frame))
+
+    with step("completed_ddl_is_visible_after_later_script_statement_fails"):
+        _tab_action(frame, "win.tab-2")
+        page = ops.active_query_page(frame, ops.query_tab_names(frame)[-1])
+        ops.write_sql(page, "CREATE TABLE partially_applied(id INTEGER); SELECT * FROM missing_table;")
+        before = _metadata_counts(inst)
+        ops.execute_sql(page)
+        ops.switch_results_tab(page, "摘要")
+        A.wait_until(lambda: ops.summary_pairs(page).get("失败") == "1",
+                     20, "脚本后续语句失败")
+        with sqlite3.connect(inst.db.as_uri() + "?mode=ro", uri=True) as con:
+            expect(con.execute("SELECT name FROM sqlite_master WHERE name='partially_applied'")
+                   .fetchone() == ("partially_applied",), "失败之前的 DDL 已提交")
+        _tab_action(frame, "win.tab-1")
+        A.find_one(_objects_page(frame), role_in=("label",), name="partially_applied", timeout=15)
+        _wait_list_loaded(inst)
+        _expect_submit(inst, "objects.nodes", before["objects.nodes"] + 1)
+        _expect_submit(inst, "nodes", before["nodes"])
+
+
+    with step("invalidated_first_page_failure_remains_pending"):
+        _tab_action(frame, "win.tab-2")
+        page = ops.active_query_page(frame, ops.query_tab_names(frame)[-1])
+        sql = "CREATE TABLE pending_refresh_ddl(id INTEGER)"
+        ops.write_sql(page, sql)
+        ops.execute_sql(page)
+        ops.switch_results_tab(page, "消息")
+        A.wait_until(lambda: sql in ops.messages_log_text(page)
+                     and "> Query Time:" in ops.messages_log_text(page),
+                     20, "应用内 DDL 已完成")
+        before = _submit_count(inst, "objects.nodes")
+        with sqlite3.connect(inst.db) as lock:
+            lock.execute("BEGIN EXCLUSIVE")
+            _tab_action(frame, "win.tab-1")
+            objects = _objects_page(frame)
+            A.find_one(objects, role_in=("button",), name="重试", timeout=20)
+            _expect_submit(inst, "objects.nodes", before + 1)
+            expect(original <= set(_objects_labels(frame)), "首页刷新失败保留原对象")
+            rpc = _rpc_counts(inst)
+            A.set_text(_objects_filter(frame), "PENDING_REFRESH")
+            A.find_one(objects, role_in=("label",),
+                       name="已加载的对象中没有匹配项", timeout=10)
+            _expect_filter_rpc(inst, rpc, "待刷新首页失败后输入")
+        _tab_action(frame, "win.tab-2")
+        _tab_action(frame, "win.tab-1")
+        _wait_list_loaded(inst)
+        _expect_submit(inst, "objects.nodes", before + 2)
+        A.find_one(_objects_page(frame), role_in=("label",), name="pending_refresh_ddl", timeout=10)
+        expect(A.text_value(_objects_filter(frame)) == "PENDING_REFRESH", "刷新成功仍保留词")
+        _tab_action(frame, "win.tab-2")
+        _tab_action(frame, "win.tab-1")
+        _expect_submit(inst, "objects.nodes", before + 2)
+
 
 def test_objects_row_selection_does_not_reload(ui_instance):
     """objects_page.table.row: 单选一行，确认 Inspector 跟随且列表不重查。"""
@@ -243,6 +310,212 @@ def test_objects_row_selection_does_not_reload(ui_instance):
         _expect_submit(inst, "ddl", before["ddl"] + 1)
 
 
+def _objects_filter(frame):
+    return A.find_one(_objects_page(frame), role_in=("entry", "text"), name="筛选对象…")
+
+
+def _rpc_counts(inst):
+    log = inst.log_text()
+    return (log.count("[qa.rpc] dispatch"), log.count("[qa.metadata] submit"))
+
+
+def _expect_filter_rpc(inst, before, phase):
+    delta = tuple(after - old for after, old in zip(_rpc_counts(inst), before))
+    expect(delta == (0, 0), f"{phase} RPC 与元数据提交增量 = (0, 0)", delta)
+    print(f"Objects {phase}: dispatch={delta[0]} metadata={delta[1]}")
+
+
+def test_objects_filter_keeps_selection_and_scope_local(ui_instance):
+    """objects_page, objects_page.filter, objects_page.tab, objects_page.table.row,
+    objects_page.table.row.menu, objects_page.table.row.menu.open: A09.1–4, A09.6, A13.5.
+    """
+    inst = _start(ui_instance, "obj_filter")
+    frame = inst.frame()
+    _wait_list_loaded(inst)
+    entry = _objects_filter(frame)
+    original = _objects_labels(frame)
+    panel = _inspector(frame)
+    navigation = A.find_one(frame, role_in=("grouping",), name="导航")
+    selected_tree = ops.find_row(navigation, exact_name="Tables", timeout=10)
+    expect("selected" in A.states(selected_tree), "保留当前导航分类")
+
+    def row(name):
+        return next((row for row in A.query(_objects_grid(frame), role_in=("table row",))
+                     if name in A.nm(row).split()), None)
+
+    with step("input_then_shift_selected_row_without_rpc"):
+        before = _rpc_counts(inst)
+        A.press_keys("Control_L", "Shift_L", "f")
+        A.wait_until(lambda: "focused" in A.states(entry), 5, "Ctrl+Shift+F 聚焦检索")
+        A.set_text(entry, "WiDgEtS")
+        A.find_one(_objects_page(frame), role_in=("label",), name="显示 2 / 3 个已加载对象", timeout=10)
+        _expect_filter_rpc(inst, before, "输入")
+
+        selected = A.wait_until(lambda: row("widgets_empty"), 10, "可选择已过滤对象")
+        _select_row(selected.get_parent(), selected)
+        A.wait_until(lambda: "widgets_empty" in _status_texts(panel)
+                     and any("CREATE TABLE widgets_empty" in A.text_value(control)
+                             for control in A.query(panel, role_in=("text",))),
+                     15, "主动选择显示准确 DDL")
+        before = _rpc_counts(inst)
+        A.set_text(entry, "_EmPtY")
+        A.find_one(_objects_page(frame), role_in=("label",), name="显示 1 / 3 个已加载对象", timeout=10)
+        expect("selected" in A.states(A.wait_until(lambda: row("widgets_empty"), 10, "保留对象")),
+               "位置改变后仍选中原对象")
+        _expect_filter_rpc(inst, before, "改词与程序化选中位置变化")
+
+        before = _rpc_counts(inst)
+        A.set_text(entry, "events")
+        remaining = A.wait_until(lambda: row("events"), 10, "当前唯一匹配")
+        expect("selected" not in A.states(remaining), "过滤掉原对象后不自动选另一对象")
+        _expect_filter_rpc(inst, before, "过滤掉选中对象")
+        expect("selected" in A.states(selected_tree), "过滤没有改变树选中")
+
+        before = _rpc_counts(inst)
+        A.press_keys("Return")
+        expect(A.query(frame, role_in=("grouping",), name="Objects"),
+               "检索框 Enter 保持当前工作区")
+        _expect_filter_rpc(inst, before, "检索框 Enter")
+
+        before = _rpc_counts(inst)
+        A.press_keys("Escape")
+        A.wait_until(lambda: _objects_labels(frame) == original, 10, "Esc 恢复原排序")
+        expect(A.text_value(entry) == "", "Esc 清空关键词")
+        _expect_filter_rpc(inst, before, "Esc 清词")
+
+    with step("keyboard_enters_list_without_opening"):
+        A.press_keys("Control_L", "f")
+        nav_entry = A.find_one(navigation, role_in=("entry",), name="搜索资源…")
+        A.wait_until(lambda: "focused" in A.states(nav_entry), 5, "Ctrl+F 聚焦导航")
+        A.press_keys("Control_L", "Shift_L", "f")
+        A.wait_until(lambda: "focused" in A.states(entry), 5, "Ctrl+Shift+F 聚焦 Objects")
+        A.set_text(entry, "_EMPTY")
+        A.wait_until(lambda: row("widgets_empty") and not row("widgets"), 10, "唯一匹配行")
+        title = A.nm(frame)
+        tabs = len(A.query(frame, role_in=("page tab",)))
+        before = _submit_count(inst, "objects.nodes")
+        A.press_keys("Down")
+        A.wait_until(lambda: any("focused" in A.states(node) for node in A.walk(_objects_grid(frame))),
+                     10, "方向键把键盘焦点移入可见对象列表")
+        expect(A.nm(frame) == title and len(A.query(frame, role_in=("page tab",))) == tabs,
+               "方向键未激活对象")
+        _expect_submit(inst, "objects.nodes", before)
+
+    with step("reentry_layout_refresh_and_filtered_activation"):
+        A.set_text(entry, "_EMPTY")
+        A.wait_until(lambda: row("widgets_empty") and not row("widgets"), 10, "保留词场景")
+        before = _submit_count(inst, "objects.nodes")
+        _sql_tab_roundtrip(inst)
+        _expect_submit(inst, "objects.nodes", before)
+        expect(A.text_value(_objects_filter(frame)) == "_EMPTY", "重入保留关键词")
+        tabs_before = len(A.query(frame, role_in=("page tab",)))
+        _browse_tables(frame)
+        _expect_submit(inst, "objects.nodes", before)
+        expect(len(A.query(frame, role_in=("page tab",))) == tabs_before
+               and len(A.query(frame, role_in=("grouping",), name="Objects")) == 1,
+               "重复分类沿用唯一固定页，不创建工作区")
+        for button in ("导航", "专注模式", "专注模式", "导航"):
+            A.click(A.find_one(frame, role_in=("button", "toggle button"), name=button))
+            expect(A.text_value(_objects_filter(frame)) == "_EMPTY", "布局切换保留关键词")
+        _tab_action(frame, "win.refresh")
+        _wait_list_loaded(inst)
+        _expect_submit(inst, "objects.nodes", before + 1)
+        expect(A.text_value(_objects_filter(frame)) == "_EMPTY", "刷新保留关键词")
+        A.press_keys("Control_L", "w")
+        expect(A.text_value(_objects_filter(frame)) == "_EMPTY", "固定页不可关闭")
+
+        cell = A.find_one(_objects_grid(frame), role_in=("label",), name="widgets_empty")
+        A.mouse_click(cell, count=2)
+        A.wait_until(lambda: "widgets_empty @" in A.nm(frame), 15, "双击打开匹配的对象")
+        _tab_action(frame, "win.tab-1")
+        cell = A.find_one(_objects_grid(frame), role_in=("label",), name="widgets_empty")
+        A.mouse_click(cell, button=3)
+        menu = A.wait_until(lambda: next(
+            (m for m in A.query(frame, role_in=("menu",))
+             if "ctx.open-object" in A.action_names(m)), None), 10, "匹配行的对象菜单")
+        A.set_text(_objects_filter(frame), "events")
+        A.wait_until(lambda: row("events") and not row("widgets_empty"), 10, "菜单打开期间改词")
+        A.window_action(menu, "ctx.open-object")
+        A.wait_until(lambda: "widgets_empty @" in A.nm(frame), 15, "右键使用打开菜单时的资源")
+
+
+def test_objects_filter_manual_pagination_and_retry(ui_instance):
+    """objects_page.filter, objects_page.more, objects_page.status: A09.3–5."""
+    inst = ui_instance("objects_filter_pages")
+    with sqlite3.connect(inst.db) as con:
+        for index in range(510):
+            con.execute(f"CREATE TABLE a_s5_{index:04d}(id INTEGER)")
+        con.execute("CREATE TABLE zz_s5_last(id INTEGER)")
+    inst.start(autoconnect=True, extra_args=(*EXPAND_ARGS, "--qa-tree-select-group", "tables"))
+    ops.wait_connected(inst.frame(), "uitest.db", timeout=40)
+    frame = inst.frame()
+    _wait_list_loaded(inst)
+    entry = _objects_filter(frame)
+    page = _objects_page(frame)
+    with step("no_match_can_page_explicitly"):
+        before = _rpc_counts(inst)
+        A.set_text(entry, "ZZ_S5_LAST")
+        A.find_one(page, role_in=("label",), name="已加载的对象中没有匹配项", timeout=10)
+        A.find_one(page, role_in=("label",), name="显示 0 / 500 个已加载对象（还有更多）", timeout=10)
+        _expect_filter_rpc(inst, before, "第一页无匹配")
+        more = A.find_one(page, role_in=("button",), name="加载更多…")
+
+    with step("pagination_failure_preserves_loaded_rows_and_retry"):
+        lock = sqlite3.connect(inst.db)
+        try:
+            lock.execute("BEGIN EXCLUSIVE")
+            A.click(more)
+            A.find_one(page, role_in=("button",), name="重试", timeout=20)
+            expect(_submit_count(inst, "objects.nodes") == 2, "分页失败仅发一次请求")
+            before = _rpc_counts(inst)
+            A.set_text(entry, "a_s5_0000")
+            A.find_one(page, role_in=("label",), name="a_s5_0000")
+            A.find_one(page, role_in=("label",), name="显示 1 / 500 个已加载对象（还有更多）", timeout=10)
+            A.set_text(entry, "ZZ_S5_LAST")
+            A.find_one(page, role_in=("label",), name="已加载的对象中没有匹配项", timeout=10)
+            _expect_filter_rpc(inst, before, "分页失败后过滤")
+        finally:
+            lock.close()
+
+        before = _rpc_counts(inst)
+        A.click(A.find_one(page, role_in=("button",), name="重试"))
+        A.find_one(page, role_in=("label",), name="zz_s5_last", timeout=20)
+        A.find_one(page, role_in=("label",), name="显示 1 / 514 个已加载对象", timeout=10)
+        delta = tuple(after - old for after, old in zip(_rpc_counts(inst), before))
+        expect(delta == (1, 1), "重试与应用过滤只发绑定的分页请求", delta)
+        print(f"Objects 主动重试: dispatch={delta[0]} metadata={delta[1]}")
+
+
+def test_objects_filter_is_not_restored_at_startup(ui_instance):
+    """objects_page.filter, objects_page.tab, objects_page.empty: the term is in-memory only."""
+    inst = _start(ui_instance, "objects_filter_restart")
+    frame = inst.frame()
+    _wait_list_loaded(inst)
+    entry = _objects_filter(frame)
+    A.set_text(entry, "not_persisted")
+    A.find_one(_objects_page(frame), role_in=("label",),
+               name="已加载的对象中没有匹配项", timeout=10)
+    with step("restart_same_profile_and_browse"):
+        ops.close_window(frame)
+        expect(inst.proc.wait(timeout=20) == 0, "正常关闭应用")
+        inst.stop()
+        inst.start()
+        frame = inst.frame()
+        expect(A.text_value(_objects_filter(frame)) == "", "同一配置重启不恢复检索词")
+        saved = ops.find_row(frame, "uitest.db", "未连接", timeout=15)
+        A.mouse_click(saved, count=2)
+        ops.wait_connected(frame, "uitest.db", timeout=20)
+        if ops.find_row(frame, exact_name="main") is None:
+            ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
+        main = ops.find_row(frame, exact_name="main", timeout=10)
+        if ops.find_row(frame, exact_name="Tables") is None:
+            ops.expand_tree_row(main)
+        _browse_tables(frame)
+        _wait_list_loaded(inst)
+        expect(A.text_value(_objects_filter(frame)) == "", "同一范围重新浏览仍未过滤")
+        expect("widgets" in _objects_labels(frame), "新进程显示未过滤的列表")
+
+
 def test_objects_scope_survives_connection_selection(ui_instance):
     """objects_page, objects_page.tab, object_tree.tree: 只选连接保留 Objects 范围。"""
     inst = _start(ui_instance, "obj_empty")
@@ -259,7 +532,7 @@ def test_objects_scope_survives_connection_selection(ui_instance):
         _tab_action(frame, "win.tab-1")
         _wait_list_loaded(inst)
         expect("widgets" in _objects_labels(frame), "重新进入 Objects 恢复已有范围")
-        _expect_submit(inst, "objects.nodes", before["objects.nodes"] + 1)
+        _expect_submit(inst, "objects.nodes", before["objects.nodes"])
         _expect_submit(inst, "nodes", before["nodes"])
 
 

@@ -45,7 +45,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::backend::metadata::{
-    MetadataError, MetadataHub, NodePage, NodeView, catalog_layer_parent, kind_icon,
+    MetadataError, MetadataHub, NodePage, catalog_layer_parent, kind_icon,
 };
 use crate::backend::query::{CatalogKind, QueryFailure, SessionDatabaseContext};
 use crate::backend::routing::{self, Channel, Delivery, DropReason};
@@ -890,7 +890,7 @@ pub struct ObjectsObservation {
     pub first: String,
     /// 当前选中行的名字（没有选中时为空串）。
     pub selected: String,
-    /// 状态行原文（`正在读取…` / `共 N 个对象` / 错误文案）。
+    /// 加载计数或当前状态文案。
     pub status: String,
 }
 
@@ -929,9 +929,8 @@ fn scope_name(parent: &ObjectRef) -> String {
 /// `Objects` 固定页（v0.2.3.2；v0.2.4 起改成与数据网格同一套三列表格）：与对象树
 /// 联动，列出选中 catalog 里的表 / 视图。
 ///
-/// 内容由树选中驱动：选中 catalog 或 `Tables` 分支 → 该库的**表**；
-/// 选中 `Views` 分支 → 该库的**视图**。页面自己发 `ListNodes(filter.kinds)` 并持有
-/// 自己的分页 token，不读树的分组层状态——树没展开过也要能看到完整列表。
+/// 主动 Browse 决定连接、库、Schema 与分类。页面用浏览会话发
+/// `ListNodes(filter.kinds)`，独立持有已加载页与分页 token；检索仅投影这些行。
 ///
 /// 呈现层是 `GtkColumnView` + `GtkSingleSelection`，列固定为 `行号 / 表名 / 类型`：
 /// 与数据网格（`data_page.rs`）同一套渲染——行号列宽度复用 `data_page::ROW_NUMBER_WIDTH`，
@@ -948,6 +947,16 @@ pub struct ObjectsPage {
     kind: RefCell<Option<KindShortcut>>,
     /// 行的数据模型：`BoxedAnyObject(TableEntry)`，只为可见行创建控件。
     store: gtk::gio::ListStore,
+    filter_entry: gtk::SearchEntry,
+    filter_header: gtk::ConstraintLayout,
+    heading: gtk::Label,
+    filter: gtk::CustomFilter,
+    visible_rows: gtk::FilterListModel,
+    filter_term: Rc<RefCell<glib::GString>>,
+    applying_filter: Cell<bool>,
+    count_label: gtk::Label,
+    no_match: gtk::Label,
+    menu: RefCell<Option<Rc<crate::context_menu::ContextMenu>>>,
     /// 单选模型：单击选中、双击 / 回车激活（`single_click_activate(false)`）。
     selection: gtk::SingleSelection,
     grid: gtk::ColumnView,
@@ -959,11 +968,11 @@ pub struct ObjectsPage {
     loaded: Cell<bool>,
     /// 当前作用域的请求在飞：同一作用域的重复事件不叠加请求；显式 reload 不受它拦截。
     loading: Cell<bool>,
+    invalidated: Cell<bool>,
+    retry: RefCell<Option<String>>,
     open: RefCell<Option<OpenEntry>>,
     select: RefCell<Option<SelectEntry>>,
-    /// 当前有效浏览作用域：分页、重新进入与 F5 都只读这一份权威状态。
-    ///
-    /// 真实空态（选中连接 / 无选中）与不支持的种类会清空它，历史列表不会被恢复。
+    /// 当前精确的请求作用域；工作区上下文只用已经确认的作用域。
     scope: RefCell<Option<ObjectsRequest>>,
     confirmed_scope: RefCell<Option<ObjectsRequest>>,
     explicit_category: Cell<bool>,
@@ -976,6 +985,7 @@ impl ObjectsPage {
     /// 切档后重设三列表格的固定列宽（重载 CSS 不会动列宽，否则「字变大了列没变」）。
     pub(crate) fn reapply_tier(&self, _old: crate::layout::Tier, new: crate::layout::Tier) {
         let m = crate::layout::Metrics::for_tier(new);
+        self.apply_filter_width(&m);
         let columns = self.grid.columns();
         if let Some(column) = columns
             .item(0)
@@ -996,17 +1006,65 @@ impl ObjectsPage {
             m.column_width
         );
     }
+    fn apply_filter_width(&self, m: &crate::layout::Metrics) {
+        self.filter_header.remove_all_constraints();
+        let horizontal = format!(
+            "H:|[title]-{}-[search(>={},<={},{}@strong)]|",
+            m.gap_px(Gap::Md),
+            m.objects_filter_min_width,
+            m.objects_filter_max_width,
+            m.objects_filter_width,
+        );
+        self.filter_header
+            .add_constraints_from_description(
+                [horizontal.as_str(), "V:|[title]|", "V:|[search]|"],
+                0,
+                0,
+                [
+                    ("title", self.heading.upcast_ref::<gtk::Widget>()),
+                    ("search", self.filter_entry.upcast_ref::<gtk::Widget>()),
+                ],
+            )
+            .expect("Objects header constraints use fixed syntax and project metrics");
+    }
+
     pub(crate) fn new() -> Rc<Self> {
         let title = gtk::Label::new(Some("Objects"));
         title.set_xalign(0.0);
         title.add_css_class("sqarvo-title");
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let filter_name = crate::l10n::t("objects_page.filter_placeholder");
+        let filter_entry = gtk::SearchEntry::new();
+        filter_entry.set_placeholder_text(Some(filter_name));
+        filter_entry.update_property(&[gtk::accessible::Property::Label(filter_name)]);
+        filter_entry.add_css_class("objects-filter");
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let filter_header = gtk::ConstraintLayout::new();
+        header.set_layout_manager(Some(filter_header.clone()));
+        header.append(&title);
+        header.append(&filter_entry);
 
         // 三列表格（v0.2.4）：与数据网格同一套渲染——`GtkColumnView` +
         // `GtkSingleSelection`，列固定为 `行号 | 表名 | 类型`。
         // 行高 / 分隔线 / 悬停与选中底色 / 外框来自 `theme::stylesheet` 里与
         // `columnview.sqarvo-grid` 并列的那组规则（同一个 class 口径，见主题注释）。
         let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-        let selection = gtk::SingleSelection::new(Some(store.clone()));
+        let filter_term = Rc::new(RefCell::new(glib::casefold("")));
+        let filter = gtk::CustomFilter::new({
+            let filter_term = Rc::clone(&filter_term);
+            move |item| {
+                let term = filter_term.borrow();
+                term.is_empty()
+                    || item
+                        .downcast_ref::<glib::BoxedAnyObject>()
+                        .is_some_and(|item| {
+                            let entry = item.borrow::<TableEntry>();
+                            glib::casefold(&entry.reference.name).contains(term.as_str())
+                        })
+            }
+        });
+        let visible_rows = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+        let selection = gtk::SingleSelection::new(Some(visible_rows.clone()));
         // 首行不自动选中：选中是用户的动作，也是信息面板的输入。
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
@@ -1173,6 +1231,16 @@ impl ObjectsPage {
         status.add_css_class("dim-label");
         status.add_css_class("caption");
 
+        let count_label = gtk::Label::new(None);
+        let no_match = gtk::Label::new(Some(crate::l10n::t("objects_page.no_matches")));
+        for label in [&count_label, &no_match] {
+            label.set_xalign(0.0);
+            label.set_wrap(true);
+            label.add_css_class("dim-label");
+            label.add_css_class("caption");
+            label.set_visible(false);
+        }
+
         let more = gtk::Button::with_label(crate::l10n::t("objects_page.btn_load_more"));
         more.add_css_class("flat");
         more.set_halign(gtk::Align::Start);
@@ -1206,7 +1274,9 @@ impl ObjectsPage {
         let content = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Sm));
         content.set_vexpand(true);
         content.append(&scroll);
+        content.append(&no_match);
         content.append(&more);
+        content.append(&count_label);
         content.append(&status);
 
         let stack = gtk::Stack::new();
@@ -1225,7 +1295,7 @@ impl ObjectsPage {
         root.set_margin_start(gap(Gap::Xl));
         root.set_margin_end(gap(Gap::Xl));
         root.update_property(&[gtk::accessible::Property::Label("Objects")]);
-        root.append(&title);
+        root.append(&header);
         root.append(&stack);
 
         let page = Rc::new(Self {
@@ -1235,6 +1305,16 @@ impl ObjectsPage {
             empty_text: RefCell::new(empty_text),
             kind: RefCell::new(None),
             store,
+            filter_entry,
+            filter_header,
+            heading: title,
+            filter,
+            visible_rows,
+            filter_term,
+            applying_filter: Cell::new(false),
+            count_label,
+            no_match,
+            menu: RefCell::new(None),
             selection,
             grid,
             status,
@@ -1243,6 +1323,8 @@ impl ObjectsPage {
             generation: Cell::new(0),
             loaded: Cell::new(false),
             loading: Cell::new(false),
+            invalidated: Cell::new(false),
+            retry: RefCell::new(None),
             open: RefCell::new(None),
             select: RefCell::new(None),
             scope: RefCell::new(None),
@@ -1251,37 +1333,112 @@ impl ObjectsPage {
             scope_settled: RefCell::new(None),
             hub_slot: RefCell::new(None),
         });
+        page.apply_filter_width(&crate::layout::metrics());
+        {
+            let weak = Rc::downgrade(&page);
+            page.filter_entry.connect_changed(move |entry| {
+                if let Some(page) = weak.upgrade() {
+                    page.apply_filter(entry.text().as_str());
+                }
+            });
+        }
+        {
+            let weak = Rc::downgrade(&page);
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            keys.connect_key_pressed(move |_, key, _, modifiers| {
+                let Some(page) = weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                match key {
+                    gtk::gdk::Key::Escape => page.filter_entry.set_text(""),
+                    gtk::gdk::Key::Down
+                        if modifiers.is_empty() && page.visible_rows.n_items() > 0 =>
+                    {
+                        page.grid.grab_focus();
+                    }
+                    _ => return glib::Propagation::Proceed,
+                }
+                glib::Propagation::Stop
+            });
+            page.filter_entry.add_controller(keys);
+        }
+        for factory in [
+            number_column.factory(),
+            name_column.factory(),
+            kind_column.factory(),
+        ] {
+            let Some(factory) = factory.and_downcast::<gtk::SignalListItemFactory>() else {
+                continue;
+            };
+            let weak = Rc::downgrade(&page);
+            factory.connect_setup(move |_, item| {
+                let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                    return;
+                };
+                let Some(cell) = item.child() else {
+                    return;
+                };
+                let click = gtk::GestureClick::new();
+                click.set_button(gtk::gdk::BUTTON_SECONDARY);
+                let weak = weak.clone();
+                let item = item.downgrade();
+                click.connect_pressed(move |gesture, _, x, y| {
+                    if let (Some(page), Some(item), Some(cell)) =
+                        (weak.upgrade(), item.upgrade(), gesture.widget())
+                        && let Some(entry) = item_entry(&item)
+                        && let Some(point) = cell.compute_point(
+                            &page.grid,
+                            &gtk::graphene::Point::new(x as f32, y as f32),
+                        )
+                    {
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        page.open_row_menu(entry, point);
+                    }
+                });
+                cell.add_controller(click);
+            });
+        }
         {
             let weak = Rc::downgrade(&page);
             page.more.connect_clicked(move |_| {
-                if let Some(page) = weak.upgrade() {
-                    let token = page.token.borrow().clone();
-                    if !token.is_empty() {
-                        page.load(token);
-                    }
+                let Some(page) = weak.upgrade() else {
+                    return;
+                };
+                let retry = page.retry.borrow().clone();
+                let token = page.token.borrow().clone();
+                match retry {
+                    Some(token) if token.is_empty() => page.reload(page.hub()),
+                    Some(token) => page.load(token),
+                    None if !token.is_empty() => page.load(token),
+                    None => {}
                 }
             });
         }
         {
             // 单击选中 → 同步信息面板（与树选中的语义一致）。
             let weak = Rc::downgrade(&page);
-            page.selection.connect_selected_notify(move |selection| {
-                let Some(page) = weak.upgrade() else {
-                    return;
-                };
-                let Some(entry) = page.entry_at(selection.selected()) else {
-                    return;
-                };
-                let select = page.select.borrow().clone();
-                if let Some(select) = select {
-                    eprintln!(
-                        "[objects] 选中行 {}（{}）",
-                        entry.display_name,
-                        entry.kind_label()
-                    );
-                    select(entry);
-                }
-            });
+            page.selection
+                .connect_selected_item_notify(move |selection| {
+                    let Some(page) = weak.upgrade() else {
+                        return;
+                    };
+                    if page.applying_filter.get() {
+                        return;
+                    }
+                    let Some(entry) = page.entry_at(selection.selected()) else {
+                        return;
+                    };
+                    let select = page.select.borrow().clone();
+                    if let Some(select) = select {
+                        eprintln!(
+                            "[objects] 选中行 {}（{}）",
+                            entry.display_name,
+                            entry.kind_label()
+                        );
+                        select(entry);
+                    }
+                });
         }
         {
             // 双击 / 回车 → 打开表数据标签（与树的双击同一条路径）。
@@ -1301,6 +1458,86 @@ impl ObjectsPage {
             });
         }
         page
+    }
+
+    fn apply_filter(&self, text: &str) {
+        self.filter_term.replace(glib::casefold(text));
+        // GtkSingleSelection can notify during items-changed, including when the selected
+        // object keeps its identity but moves to a different visible position.
+        self.applying_filter.set(true);
+        self.filter.changed(gtk::FilterChange::Different);
+        self.applying_filter.set(false);
+        self.update_counts();
+    }
+
+    fn update_counts(&self) {
+        let loaded = self.store.n_items();
+        let matched = self.visible_rows.n_items();
+        let has_more = !self.token.borrow().is_empty();
+        self.count_label.set_visible(self.loaded.get());
+        self.no_match.set_visible(
+            self.loaded.get() && !self.filter_term.borrow().is_empty() && matched == 0,
+        );
+        self.count_label.set_text(&crate::l10n::tf(
+            "objects_page.status_total",
+            &[
+                ("matched", matched.to_string()),
+                ("total", loaded.to_string()),
+                (
+                    "more_note",
+                    if has_more {
+                        crate::l10n::t("objects_page.status_more_note").to_owned()
+                    } else {
+                        String::new()
+                    },
+                ),
+            ],
+        ));
+    }
+
+    fn open_row_menu(self: &Rc<Self>, entry: TableEntry, point: gtk::graphene::Point) {
+        let previous = self.menu.take();
+        if let Some(previous) = previous {
+            previous.popdown();
+        }
+        let weak = Rc::downgrade(self);
+        let generation = self.generation.get();
+        let menu = crate::context_menu::ContextMenu::popup(
+            &self.grid,
+            f64::from(point.x()),
+            f64::from(point.y()),
+            vec![
+                crate::context_menu::Entry::action(
+                    crate::l10n::t("object_tree.ctx_menu_open"),
+                    true,
+                    Rc::new(move || {
+                        if let Some(page) = weak.upgrade()
+                            && page.generation.get() == generation
+                            && let Some(open) = page.open.borrow().clone()
+                        {
+                            open(entry.clone());
+                        }
+                    }),
+                )
+                .with_id("open-object"),
+            ],
+        );
+        let weak = Rc::downgrade(self);
+        let handle = Rc::downgrade(&menu);
+        menu.connect_closed(move || {
+            let Some(page) = weak.upgrade() else {
+                return;
+            };
+            let same_menu = page
+                .menu
+                .borrow()
+                .as_ref()
+                .is_some_and(|menu| Weak::ptr_eq(&Rc::downgrade(menu), &handle));
+            if same_menu {
+                page.menu.take();
+            }
+        });
+        self.menu.replace(Some(menu));
     }
 
     pub(crate) fn widget(&self) -> &gtk::Box {
@@ -1333,20 +1570,10 @@ impl ObjectsPage {
 
     /// 工具条点了**没有可用列表**的入口（函数 / 查询）：如实说明原因，不摆假数据。
     pub fn show_unavailable(&self, shortcut: KindShortcut, title: &str, description: &str) {
-        self.generation.set(self.generation.get() + 1);
-        self.loaded.set(false);
-        self.loading.set(false);
-        self.token.replace(String::new());
-        self.scope.replace(None);
-        self.confirmed_scope.replace(None);
-        self.hub_slot.replace(None);
-        self.clear_rows();
-        self.status.set_text("");
-        self.more.set_visible(false);
+        self.show_empty();
         self.empty.set_title(title);
         self.empty.set_description(Some(description));
         self.kind.replace(Some(shortcut));
-        self.stack.set_visible_child_name("empty");
     }
 
     /// 双击 / 回车打开表数据标签（与树的双击同一条路径）。
@@ -1367,11 +1594,15 @@ impl ObjectsPage {
         self.generation.set(self.generation.get() + 1);
         self.loaded.set(false);
         self.loading.set(false);
+        self.invalidated.set(false);
+        self.retry.replace(None);
         self.token.replace(String::new());
         self.scope.replace(None);
         self.confirmed_scope.replace(None);
         self.hub_slot.replace(None);
         self.clear_rows();
+        self.filter_entry.set_text("");
+        self.update_counts();
         self.status.set_text("");
         self.more.set_visible(false);
         self.apply_empty_text();
@@ -1379,60 +1610,52 @@ impl ObjectsPage {
         self.stack.set_visible_child_name("empty");
     }
 
-    /// 换作用域并读第一页；**作用域没变就不重发**。
-    ///
-    /// 树里从「库 main」切到「某张表」时，列表作用域还是 `(main, [Table])`——旧实现
-    /// 每次都清空重建，行会闪一下、选中态也会被下一次选中冲掉。现在只在作用域真的
-    /// 变化（换了库 / 换了表与视图）时才重新发 `ListNodes`。
+    /// Change the exact browse scope, or reuse its existing page and pending request.
     pub fn show(
         self: &Rc<Self>,
         hub: Option<Rc<MetadataHub>>,
         parent: ObjectRef,
         kinds: Vec<ObjectKind>,
     ) {
-        let key: ObjectsRequest = (parent.clone(), kinds.clone());
+        let key = (parent.clone(), kinds.clone());
+        let same_scope = self.scope.borrow().as_ref() == Some(&key);
         self.kind.replace(KindShortcut::of_kinds(&kinds));
         self.stack.set_visible_child_name("list");
-        // 同一页内的树选中变化（作用域未变）：清行高亮、保留列表，不重发请求——
-        // 重新进入标签 / F5 走 enter_objects / reload_objects，不受这里保留列表的影响。
-        if self.selection.selected() != u32::MAX {
-            eprintln!("[objects] 树选中变化：清掉行高亮（列表内容保留）");
-            self.selection.set_selected(u32::MAX);
-        }
-        let same_scope = self.scope.borrow().as_ref() == Some(&key);
-        if self.loading.get() && same_scope {
-            eprintln!(
-                "[objects] 作用域 {} 的请求已在飞，重复事件不叠加请求",
-                scope_name(&parent)
-            );
-            return;
-        }
-        if self.loaded.get() && same_scope {
-            eprintln!(
-                "[objects] 作用域未变（{}），保留现有列表（不重发）",
-                scope_name(&parent)
-            );
-            return;
-        }
         if !same_scope {
+            self.loaded.set(false);
+            self.invalidated.set(false);
             self.confirmed_scope.replace(None);
+            self.token.replace(String::new());
+            self.clear_rows();
+            self.filter_entry.set_text("");
+            self.update_counts();
+        }
+        if !same_scope || self.refresh_pending() || hub.is_none() {
+            self.start_first_page(hub, parent, kinds);
+        }
+    }
+
+    /// Refresh the first page explicitly, keeping the current filter and valid rows until success.
+    pub fn reload(self: &Rc<Self>, hub: Option<Rc<MetadataHub>>) {
+        let Some((parent, kinds)) = self.saved_scope() else {
+            return;
+        };
+        if self.loaded.get() {
+            self.invalidated.set(true);
         }
         self.start_first_page(hub, parent, kinds);
     }
 
-    /// 显式重新加载当前作用域（重新进入标签 / F5）：从第一页重查，不沿用旧列表。
-    ///
-    /// 不受 `loaded` 与在飞标记拦截：这是用户明确发起的刷新；随后到来的同作用域树事件
-    /// 会被 `loading` 标记挡住，不会发第二份请求。
-    pub fn reload(self: &Rc<Self>, hub: Option<Rc<MetadataHub>>) {
-        let Some((parent, kinds)) = self.scope.borrow().clone() else {
-            return;
-        };
-        self.stack.set_visible_child_name("list");
-        if self.selection.selected() != u32::MAX {
-            self.selection.set_selected(u32::MAX);
-        }
-        self.start_first_page(hub, parent, kinds);
+    fn refresh_pending(&self) -> bool {
+        self.invalidated.get() && !self.loading.get()
+    }
+
+    /// Known application-side data changes require a fresh first page on the next activation.
+    fn invalidate(&self) {
+        self.generation.set(self.generation.get() + 1);
+        self.invalidated.set(true);
+        self.loading.set(false);
+        self.more.set_sensitive(false);
     }
 
     /// 当前作用域（分页与刷新都按它继续）。
@@ -1449,18 +1672,26 @@ impl ObjectsPage {
     ) {
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
-        self.loaded.set(false);
-        self.token.replace(String::new());
-        self.clear_rows();
-        self.more.set_visible(false);
+        self.retry.replace(None);
         let Some(hub) = hub else {
             self.loading.set(false);
+            self.loaded.set(false);
+            self.invalidated.set(false);
             self.scope.replace(None);
             self.confirmed_scope.replace(None);
+            self.hub_slot.replace(None);
+            self.token.replace(String::new());
+            self.clear_rows();
+            self.filter_entry.set_text("");
+            self.update_counts();
+            self.more.set_visible(false);
             self.status
                 .set_text(crate::l10n::t("objects_page.status_no_session"));
             return;
         };
+        self.more
+            .set_label(crate::l10n::t("objects_page.btn_load_more"));
+        self.more.set_visible(!self.token.borrow().is_empty());
         self.status
             .set_text(crate::l10n::t("objects_page.status_loading"));
         self.request(hub, parent, kinds, String::new(), generation);
@@ -1471,7 +1702,7 @@ impl ObjectsPage {
             eprintln!("[objects] 分页请求在飞，重复「加载更多」被忽略");
             return;
         }
-        let Some((parent, kinds)) = self.saved_request() else {
+        let Some((parent, kinds)) = self.saved_scope() else {
             return;
         };
         let generation = self.generation.get();
@@ -1497,7 +1728,7 @@ impl ObjectsPage {
         self.hub_slot.replace(Some(Rc::clone(&hub)));
         self.loading.set(true);
         self.more.set_sensitive(false);
-        let is_continuation = !token.is_empty();
+        let request_token = token.clone();
         let weak = Rc::downgrade(self);
         hub.request_group_as(
             "objects.nodes",
@@ -1506,7 +1737,7 @@ impl ObjectsPage {
             &token,
             Rc::new(move |result| {
                 if let Some(page) = weak.upgrade() {
-                    page.finish_page(generation, is_continuation, result);
+                    page.finish_page(generation, &request_token, result);
                 }
             }),
         );
@@ -1515,7 +1746,7 @@ impl ObjectsPage {
     fn finish_page(
         &self,
         generation: u64,
-        is_continuation: bool,
+        request_token: &str,
         result: Result<NodePage, MetadataError>,
     ) {
         if generation != self.generation.get() {
@@ -1526,42 +1757,48 @@ impl ObjectsPage {
         self.more.set_sensitive(true);
         match result {
             Ok(nodes) => {
-                if !is_continuation {
+                let rows: Vec<_> = nodes
+                    .nodes
+                    .into_iter()
+                    .map(|node| {
+                        glib::BoxedAnyObject::new(TableEntry {
+                            reference: node.reference,
+                            display_name: node.display_name,
+                            kind: node.kind,
+                        })
+                    })
+                    .collect();
+                let loaded = self.store.n_items();
+                if request_token.is_empty() {
+                    self.invalidated.set(false);
+                    self.clear_selection();
+                    self.store.splice(0, loaded, &rows);
                     self.confirmed_scope.replace(self.saved_scope());
                     if let Some(settled) = self.scope_settled.borrow().as_ref() {
                         settled();
                     }
+                } else {
+                    self.store.splice(loaded, 0, &rows);
                 }
-                let count = nodes.nodes.len();
-                for node in &nodes.nodes {
-                    self.push_row(node);
-                }
-                self.token.replace(nodes.next_page_token.clone());
+                self.token.replace(nodes.next_page_token);
                 self.loaded.set(true);
-                let has_more = nodes.has_more();
+                self.retry.replace(None);
+                let has_more = !self.token.borrow().is_empty();
+                self.more
+                    .set_label(crate::l10n::t("objects_page.btn_load_more"));
                 self.more.set_visible(has_more);
-                let total = self.store.n_items() as usize;
-                self.status.set_text(&crate::l10n::tf(
-                    "objects_page.status_total",
-                    &[
-                        ("total", total.to_string()),
-                        (
-                            "more_note",
-                            if has_more {
-                                crate::l10n::t("objects_page.status_more_note").to_owned()
-                            } else {
-                                String::new()
-                            },
-                        ),
-                    ],
-                ));
-                if count == 0 && total == 0 {
-                    self.status
-                        .set_text(crate::l10n::t("objects_page.status_empty"));
-                }
+                self.status
+                    .set_text(if self.store.n_items() == 0 && !has_more {
+                        crate::l10n::t("objects_page.status_empty")
+                    } else {
+                        ""
+                    });
             }
             Err(error) => {
-                self.more.set_visible(is_continuation);
+                self.retry.replace(Some(request_token.to_owned()));
+                self.more
+                    .set_label(crate::l10n::t("objects_page.btn_retry"));
+                self.more.set_visible(true);
                 self.status.set_text(&crate::l10n::tf(
                     "objects_page.status_read_failed",
                     &[
@@ -1571,16 +1808,7 @@ impl ObjectsPage {
                 ));
             }
         }
-    }
-
-    fn push_row(&self, node: &NodeView) {
-        let entry = TableEntry {
-            reference: node.reference.clone(),
-            display_name: node.display_name.clone(),
-            kind: node.kind,
-        };
-        // 模型只持有数据：控件由 `GtkColumnView` 为可见行创建（几百行也不卡主线程）。
-        self.store.append(&glib::BoxedAnyObject::new(entry));
+        self.update_counts();
     }
 
     fn clear_rows(&self) {
@@ -1593,7 +1821,7 @@ impl ObjectsPage {
             return None;
         }
         let boxed = self
-            .store
+            .visible_rows
             .item(position)?
             .downcast::<glib::BoxedAnyObject>()
             .ok()?;
@@ -1602,14 +1830,10 @@ impl ObjectsPage {
 
     /// 按展示名找行号（QA 与「作用域未变」的定位用）。
     fn position_of(&self, name: &str) -> Option<u32> {
-        (0..self.store.n_items()).find(|index| {
+        (0..self.visible_rows.n_items()).find(|index| {
             self.entry_at(*index)
                 .is_some_and(|entry| entry.display_name == name)
         })
-    }
-
-    fn saved_request(&self) -> Option<ObjectsRequest> {
-        self.scope.borrow().clone()
     }
 
     fn hub(&self) -> Option<Rc<MetadataHub>> {
@@ -1620,7 +1844,7 @@ impl ObjectsPage {
     #[must_use]
     pub fn qa_observation(&self) -> ObjectsObservation {
         ObjectsObservation {
-            count: self.store.n_items() as usize,
+            count: self.visible_rows.n_items() as usize,
             first: self
                 .entry_at(0)
                 .map(|entry| entry.display_name)
@@ -1629,17 +1853,18 @@ impl ObjectsPage {
                 .entry_at(self.selection.selected())
                 .map(|entry| entry.display_name)
                 .unwrap_or_default(),
-            status: self.status.text().to_string(),
+            status: if self.status.text().is_empty() && self.count_label.is_visible() {
+                self.count_label.text().to_string()
+            } else {
+                self.status.text().to_string()
+            },
         }
     }
 
-    /// 清掉行选中（切回本页时用：重新进入 `Objects` 页不该带着上一次的高亮）。
-    ///
-    /// 只改单选模型，不碰列表内容；`selected_notify` 会以 `u32::MAX` 回调，
-    /// `entry_at` 返回 `None`，所以不会反过来驱动信息面板。
-    pub fn clear_selection(&self) {
+    /// 首页替换前清除行选中。无选中项时不会触发 Inspector 预览。
+    fn clear_selection(&self) {
         if self.selection.selected() != u32::MAX {
-            eprintln!("[objects] 重新进入 Objects 页：清掉行选中");
+            eprintln!("[objects] 清掉行选中");
             self.selection.set_selected(u32::MAX);
         }
     }
@@ -1649,7 +1874,7 @@ impl ObjectsPage {
         let position = self.position_of(name).ok_or_else(|| {
             format!(
                 "Objects 页没有「{name}」（当前 {} 行）",
-                self.store.n_items()
+                self.visible_rows.n_items()
             )
         })?;
         self.selection.set_selected(position);
@@ -1664,7 +1889,7 @@ impl ObjectsPage {
         let position = self.position_of(name).ok_or_else(|| {
             format!(
                 "Objects 页没有「{name}」（当前 {} 行）",
-                self.store.n_items()
+                self.visible_rows.n_items()
             )
         })?;
         self.selection.set_selected(position);
@@ -1833,8 +2058,7 @@ impl TabSet {
             let weak = Rc::downgrade(&set);
             set.view.connect_selected_page_notify(move |_| {
                 if let Some(set) = weak.upgrade() {
-                    // 重新进入 `Objects` 页时不带上次的行高亮（切换标签是「重新进入」的
-                    // 唯一入口；作用域未变的页内选中不刷新列表）。
+                    // A saved Objects scope is reused unless an operation invalidated it.
                     if !set.switching.get() && set.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
                         set.enter_objects();
                     }
@@ -2245,11 +2469,7 @@ impl TabSet {
         }
     }
 
-    /// 固定 `Objects` 页跟随树选中：显示该库的表 / 视图列表。
-    ///
-    /// `parent` 是 catalog 引用，`kinds` 决定列表内容（表 / 视图）。传 `None` 表示
-    /// 清空成空态。页内不再显示作用域文案（v0.2.3.3 去掉标题与列表之间的说明行），
-    /// 作用域只体现在列表本身。
+    /// Show a resolved Objects scope, or clear the page when explicitly given no scope.
     pub fn show_objects(&self, parent: Option<ObjectRef>, kinds: &[ObjectKind]) {
         let Some(objects) = self.objects.borrow().clone() else {
             return;
@@ -2271,8 +2491,10 @@ impl TabSet {
 
     /// Open a specific Browse scope once. This is distinct from re-entering a saved scope.
     pub fn browse_objects(&self, parent: ObjectRef, kinds: &[ObjectKind], explicit_category: bool) {
-        if let Some(page) = self.objects.borrow().as_ref() {
-            page.explicit_category.set(explicit_category);
+        if let Some(page) = self.objects.borrow().as_ref()
+            && page.explicit_category.replace(explicit_category) != explicit_category
+        {
+            page.filter_entry.set_text("");
         }
         self.show_objects(Some(parent), kinds);
         if let Some(page) = self.page_at(0) {
@@ -2297,23 +2519,47 @@ impl TabSet {
         });
     }
 
-    /// 切回 `Objects` 页时清掉行高亮（重新进入不带上一次的选中）。
-    pub fn clear_objects_selection(&self) {
-        if let Some(objects) = self.objects.borrow().clone() {
-            objects.clear_selection();
+    /// Re-enter the fixed page without re-reading a valid scope.
+    fn enter_objects(&self) {
+        if self
+            .objects
+            .borrow()
+            .as_ref()
+            .is_some_and(|page| page.refresh_pending())
+        {
+            self.reload_objects();
         }
     }
 
-    /// 重新进入 `Objects` 页（鼠标 / 键盘 / 程序化切页共用）：清行高亮并从第一页重查。
-    pub fn enter_objects(&self) {
-        eprintln!("[objects] 重新进入 Objects 页：清行高亮并重新查询");
-        self.clear_objects_selection();
-        self.reload_objects();
+    /// Ctrl+Shift+F targets the filter only while the fixed Objects page is active.
+    pub fn focus_objects_filter(&self) {
+        if self.current_id().as_deref() == Some(OBJECTS_TAB_ID)
+            && let Some(page) = self.objects.borrow().as_ref()
+        {
+            page.filter_entry.grab_focus();
+        }
     }
 
-    /// 强制重新加载当前 `Objects` 作用域（F5 与重新进入页面都走这里）。
-    ///
-    /// `scope` 仍是当前作用域与分页依据；这里只读它、不因相同而跳过。
+    /// Invalidate the existing list for its own profile following a query that may change metadata.
+    fn invalidate_objects_for_profile(&self, profile_id: &str) {
+        let Some(page) = self.objects.borrow().clone() else {
+            return;
+        };
+        let registry = self.context.registry.as_ref();
+        if page.saved_scope().is_some_and(|(scope, _)| {
+            registry
+                .and_then(|registry| registry.key_for_session(&scope.session_id))
+                .as_deref()
+                == Some(profile_id)
+        }) {
+            page.invalidate();
+            if self.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
+                self.reload_objects();
+            }
+        }
+    }
+
+    /// Force a first-page read of the saved scope (F5 or known invalidation).
     pub fn reload_objects(&self) {
         let Some(objects) = self.objects.borrow().clone() else {
             return;
@@ -3659,8 +3905,20 @@ impl TabSet {
         }
         // 执行成功后刷新一次库上下文（轻量 RPC）：用户可能刚在 SQL 里写了 `USE`。
         // 只更新显示，不改写标签的请求值（ADR 0030 §8）。
-        if matches!(&event, QueryEvent::Started { .. }) {
-            self.refresh_catalog_context(tab_id);
+        // The contract has no DDL flag. Non-row-producing statements may change metadata.
+        // A failed script can also leave changes from statements that completed earlier.
+        let metadata_may_have_changed = match &event {
+            QueryEvent::Started { statements, .. } => {
+                self.refresh_catalog_context(tab_id);
+                statements.iter().any(|statement| !statement.has_result_set)
+            }
+            QueryEvent::Failed(failure) => failure
+                .statement_position()
+                .is_some_and(|position| position.completed > 0),
+            _ => false,
+        };
+        if metadata_may_have_changed {
+            self.invalidate_objects_for_profile(&tab.binding.bound());
         }
         match event {
             QueryEvent::Started {
@@ -6937,6 +7195,8 @@ mod tests {
     #[test]
     #[ignore = "requires a GTK display"]
     fn objects_pagination_preserves_retry_and_discards_stale_responses() {
+        use crate::backend::metadata::NodeView;
+
         gtk::test_synced(|| {
             adw::init().unwrap();
             let page = ObjectsPage::new();
@@ -6975,14 +7235,24 @@ mod tests {
                 kind: ObjectKind::Catalog as i32,
                 ..Default::default()
             };
-            page.show(Some(Rc::clone(&hub)), parent, vec![ObjectKind::Table]);
+            page.show(
+                Some(Rc::clone(&hub)),
+                parent.clone(),
+                vec![ObjectKind::Table],
+            );
             respond(1, Err(error.clone()));
-            assert!(!page.more.is_visible());
+            assert!(page.more.is_visible());
+            assert_eq!(
+                page.more.label().as_deref(),
+                Some(crate::l10n::t("objects_page.btn_retry"))
+            );
             assert!(!page.loaded.get());
             assert_eq!(page.store.n_items(), 0);
 
-            page.reload(Some(Rc::clone(&hub)));
+            page.more.emit_clicked();
             respond(2, Ok(nodes("first", "next")));
+            page.filter_entry.set_text("SECOND");
+            assert!(page.no_match.is_visible() && page.more.is_visible());
             page.load("next".to_owned());
             page.load("next".to_owned());
             respond(4, Ok(nodes("duplicate", "")));
@@ -6999,20 +7269,101 @@ mod tests {
             page.load(token);
             respond(4, Ok(nodes("second", "last")));
             assert_eq!(page.store.n_items(), 2);
+            assert_eq!(page.entry_at(0).unwrap().display_name, "second");
+            assert!(page.entry_at(1).is_none());
+            page.filter_entry.set_text("");
             assert_eq!(page.entry_at(0).unwrap().display_name, "first");
             assert_eq!(page.entry_at(1).unwrap().display_name, "second");
 
             page.load("last".to_owned());
+            page.filter_entry.set_text("second");
             page.reload(Some(Rc::clone(&hub)));
             respond(5, Ok(nodes("late", "next")));
+            assert_eq!(page.store.n_items(), 2);
+            assert_eq!(page.filter_entry.text(), "second");
+            assert!(page.loading.get());
+            let mut scope = parent;
+            scope.catalog = "peer_catalog".to_owned();
+            scope.name.clone_from(&scope.catalog);
+            page.show(
+                Some(Rc::clone(&hub)),
+                scope.clone(),
+                vec![ObjectKind::Table],
+            );
+            assert!(page.filter_entry.text().is_empty());
+            respond(6, Ok(nodes("late_old_catalog", "wrong_token")));
             assert_eq!(page.store.n_items(), 0);
             assert!(page.loading.get());
+            respond(7, Ok(nodes("peer_row", "peer_next")));
+            page.filter_entry.set_text("peer");
+            scope.schema = "peer_schema".to_owned();
+            scope.name.clone_from(&scope.schema);
+            scope.kind = ObjectKind::Schema as i32;
+            page.show(
+                Some(Rc::clone(&hub)),
+                scope.clone(),
+                vec![ObjectKind::Table],
+            );
+            assert!(page.filter_entry.text().is_empty());
+            assert_eq!(page.store.n_items(), 0);
+            respond(8, Ok(nodes("in_schema", "")));
+            page.filter_entry.set_text("schema");
+            page.show(Some(Rc::clone(&hub)), scope.clone(), vec![ObjectKind::View]);
+            assert!(page.filter_entry.text().is_empty());
+
+            // A replacement browse session for the same database/schema cannot receive
+            // rows, tokens or errors from the old session.
             page.show_empty();
-            respond(6, Err(error));
+            let (replacement, _events) = MetadataHub::spawn(
+                runtime.path().join("replacement-endpoint.json"),
+                "replacement".to_owned(),
+            )
+            .unwrap();
+            scope.session_id = "replacement".to_owned();
+            page.show(
+                Some(Rc::clone(&replacement)),
+                scope.clone(),
+                vec![ObjectKind::View],
+            );
+            respond(9, Err(error));
             assert_eq!(page.store.n_items(), 0);
             assert!(page.token.borrow().is_empty());
-            assert!(page.status.text().is_empty());
+            assert!(page.loading.get());
             assert!(!page.more.is_visible());
+            replacement.dispatch(MetadataEvent::Children {
+                id: 1,
+                result: Ok(nodes("replacement_row", "")),
+            });
+            assert_eq!(page.entry_at(0).unwrap().display_name, "replacement_row");
+            assert!(!page.loading.get());
+
+            page.invalidate();
+            assert!(page.refresh_pending());
+            page.show(
+                Some(Rc::clone(&replacement)),
+                scope.clone(),
+                vec![ObjectKind::View],
+            );
+            let refreshing_generation = page.generation.get();
+            page.show(Some(Rc::clone(&replacement)), scope, vec![ObjectKind::View]);
+            assert_eq!(page.generation.get(), refreshing_generation);
+            replacement.dispatch(MetadataEvent::Children {
+                id: 2,
+                result: Err(MetadataError::Unavailable {
+                    message: "failed refresh".to_owned(),
+                }),
+            });
+            assert!(page.refresh_pending());
+            page.filter_entry.set_text("fresh");
+            assert!(page.refresh_pending() && !page.loading.get());
+            assert_eq!(page.store.n_items(), 1);
+            page.more.emit_clicked();
+            replacement.dispatch(MetadataEvent::Children {
+                id: 3,
+                result: Ok(nodes("fresh", "")),
+            });
+            assert_eq!(page.entry_at(0).unwrap().display_name, "fresh");
+            assert!(!page.refresh_pending() && !page.loading.get());
         });
     }
 
