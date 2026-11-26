@@ -62,7 +62,7 @@ impl_notes = [
 trigger = "load"
 precondition = "工作区建立 / 启动态落地"
 result = "在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表"
-source = "src/tabs.rs:1774、src/tabs.rs:1790、src/tabs.rs:1794、src/startup.rs:178"
+source = "src/tabs.rs::TabSet::add_objects_page"
 
 [[component.interaction]]
 trigger = "click"
@@ -85,8 +85,8 @@ source = "src/tabs.rs:1393、src/tabs.rs:2684"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "941e53e473ba"
-evidence = "test_15_refresh_regressions.py::test_objects_scope_survives_connection_selection：普通标签往返恢复原范围；启动与关闭回归覆盖固定页。"
+spec_hash = "a1ac04bef4ed"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：服务失效后恢复同一 SQL 编辑器，Objects 单页使用重新连接并保留单例。"
 
 [[component]]
 id = "objects_page.table"
@@ -388,7 +388,7 @@ source = "src/tabs.rs:854、src/tabs.rs:1016"
 trigger = "load"
 precondition = "启动态（未连接）"
 result = "标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」"
-source = "src/startup.rs:180、src/startup.rs:182"
+source = "src/tabs.rs::TabSet::set_initial_objects_hint、src/ui.rs::show_startup_workspace"
 
 [[component.interaction]]
 trigger = "load"
@@ -410,5 +410,5 @@ source = "src/tabs.rs:971、src/tabs.rs:1025"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0680adafc61c"
-evidence = "§3 空态文案（连接态 / 启动态）+ Functions / Queries 未实现说明"
+spec_hash = "e9783d5c79d2"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：启动态与只保留 Objects 的恢复；tests/ui/linux/results/run.3jtK5EPM/report.json S1 的 Objects 导航与独立作用域。"

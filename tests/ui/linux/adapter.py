@@ -261,7 +261,7 @@ def press_keys(*names: str):
             xtest.XTestFakeKeyEvent(display, code, False, 0)
 
 
-def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5):
+def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5, count: int = 1):
     """Click the AT-SPI bounds of a semantically located control."""
     # GTK4 reports (0, 0) for SCREEN coordinates. Offset its window-relative
     # AT-SPI bounds by the active X11 client's origin on the private display.
@@ -286,10 +286,11 @@ def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5):
         y = int(origin[1]) + bounds.y + bounds.height // 2
         if not xtest.XTestFakeMotionEvent(display, -1, x, y, 0):
             raise UIError("XTEST pointer motion failed")
-        if not xtest.XTestFakeButtonEvent(display, button, True, 0):
-            raise UIError("XTEST pointer press failed")
-        if not xtest.XTestFakeButtonEvent(display, button, False, 0):
-            raise UIError("XTEST pointer release failed")
+        for _ in range(count):
+            if not xtest.XTestFakeButtonEvent(display, button, True, 0):
+                raise UIError("XTEST pointer press failed")
+            if not xtest.XTestFakeButtonEvent(display, button, False, 0):
+                raise UIError("XTEST pointer release failed")
 
 
 def set_text(acc, text: str):

@@ -50,7 +50,7 @@ a11y.name = "Sqarvo 主窗口"
 impl_notes = [
   "最小尺寸由 window_size::relayout 算出后交给 set_size_request，GTK 转成 toplevel 的最小尺寸（Wayland 走 xdg_toplevel.set_min_size，X11 走 WM normal hints）。",
   "位置不恢复是平台事实：GTK4 没有读写 toplevel 位置的 API，window_x / window_y 照常写入与校验但不拿来挪窗口（blocked 的替代口径见 README「同步」一节）。",
-  "关闭是一次性的：确认过一次（`close_confirmed`）后再关不二次弹窗，已进入关闭流程（`closing == true`）时的重复关闭请求直接放行，不重复跑清理。",
+  "关闭是一次性的：确认过一次（`close_confirmed`）后再关不二次弹窗，已进入关闭流程时，重复请求继续等待同一次 worker 清理完成。",
 ]
 
 [[component.interaction]]
@@ -74,7 +74,7 @@ source = "src/window_size.rs:365、src/window_size.rs:429"
 [[component.interaction]]
 trigger = "click"
 precondition = "点标题栏的关闭按钮"
-result = "先过脏行守卫：任一个表数据标签有未提交的更改（脏行 / 标记删除 / 未提交的新增行）时**不关窗**，弹「有未提交的更改」确认框（逐表列出；本体不在这里登记），选「取消」什么都不做、「放弃更改并退出」才继续。确认过一次后再关不再二次弹窗；继续后显示「正在停止后端并清理端点文件…」，等 worker 回报 `ShutdownComplete` 才销毁窗口"
+result = "窗口关闭、应用退出和语言切换重启共用关闭守卫。逐表列出脏行，逐标签列出未保存 SQL 及活动事务、待提交结果或执行中的查询。选「取消」保留工作区和编辑；选「放弃更改并退出」才继续。等 worker 回报 `ShutdownComplete` 后销毁窗口"
 source = "src/ui.rs:414、src/ui.rs:985、src/ui.rs:972"
 
 [[component.interaction]]
@@ -88,8 +88,8 @@ platform_notes.windows = "位置可恢复（Linux 不可）：记忆矩形先钳
 
 [component.sync.linux]
 state = "done"
-spec_hash = "46d6233e87e8"
-evidence = "test_10_layout.py 实际三档最小窗口、原生最大化、关闭、重启及恢复；window_size / window_state 单测。 tests/ui/linux/results/run.9ME2GefI/report.json"
+spec_hash = "4e433871695f"
+evidence = "tests/ui/linux/results/run.DmA8Fxr9/report.json：关窗、退出和语言重启的草稿保护。tests/ui/linux/results/run.ID18uRL0/report.json：关闭取消同时保留 SQL、待提交结果及会话。"
 
 [[component]]
 id = "shell.header"
@@ -183,7 +183,7 @@ impl_notes = [
   "图标是 `open-menu-symbolic` 的扁平按钮，tooltip 原文是「主菜单（文件 / 视图 / MCP / 帮助）」。",
   "「查询」子菜单整项不挂（不留空菜单）；「表」也整项不挂——唯一条目「导出 CSV」暂时隐藏（改动确认单 #1 / #198，见 shell.menu.export_csv）。「关闭标签」与表的事务 / 刷新 / 行列操作只保留 `win.*` 动作与快捷键，菜单里不重复一份。",
   "「视图」下是三个三级小节（深色模式 / 界面密度 / 语言），都是真子菜单：条目绑 stateful `win.*`，当前值打勾、不可用项由该条动作 `enabled=false` 置灰；不再有自绘占位小节。",
-  "「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 一键起新进程并走正常清理退出；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。",
+  "「语言」小节（#199，ADR 0031 决策 6）：三个 stateful 单选项（跟随系统 / 简体中文 / English，动作 `win.lang-system/lang-zh/lang-en`），当前偏好打勾；与主题不同，**切换重启生效**——点选会改生效值时弹「切换语言需要重启」确认框（「重启」= 先走窗口关闭守卫；获准退出后才保存语言偏好并起新进程；「稍后」只回滚勾选、不落盘）；生效值不变的点选（如中文系统上从「跟随系统」改点「简体中文」）直接更新勾选并写 `window.json`，不打扰用户。",
   "外壳区条目文字与 tooltip 自 #199 起经 `l10n/shell.toml` 生成 catalog（`l10n::t`）取值：zh 与登记的中文原文逐字节相同，英文界面显示对应译文；「视图 → 语言」的条目文字在英文界面下仍按自译名显示（简体中文 / English）。",
   "弹层条目文字的规则只有一条：`popover label, menuitem label { font-weight: font_weight_menu }`。400 时「色」的细撇在 1x 屏只剩 1px 宽（暗底上读成缺一笔），500 让它变实；字号不动 —— 弹层按系统 11pt 渲染，不跟窗口的 12px（改动确认单 #2）。",
 ]
@@ -191,15 +191,15 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "窗口存在"
-result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（清除选择 / 深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认（「稍后」回滚勾选）"
+result = "展开主菜单：文件（新建连接 / 新建查询标签 / 退出）、视图（清除选择 / 深色模式 ▸ 跟随系统 / 浅色 / 深色、界面密度 ▸ 紧凑 / 舒适 / 大、语言 ▸ 跟随系统 / 简体中文 / English）、MCP（管理页）、帮助（关于 Squarvo）；弹出时刷新界面密度的勾选、条目文字（放不下时追加「，放不下」）与逐项可用性；语言的勾选反映当前偏好，点选改生效值时弹重启确认；在重启确认或关闭守卫中取消时保留当前语言及工作区"
 source = "src/ui.rs:4945、src/ui.rs:321"
 
 platform_notes.windows = "v0.2.5 起不再是 MenuBar：标题行右侧一个 Button（Segoe MDL2 Assets 字形 E700）+ Button.Flyout 里的 MenuFlyout，两个 MenuFlyoutSubItem（文件 / 帮助）装同一批条目（「表 → 导出 CSV」已随改动确认单 #1 / #198 删除），条目名与接线未变。旧实现里 MenuBar/MenuBarItem 的 FontSize 不生效（A/B 像素 diff 零变化）这条随 MenuBar 一起消失；MenuFlyoutItem 的 FontSize 取 Size.FontUi，弹层是否完全尊重未单独核对。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6e38f2035271"
-evidence = "GTK 菜单模型单测验证视图 → 清除选择绑定 win.clear-selection；test_16_workspace_context.py::test_navigation_target_and_clear_selection 通过该公开动作验证清除后回退工作区。"
+spec_hash = "6a320230b242"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：草稿创建、编辑、关闭与退出取消、语言重启取消、服务恢复。"
 
 [[component]]
 id = "shell.menu.new_connection"
@@ -242,7 +242,7 @@ impl_notes = ["与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同�
 [[component.interaction]]
 trigger = "click"
 precondition = "后端已握手且工作区存在（`set_workspace_ready` 统一开关）"
-result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。目标缺失或不可用时在侧栏提示，成功时聚焦编辑器。后端未就绪或工作区未建立时入口禁用"
+result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；明确不可用的目标在侧栏提示。成功时聚焦编辑器；握手前禁用入口"
 source = "src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859"
 
 [[component.interaction]]
@@ -254,8 +254,8 @@ source = "src/ui.rs:327"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0a3c79a29497"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：win.new-tab 对失效、删除目标提示并保持标签数。test_03_sql.py 验证独立查询与执行。"
+spec_hash = "7a88cef1d99e"
+evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
 
 [[component]]
 id = "shell.menu.clear_selection"
@@ -285,12 +285,12 @@ kind = "item"
 status = "active"
 style.metrics = ["font_ui"]
 a11y.name = "退出"
-impl_notes = ["菜单项走 `app.quit`，与 `Ctrl+Q`、D-Bus 同一个入口；有窗口时先关窗，因此脏行守卫照常生效。"]
+impl_notes = ["菜单项走 `app.quit`，与 `Ctrl+Q`、D-Bus 同一个入口；有窗口时先关窗，因此 SQL 草稿、脏行和活动会话的关闭守卫照常生效。"]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "任意"
-result = "有窗口时先 `window.close()`（脏行未提交会先弹确认框），最后一个窗口关完后 GApplication 自然退出；没有窗口时才直接 `app.quit()`。两种情况 `connect_shutdown` 都会停后端并 join 子进程，不留孤儿进程"
+result = "有窗口时先 `window.close()`（存在需要保护的内容或会话操作时弹确认框），最后一个窗口关完后 GApplication 自然退出；没有窗口时才直接 `app.quit()`。两种情况 `connect_shutdown` 都会停后端并 join 子进程，不留孤儿进程"
 source = "src/ui.rs:4596、src/main.rs:353"
 
 [[component.interaction]]
@@ -302,8 +302,8 @@ source = "src/main.rs:76"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "d618be550538"
-evidence = "§1.1 退出应用；quit_app 的「先关窗」分支与 accel 绑定"
+spec_hash = "c8d1bd9832b7"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：草稿创建、编辑、关闭与退出取消、语言重启取消、服务恢复。"
 
 [[component]]
 id = "shell.menu.export_csv"
@@ -377,7 +377,7 @@ a11y.name = "主工具条"
 impl_notes = [
   "窗口级控件（在标题栏之下创建），不随工作区重建：窗口构建后、拿到 worker 之前先置未就绪；握手完成置就绪；后端失效 / 退出 / 重启回退未就绪。",
   "左组 = 连接 / 新建查询；竖分隔线；种类入口组（Tables / Views / Functions / Queries，纯拉丁文字、与「新建查询」同一套 flat 样式）；其余空间弹性留白。",
-  "六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`；启动态「新建查询」禁用时是 5/6。",
+  "六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`。",
   "四个种类入口共用一条目标库解析：取树里**当前选中项所在的库**（选中的表 / 视图 / 分组也算），只有什么都没选中时才退回活动连接的默认库；多连接按「会话 ID + 库名」精确匹配，避免同名 `main` 跳到别的连接（`selected_catalog` / `catalog_row` 的 require_session 一遍）。",
   "种类入口是纯拉丁文字，与中文混排时字面会偏上，由 `.sqarvo-kind label` 的 margin-top 补回来（按钮盒子与命中区不变）。",
 ]
@@ -398,8 +398,8 @@ platform_notes.windows = "工具条**不是** CommandBar：#170 把它换成 Com
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ea0e4cffb7e7"
-evidence = "§1.2 主工具条结构与「窗口级、不随工作区重建」；Toolbar::new / set_backend_ready / log_availability"
+spec_hash = "7d805591faea"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：启动握手、控制可用性和统一新建查询。"
 
 [[component]]
 id = "shell.toolbar.connect"
@@ -435,21 +435,21 @@ status = "active"
 style.metrics = ["min_target", "font_ui"]
 a11y.name = "新建查询"
 impl_notes = [
-  "两个独立条件同时满足才可点：后端已握手 **且** 已连接数据库（工作区存在）；两者正交，任一不满足都禁用。",
-  "tooltip 三态：启用「新建查询标签（Ctrl+T）」；未连接「尚未连接数据库：先连接再新建查询标签」；后端未就绪「后端尚未就绪：握手完成且连接数据库后才能新建查询标签」。",
+  "握手成功后可用，尚无连接也可新建未绑定查询。",
+  "启用时 tooltip 为「新建查询标签（Ctrl+T）」；后端未就绪时说明握手完成后可新建。",
   "与标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」同一条 `TabSet::new_query_tab`。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "后端已握手且工作区存在"
-result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。目标缺失或不可用时在侧栏提示，成功时聚焦编辑器。后端未就绪或工作区未建立时入口禁用"
+result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；明确不可用的目标在侧栏提示。成功时聚焦编辑器；握手前禁用入口"
 source = "src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "208555801c16"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：直接点新建查询在两条同名 main 的独立会话读到 A/B；清除后跟随活动页。test_01_startup.py 断言未连接时可访问的禁用原因。"
+spec_hash = "44dad68d32d8"
+evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
 
 [[component]]
 id = "shell.toolbar.tables"
@@ -477,13 +477,13 @@ source = "src/ui.rs:1078、src/ui.rs:1909、src/shell.rs:958"
 [[component.interaction]]
 trigger = "click"
 precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
-source = "src/ui.rs:1942、src/startup.rs:298"
+result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
+source = "src/ui.rs::show_objects_for_kind"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "23e475dd453e"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：只选 B 连接时提示选择库；选中 B 的 main 时列出 peer_only。"
+spec_hash = "948b17828384"
+evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
 
 [[component]]
 id = "shell.toolbar.views"
@@ -510,13 +510,13 @@ source = "src/ui.rs:1078、src/ui.rs:1904、src/ui.rs:1920"
 [[component.interaction]]
 trigger = "click"
 precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
-source = "src/ui.rs:1942、src/startup.rs:298"
+result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
+source = "src/ui.rs::show_objects_for_kind"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a26cf6a66875"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：过同一目标解析路径从 B 的 main 列出 peer_view。"
+spec_hash = "8bff5bb1e3e2"
+evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
 
 [[component]]
 id = "shell.toolbar.functions"
@@ -543,13 +543,13 @@ source = "src/ui.rs:1931、src/tabs.rs:518、src/ui.rs:1928"
 [[component.interaction]]
 trigger = "click"
 precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
+result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
 source = "src/ui.rs:1948"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "58e26138dc99"
-evidence = "test_15_refresh_regressions.py::test_objects_unsupported_kind_survives_reentry_and_f5[Functions]：未实现说明在重入、F5 后保留，Objects 请求次数不增加。"
+spec_hash = "0b06f8bf6d32"
+evidence = "tests/ui/linux/results/run.d98WgmUQ/report.json：Functions 重入及 F5；tests/ui/linux/results/run.x16Mog9W/report.json 启动可达。"
 
 [[component]]
 id = "shell.toolbar.queries"
@@ -576,13 +576,13 @@ source = "src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928"
 [[component.interaction]]
 trigger = "click"
 precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "连接态在侧栏提示先选择数据库或目标已不可用，保留当前工作区。启动态沿用现有反馈"
+result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
 source = "src/ui.rs:1948"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b67b9a9723e8"
-evidence = "test_15_refresh_regressions.py::test_objects_unsupported_kind_survives_reentry_and_f5[Queries]：未实现说明在重入、F5 后保留，Objects 请求次数不增加。"
+spec_hash = "45fad8389d25"
+evidence = "tests/ui/linux/results/run.d98WgmUQ/report.json：Queries 重入及 F5；tests/ui/linux/results/run.x16Mog9W/report.json 启动可达。"
 
 [[component]]
 id = "shell.theme"
@@ -825,14 +825,14 @@ source = "src/ui.rs:3774、src/ui.rs:567"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "后端断开且没有工作区"
+precondition = "后端断开且没有普通业务标签可提供页内恢复入口"
 result = "同一张 StatusPage 换成「已断开连接」+ 断开原因 + 「重新连接」；标题「Sqarvo」、副标题「已断开」"
 source = "src/ui.rs:3792、src/ui.rs:602"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "bd6f6da90e50"
-evidence = "§1.1 后端握手失败 / 后端断开；show_error 与 show_disconnected"
+spec_hash = "a7aceeb33b2f"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：服务失效后恢复同一 SQL 编辑器，Objects 单页使用重新连接并保留单例。"
 
 [[component]]
 id = "shell.error.retry"
@@ -875,13 +875,13 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "点任一标签的后端失效横幅「重启 Sqarvo」，或数据页错误横幅"
-result = "弹 AdwAlertDialog「Sqarvo 需要重启」+「本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，未提交的更改会丢失。」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消）"
+result = "弹 AdwAlertDialog「Sqarvo 需要重启」+「本地服务已失效，Sqarvo 无法继续读写数据库。重启本地服务会保留当前标签和 SQL 草稿。」；按钮：取消 / 查看日志 / 重启 Sqarvo（破坏性，默认取消）"
 source = "src/ui.rs:1379、src/sql_page.rs:128"
 
 [[component.interaction]]
 trigger = "click"
 precondition = "对话框里选「重启 Sqarvo」"
-result = "不新开进程：释放工作区与全部标签会话 → 清后端会话登记 → 工具条 / 菜单回未就绪 → 标题「Sqarvo」、副标题「正在重启…」→ 回到 Loading「正在重启 Sqarvo…」→ 重新握手"
+result = "在原窗口重启本地服务并重新握手。保留已有工作区、标签、布局与编辑缓冲区；失效的会话禁用。确认退出的旧进程释放其会话额度；结果未知时保留额度。已绑定查询可在服务恢复后显式重新连接本档案。"
 source = "src/ui.rs:1403"
 
 [[component.interaction]]
@@ -892,8 +892,8 @@ source = "src/ui.rs:1393"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b65d1eadbaf0"
-evidence = "§1.1 后端失效 / 重启 Sqarvo；show_backend_failure_dialog 与 restart_software"
+spec_hash = "5d69a248304a"
+evidence = "tests/ui/linux/results/run.DmA8Fxr9/report.json：Objects 单页恢复、草稿编辑器保留、旧服务强制回收及原档案显式重连，SQL 未自动执行。"
 
 [[component]]
 id = "shell.menu.mcp"

@@ -124,8 +124,8 @@ status = "done"
 
 [[entry]]
 key = "tabs.limit_body"
-zh = "标签上限 {MAX_TABS} 个（当前已开 {open} 个）：请先关闭一个标签再新建"
-en = "The tab limit is {MAX_TABS} ({open} open now): close a tab before opening a new one"
+zh = "独立会话上限 {MAX_TABS} 个（当前占用 {open} 个）：请等待会话释放，或关闭有会话的标签后重试。"
+en = "The independent session limit is {MAX_TABS} ({open} in use). Wait for a session to close or close a tab with a session, then retry."
 status = "done"
 
 [[entry]]
@@ -927,4 +927,76 @@ status = "done"
 key = "tabs.query_rebind_restore_failed"
 zh = "无法恢复此查询原来的数据库上下文。查询已断开。"
 en = "The original database context could not be restored. The query is disconnected."
+status = "done"
+
+[[entry]]
+key = "tabs.query_backend_unavailable"
+zh = "本地服务尚未就绪"
+en = "The local service is not ready"
+status = "done"
+
+[[entry]]
+key = "tabs.query_unbound"
+zh = "请先选择并绑定连接，再执行 SQL"
+en = "Bind a connection before running SQL"
+status = "done"
+
+[[entry]]
+key = "tabs.query_cancel_binding"
+zh = "取消绑定"
+en = "Cancel Binding"
+status = "done"
+
+[[entry]]
+key = "tabs.query_binding_cancelled"
+zh = "绑定已取消，正在清理会话"
+en = "Binding cancelled. Releasing the session."
+status = "done"
+
+[[entry]]
+key = "tabs.query_release_unconfirmed"
+zh = "会话释放尚未确认，仍占用一个会话名额"
+en = "Session release is unconfirmed. It still occupies a session slot."
+status = "done"
+
+[[entry]]
+key = "tabs.close_sql_draft"
+zh = "关闭将放弃此标签的未保存 SQL。"
+en = "Closing will discard the unsaved SQL in this tab."
+status = "done"
+
+[[entry]]
+key = "tabs.close_sql_results"
+zh = "关闭将放弃结果中的待提交更改。"
+en = "Closing will discard pending result edits."
+status = "done"
+
+[[entry]]
+key = "tabs.close_sql_transaction"
+zh = "关闭将回滚此标签的活动事务。"
+en = "Closing will roll back this tab's open transaction."
+status = "done"
+
+[[entry]]
+key = "tabs.close_sql_running"
+zh = "关闭将取消此标签正在运行的查询。"
+en = "Closing will cancel this tab's running query."
+status = "done"
+
+[[entry]]
+key = "tabs.query_choose_connection"
+zh = "选择连接…"
+en = "Choose Connection…"
+status = "done"
+
+[[entry]]
+key = "tabs.query_binding_failed"
+zh = "无法绑定「{target}」：{reason}"
+en = "Could not bind to “{target}”: {reason}"
+status = "done"
+
+[[entry]]
+key = "tabs.query_rebind_failed"
+zh = "无法绑定「{target}」，已保留「{kept}」：{reason}"
+en = "Could not bind to “{target}”. Kept “{kept}”: {reason}"
 status = "done"

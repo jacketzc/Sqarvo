@@ -851,3 +851,9 @@ key = "object_tree.target_connection_required"
 zh = "请先选择要查询的连接或数据库。"
 en = "Select a connection or database to query."
 status = "done"
+
+[[entry]]
+key = "object_tree.dlg_edit_sql_line"
+zh = "关闭将放弃这些标签的未保存 SQL：{titles}"
+en = "Closing will discard unsaved SQL in these tabs: {titles}"
+status = "done"

@@ -229,8 +229,8 @@ status = "done"
 
 [[entry]]
 key = "shell.tooltip_new_query_not_ready"
-zh = "后端尚未就绪：握手完成且连接数据库后才能新建查询标签"
-en = "Backend not ready: finish the handshake and connect to a database before opening a new query tab"
+zh = "本地服务尚未就绪：握手完成后可新建查询标签"
+en = "Local service not ready: complete the handshake before opening a new query tab"
 status = "done"
 
 [[entry]]
@@ -325,8 +325,8 @@ status = "done"
 
 [[entry]]
 key = "shell.recovery_body"
-zh = "本地服务已失效，Sqarvo 无法继续读写数据库。重启会关闭所有标签页，             未提交的更改会丢失。"
-en = "The local service has stopped working, so Sqarvo can no longer read or write the database. Restarting closes all tabs, and uncommitted changes will be lost."
+zh = "本地服务已失效，Sqarvo 无法继续读写数据库。重启本地服务会保留当前标签和 SQL 草稿。"
+en = "The local service has stopped working, so Sqarvo can no longer read or write the database. Restarting the service keeps your tabs and SQL drafts."
 status = "done"
 
 [[entry]]

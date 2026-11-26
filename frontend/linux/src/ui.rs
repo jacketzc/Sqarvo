@@ -74,10 +74,8 @@ struct UiState {
     /// headerbar 的主菜单按钮（`--qa-open-menu` 要打开并拍摄它的弹出层；
     /// 产品路径除了构建时不读它）。
     menu: RefCell<Option<gtk::MenuButton>>,
-    /// 当前工作区（对象树 + SQL 编辑器 + 数据页 + DDL 面板；连接数据库后建立）。
+    /// 握手成功后创建的工作区，数据库连接与本地服务恢复都复用它。
     workspace: RefCell<Option<Rc<Workspace>>>,
-    /// 启动态工作区（握手成功、尚未连接数据库时的六区域外壳；#139）。
-    startup: RefCell<Option<Rc<crate::startup::StartupWorkspace>>>,
     /// 当前打开的「关于 Squarvo」对话框（QA 断言读真实控件文本用）。
     about: RefCell<Option<adw::Dialog>>,
     /// 端点描述文件路径：元数据通道（对象树 / 搜索 / DDL）自己建立 Channel 时要用。
@@ -98,6 +96,9 @@ struct UiState {
     registry: RefCell<Option<Rc<ConnectionRegistry>>>,
     /// 成功的 `Connect` 次数（浏览会话建立事件计数；QA 断言「只连一次」用）。
     connect_count: Cell<usize>,
+    restart_language: Cell<Option<l10n::Lang>>,
+    close_prompt_open: Cell<bool>,
+    credential_binding: RefCell<Option<(String, String)>>,
 }
 
 impl UiState {
@@ -287,7 +288,6 @@ pub fn activate(app: &adw::Application) {
         header: header.clone(),
         menu: RefCell::new(Some(menu_button.clone())),
         workspace: RefCell::new(None),
-        startup: RefCell::new(None),
         about: RefCell::new(None),
         endpoint_path,
         backend: RefCell::new(None),
@@ -298,6 +298,9 @@ pub fn activate(app: &adw::Application) {
         toolbar: RefCell::new(None),
         registry: RefCell::new(registry),
         connect_count: Cell::new(0),
+        restart_language: Cell::new(None),
+        close_prompt_open: Cell::new(false),
+        credential_binding: RefCell::new(None),
     });
 
     crate::mcp_management::install(&window, &state.mcp_access);
@@ -453,6 +456,11 @@ pub fn activate(app: &adw::Application) {
             let Some(worker) = guard.as_mut() else {
                 return glib::Propagation::Proceed;
             };
+            if let Some(target) = state.restart_language.take()
+                && !restart_in_new_process(&state, target)
+            {
+                return glib::Propagation::Stop;
+            }
             closing.set(true);
             state.mcp_access.disconnect();
             show_loading(&state.slot, &state.title, l10n::t("startup.desc_stopping"));
@@ -468,21 +476,27 @@ pub fn activate(app: &adw::Application) {
         let close_confirmed = Rc::clone(&close_confirmed);
         let begin_shutdown = Rc::clone(&begin_shutdown);
         move |_window| {
-            // 关闭过程中（已开始清理）直接放行：不再检查脏行。
+            // The worker owns teardown until ShutdownComplete.
             if closing.get() {
-                return glib::Propagation::Proceed;
+                return glib::Propagation::Stop;
             }
             if !close_confirmed.get()
-                && let Some(dirty) = dirty_tab_summaries(&state)
+                && let Some(workspace) = state.workspace.borrow().clone()
             {
-                confirm_close_with_dirty(
-                    &state,
-                    &dirty,
-                    &close_confirmed,
-                    Rc::clone(&begin_shutdown),
-                );
-                // 关窗被守卫拦下：窗口保持打开，等用户回答。
-                return glib::Propagation::Stop;
+                let dirty = workspace.tabs.dirty_tab_summaries();
+                let sql = workspace.tabs.unsaved_sql_tabs();
+                let active = workspace.tabs.active_close_titles();
+                if !dirty.is_empty() || !sql.is_empty() || !active.is_empty() {
+                    confirm_close_with_dirty(
+                        &state,
+                        &dirty,
+                        &sql,
+                        &active,
+                        &close_confirmed,
+                        Rc::clone(&begin_shutdown),
+                    );
+                    return glib::Propagation::Stop;
+                }
             }
             begin_shutdown()
         }
@@ -506,13 +520,15 @@ pub fn activate(app: &adw::Application) {
         let pump_state = Rc::clone(&state);
         glib::spawn_future_local(async move {
             while let Ok(event) = session_events.recv().await {
+                if !registry.accepts_event(&event) {
+                    registry.dispatch(event);
+                    continue;
+                }
                 // 结果要在消费事件之前取出：dispatch 会把它搬进注册表状态。
                 let opened = match &event {
-                    SessionEvent::Opened {
-                        key,
-                        session,
-                        request: _,
-                    } => Some((key.clone(), session.clone())),
+                    SessionEvent::Opened { key, session, .. } => {
+                        Some((key.clone(), session.clone()))
+                    }
                     _ => None,
                 };
                 let failure = match &event {
@@ -531,7 +547,10 @@ pub fn activate(app: &adw::Application) {
                     _ => None,
                 };
                 registry.dispatch(event);
-                if let Some((key, session)) = opened {
+                if let Some((key, session)) = opened
+                    && registry.session_for_key(&key).as_deref()
+                        == Some(session.session_id.as_str())
+                {
                     pump_state
                         .connect_count
                         .set(pump_state.connect_count.get() + 1);
@@ -553,7 +572,13 @@ pub fn activate(app: &adw::Application) {
         while let Ok(event) = events.recv().await {
             match event {
                 Event::Stage(stage) => {
-                    if !events_closing.get() {
+                    if !events_closing.get()
+                        && events_state
+                            .workspace
+                            .borrow()
+                            .as_ref()
+                            .is_none_or(|workspace| workspace.widget().parent().is_none())
+                    {
                         // 阶段文案在显示边界按枚举 → catalog 取（#199；zh 与迁移前逐字相同）。
                         show_loading(&events_state.slot, &events_state.title, stage.message());
                     }
@@ -586,17 +611,6 @@ pub fn activate(app: &adw::Application) {
                             .map(|driver| (driver.display_name.clone(), driver.driver_id.clone()))
                             .collect(),
                     }));
-                    // 还没有数据库连接：标题按 §5.1 回到 `Sqarvo`。
-                    events_state.title.set_title("Sqarvo");
-                    events_state.connection_name.replace(None);
-                    // 重新握手成功后旧的工作区已失效（数据库会话不跨后端进程）。
-                    if let Some(workspace) = events_state.workspace.borrow_mut().take() {
-                        workspace.shutdown();
-                    }
-                    if let Some(registry) = events_state.registry.borrow().clone() {
-                        registry.reset_sessions("后端已重新握手：浏览会话需要重建");
-                    }
-                    // #139：握手成功即落地工作区外壳，不再停在 v0.1 诊断页。
                     show_startup_workspace(&events_state, &snapshot);
                     if let Some(worker) = events_state.worker.borrow().as_ref() {
                         events_state.mcp_access.connect(worker);
@@ -613,25 +627,39 @@ pub fn activate(app: &adw::Application) {
                         events_state.mcp_access.disconnect();
                         events_state.backend_ready.set(false);
                         events_state.toolbar().set_backend_ready(false);
-                        events_state.startup.borrow_mut().take();
                         events_state.title.set_title("Sqarvo");
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
-                        show_error(
-                            &events_state.slot,
-                            &events_state.title,
-                            &message,
-                            &events_retry,
-                        );
+                        if let Some(workspace) = events_state
+                            .workspace
+                            .borrow()
+                            .as_ref()
+                            .filter(|workspace| workspace.widget().parent().is_some())
+                        {
+                            workspace.tabs.set_backend_ready(false);
+                            workspace.status().set_idle_summary(Some(&message));
+                            show_backend_failure_dialog(&events_state);
+                        } else {
+                            show_error(
+                                &events_state.slot,
+                                &events_state.title,
+                                &message,
+                                &events_retry,
+                            );
+                        }
                     }
                 }
-                Event::Disconnected(reason) => {
+                Event::BackendSessionsReleased(pid) => {
+                    if let Some(workspace) = events_state.workspace.borrow().as_ref() {
+                        workspace.tabs.on_backend_sessions_released(pid);
+                    }
+                }
+                Event::Disconnected { reason } => {
                     if !events_closing.get() {
                         events_state.mcp_access.disconnect();
                         events_state.backend_ready.set(false);
                         events_state.toolbar().set_backend_ready(false);
-                        events_state.startup.borrow_mut().take();
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
@@ -648,6 +676,8 @@ pub fn activate(app: &adw::Application) {
                         let workspace = events_state.workspace.borrow().as_ref().cloned();
                         match workspace {
                             Some(workspace) => {
+                                workspace.session_id.replace(None);
+                                workspace.tabs.set_backend_ready(false);
                                 workspace.tabs.mark_disconnected(&reason);
                                 // 旧会话的展示状态与在途响应一并作废，重连后按新会话重查。
                                 workspace.inspector.mark_disconnected();
@@ -656,6 +686,15 @@ pub fn activate(app: &adw::Application) {
                                 workspace
                                     .status()
                                     .set_sql_summary(l10n::t("status_bar.sql_disconnected"));
+                                // Without a business tab there is no in-page recovery button.
+                                if workspace.tabs.tabs().len() == 1 {
+                                    show_disconnected(
+                                        &events_state.slot,
+                                        &events_state.title,
+                                        &reason,
+                                        &events_retry,
+                                    );
+                                }
                             }
                             None => show_disconnected(
                                 &events_state.slot,
@@ -700,10 +739,7 @@ pub fn activate(app: &adw::Application) {
                                 "dialogs.profile_load_failed",
                                 &[("error", failure.detail().to_owned())],
                             );
-                            if let Some(startup) = events_state.startup.borrow().as_ref() {
-                                startup.shell().status().set_idle_summary(Some(&message));
-                            } else if let Some(workspace) = events_state.workspace.borrow().as_ref()
-                            {
+                            if let Some(workspace) = events_state.workspace.borrow().as_ref() {
                                 workspace.status().set_idle_summary(Some(&message));
                             }
                             eprintln!("[connections] {message} [{}]", failure.code());
@@ -738,18 +774,23 @@ pub fn activate(app: &adw::Application) {
                     }
                     match result {
                         Ok(outcome) => {
+                            let binding = events_state.credential_binding.borrow_mut().take();
                             if let Some(dialog) = dialog.as_ref() {
                                 dialog.close();
                             }
                             let name = outcome.display_label();
                             if let Some(registry) = events_state.registry.borrow().clone() {
-                                registry.upsert_profile(outcome);
+                                let key = registry.upsert_profile(outcome);
+                                if let Some((tab_id, wanted)) = binding
+                                    && wanted == key
+                                    && let Some(workspace) = events_state.workspace.borrow().clone()
+                                {
+                                    workspace.tabs.rebind_connection(&tab_id, &key);
+                                }
                             }
                             let message = l10n::tf("status_bar.idle_saved", &[("name", name)]);
                             if let Some(workspace) = events_state.workspace.borrow().as_ref() {
                                 workspace.status().set_idle_summary(Some(&message));
-                            } else if let Some(startup) = events_state.startup.borrow().as_ref() {
-                                startup.shell().status().set_idle_summary(Some(&message));
                             }
                             eprintln!("[connections] {message}");
                         }
@@ -781,9 +822,7 @@ pub fn activate(app: &adw::Application) {
                                 registry.log_sessions("保存并连接后");
                                 registry.open(&key);
                             }
-                            // 已连上数据库：启动态外壳由连接后的工作区整体替换
-                            // （当前宽度由 show_workspace 读走后再释放启动态）。
-                            show_workspace(
+                            workspace_connected(
                                 &events_state,
                                 &outcome,
                                 outcome
@@ -836,6 +875,7 @@ pub fn activate(app: &adw::Application) {
                     tab_id,
                     attempt,
                     result,
+                    release,
                 } => {
                     let workspace = events_state.workspace.borrow().as_ref().cloned();
                     let Some(workspace) = workspace else {
@@ -845,18 +885,43 @@ pub fn activate(app: &adw::Application) {
                         Ok(opened) => workspace.tabs.on_session(&opened, attempt),
                         Err(failure) => {
                             let message = format!("[{}] {}", failure.code(), failure.detail());
+                            if let Err(error) = release {
+                                workspace
+                                    .tabs
+                                    .on_session_release_uncertain(&tab_id, attempt, error);
+                                continue;
+                            }
+                            let binding_target =
+                                workspace.tabs.pending_binding_target(&tab_id, attempt);
                             workspace.tabs.on_session_failed(
                                 &tab_id,
                                 attempt,
-                                &crate::backend::table::TableFailure::SessionLost { message },
+                                &crate::backend::table::TableFailure::Other {
+                                    code: failure.code().to_owned(),
+                                    message,
+                                },
                             );
+                            if failure.code() == "credential.not_found"
+                                && let Some(key) = binding_target
+                            {
+                                prompt_for_binding_credentials(
+                                    &events_state,
+                                    &tab_id,
+                                    &key,
+                                    failure.headline(),
+                                );
+                            }
                         }
                     }
                 }
-                Event::TabSessionClosed { tab_id, result } => {
+                Event::TabSessionClosed {
+                    tab_id,
+                    request,
+                    result,
+                } => {
                     let workspace = events_state.workspace.borrow().as_ref().cloned();
                     if let Some(workspace) = workspace {
-                        workspace.tabs.on_session_closed(&tab_id, &result);
+                        workspace.tabs.on_session_closed(&tab_id, request, &result);
                     }
                 }
                 Event::TabLost { tab_id, reason } => {
@@ -1107,16 +1172,6 @@ pub fn activate(app: &adw::Application) {
     }
 }
 
-/// 关窗守卫要看的脏行：任一个表数据标签有未提交的更改就返回逐表摘要。
-///
-/// 没有工作区（启动态 / 后端未就绪）时返回 `None`：那时没有可丢失的编辑，
-/// 关窗不该多一次确认。
-fn dirty_tab_summaries(state: &Rc<UiState>) -> Option<Vec<crate::data_page::DirtyTabSummary>> {
-    let workspace = state.workspace.borrow().as_ref().cloned()?;
-    let dirty = workspace.tabs.dirty_tab_summaries();
-    if dirty.is_empty() { None } else { Some(dirty) }
-}
-
 /// 关窗守卫的确认框（`ui-behavior-contract` §8.2）。
 ///
 /// 与「断开连接」确认同一套写法：`AdwAlertDialog`、默认 / 关闭 response 都是「取消」、
@@ -1127,11 +1182,28 @@ fn dirty_tab_summaries(state: &Rc<UiState>) -> Option<Vec<crate::data_page::Dirt
 fn confirm_close_with_dirty(
     state: &Rc<UiState>,
     dirty: &[crate::data_page::DirtyTabSummary],
+    sql: &[String],
+    active: &[String],
     confirmed: &Rc<Cell<bool>>,
     on_discard: Rc<dyn Fn() -> glib::Propagation>,
 ) {
-    let body = crate::tabs::close_guard_body(dirty);
+    let mut sections = Vec::new();
+    if !dirty.is_empty() {
+        sections.push(crate::tabs::close_guard_body(dirty));
+    }
+    for (titles, key) in [
+        (sql, "dialogs.close_guard_sql"),
+        (active, "dialogs.close_guard_active"),
+    ] {
+        if !titles.is_empty() {
+            sections.push(l10n::tf(key, &[("titles", titles.join(", "))]));
+        }
+    }
+    let body = sections.join("\n\n");
     let dialog = adw::AlertDialog::new(Some(l10n::t("dialogs.close_guard_heading")), Some(&body));
+    if state.close_prompt_open.replace(true) {
+        return;
+    }
     dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
     dialog.add_response("discard", l10n::t("dialogs.close_guard_btn_discard_quit"));
     dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
@@ -1153,19 +1225,23 @@ fn confirm_close_with_dirty(
     );
     let handled = Rc::new(Cell::new(false));
     {
-        let confirmed = Rc::clone(confirmed);
         let handled = Rc::clone(&handled);
+        let state = Rc::clone(state);
         dialog.connect_response(None, move |_dialog: &adw::AlertDialog, response: &str| {
             if handled.replace(true) {
                 return;
             }
+            state.close_prompt_open.set(false);
             if response == "discard" {
                 eprintln!("[close] 已放弃未提交更改并退出（{rows} 行）");
-                confirmed.set(true);
                 // 忽略返回值：这里不需要把 Propagation 交给 GTK，窗口由
                 // `ShutdownComplete` 销毁（与原关窗路径一致）。
                 let _ = on_discard();
             } else {
+                state.restart_language.take();
+                if let Some(actions) = state.actions.borrow().as_ref() {
+                    refresh_lang_actions(actions);
+                }
                 eprintln!("[close] 取消关窗：保持在工作区");
             }
         });
@@ -1221,11 +1297,6 @@ fn request_kind_entry(state: &Rc<UiState>, shortcut: crate::tabs::KindShortcut) 
     let workspace = state.workspace.borrow().as_ref().cloned();
     if let Some(workspace) = workspace {
         workspace.show_kind(shortcut);
-        return;
-    }
-    let startup = state.startup.borrow().as_ref().cloned();
-    if let Some(startup) = startup {
-        startup.show_kind(shortcut);
         return;
     }
     eprintln!(
@@ -1302,6 +1373,7 @@ fn open_connection_dialog_for(state: &Rc<UiState>, saved_key: Option<&str>) {
         let state = Rc::clone(state);
         dialog.connect_closed(move || {
             state.dialog.borrow_mut().take();
+            state.credential_binding.borrow_mut().take();
         });
     }
 
@@ -1381,6 +1453,18 @@ fn prompt_for_saved_credentials(state: &Rc<UiState>, key: &str, reason: &str) {
     }
 }
 
+fn prompt_for_binding_credentials(state: &Rc<UiState>, tab_id: &str, key: &str, reason: &str) {
+    if state.dialog.borrow().is_some() {
+        return;
+    }
+    prompt_for_saved_credentials(state, key, reason);
+    if state.dialog.borrow().is_some() {
+        state
+            .credential_binding
+            .replace(Some((tab_id.to_owned(), key.to_owned())));
+    }
+}
+
 /// 浏览会话建立后的界面效果（#144）：**还没有工作区**时落到工作区并展开该连接。
 ///
 /// 已经在工作区里（用户点树上的另一条连接、或 QA 展开树）就什么都不做：注册表
@@ -1391,7 +1475,12 @@ fn browse_session_opened(
     key: &str,
     session: &BrowseSession,
 ) {
-    if state.workspace.borrow().is_some() {
+    if state
+        .workspace
+        .borrow()
+        .as_ref()
+        .is_none_or(|workspace| workspace.session_id.borrow().is_some())
+    {
         return;
     }
     let Some(saved) = registry.saved(key) else {
@@ -1419,7 +1508,7 @@ fn browse_session_opened(
         session.driver_id,
         short_id(&session.session_id)
     );
-    show_workspace(state, &outcome, Some(key));
+    workspace_connected(state, &outcome, Some(key));
     if let Some(workspace) = state.workspace.borrow().as_ref() {
         workspace.expand_connection(key);
     }
@@ -1450,33 +1539,28 @@ fn show_backend_failure_dialog(state: &Rc<UiState>) {
     dialog.present(Some(&state.window));
 }
 
-/// 重启软件：释放工作区与全部标签会话 → 清掉后端会话登记 → 重新握手。
-///
-/// 不新开进程（本应用是单实例，第二个进程只会激活旧窗口），而是在同一个窗口里
-/// 把状态复位到「刚启动」——用户看到的是软件从头开始。
+/// 恢复本地服务，保留现有工作区和编辑缓冲区。
 fn restart_software(state: &Rc<UiState>) {
-    eprintln!("[recovery] 用户选择重启 Sqarvo：释放工作区、会话并重新握手");
-    if let Some(workspace) = state.workspace.borrow_mut().take() {
-        workspace.shutdown();
-    }
-    state.startup.borrow_mut().take();
-    if let Some(registry) = state.registry.borrow().clone() {
-        registry.reset_sessions("用户重启软件");
+    eprintln!("[recovery] 用户选择重启本地服务");
+    if let Some(workspace) = state.workspace.borrow().as_ref() {
+        workspace.tabs.set_backend_ready(false);
     }
     state.backend_ready.set(false);
     state.toolbar().set_backend_ready(false);
     state.connection_name.replace(None);
     if let Some(actions) = state.actions.borrow().as_ref() {
         actions.set_backend_ready(false);
-        actions.set_workspace_ready(false);
+        actions.set_workspace_ready(state.workspace.borrow().is_some());
     }
     state.title.set_title("Sqarvo");
     state.title.set_subtitle(l10n::t("shell.title_restarting"));
-    show_loading(
-        &state.slot,
-        &state.title,
-        l10n::t("startup.desc_restarting"),
-    );
+    if state.workspace.borrow().is_none() {
+        show_loading(
+            &state.slot,
+            &state.title,
+            l10n::t("startup.desc_restarting"),
+        );
+    }
     if let Some(worker) = state.worker.borrow().as_ref() {
         worker.disconnect();
         worker.connect();
@@ -1632,14 +1716,14 @@ fn maybe_run_qa_startup_click(state: &Rc<UiState>) {
     let Some(name) = crate::qa::startup_click() else {
         return;
     };
-    let Some(startup) = state.startup.borrow().clone() else {
+    let Some(startup) = state.workspace.borrow().clone() else {
         eprintln!("[qa] 启动态工作区尚未建立：--qa-startup-click 未生效");
         std::process::exit(4);
     };
     eprintln!("[qa] 启动态点击：{name}");
     // 让第一帧先渲染出来（与用户看到行之后才点同一个顺序）。
     glib::timeout_add_local_once(Duration::from_millis(400), move || {
-        if let Err(reason) = startup.activate_named(&name) {
+        if let Err(reason) = startup.tree.qa_activate_connection(&name) {
             eprintln!("[qa] 启动态点击失败：{reason}");
             std::process::exit(4);
         }
@@ -1648,26 +1732,26 @@ fn maybe_run_qa_startup_click(state: &Rc<UiState>) {
 
 /// QA（`--qa-startup-menu <name>` / `--qa-startup-menu-pick <label>`）：打开右键菜单并按文案点条目。
 ///
-/// 菜单本身由 [`crate::startup::StartupWorkspace::open_menu_named`] 走对象树的
+/// 菜单本身由 [`TreePanel::qa_open_connection_menu`] 走对象树的
 /// 右键菜单路径打开；点条目走按钮自己的 `clicked` 信号。
 fn maybe_run_qa_startup_menu(state: &Rc<UiState>) {
     let Some(name) = crate::qa::startup_menu() else {
         return;
     };
-    let Some(startup) = state.startup.borrow().clone() else {
+    let Some(startup) = state.workspace.borrow().clone() else {
         eprintln!("[qa] 启动态工作区尚未建立：--qa-startup-menu 未生效");
         std::process::exit(4);
     };
     let pick = crate::qa::startup_menu_pick();
     glib::idle_add_local_once(move || {
-        if let Err(reason) = startup.open_menu_named(&name) {
+        if let Err(reason) = startup.tree.qa_open_connection_menu(&name) {
             eprintln!("[qa] 打开右键菜单失败：{reason}");
             std::process::exit(4);
         }
         // 原生弹出菜单会在窗口失去焦点时收起并清空槽位。在同一轮主循环
         // 按真实菜单动作选中条目，避免在打开与激活之间处理无关的焦点事件。
         if let Some(pick) = pick
-            && let Err(reason) = startup.pick_menu_item(&pick)
+            && let Err(reason) = startup.tree.qa_pick_context_menu(&pick)
         {
             eprintln!("[qa] 点右键菜单条目失败：{reason}");
             std::process::exit(4);
@@ -1777,75 +1861,54 @@ fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
 /// 侧栏是对象树（已保存连接全部未连接），主区域是固定 `Objects` 标签的空态，
 /// 状态栏显示「未连接」、驱动数与浏览会话数。后端诊断信息不在这里：见 [`show_about`]。
 fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
-    // 重新握手时旧外壳整体重建：连接注册表可能已经变化。
-    state.startup.borrow_mut().take();
-    if let Some(actions) = state.actions.borrow().as_ref() {
-        // 没有数据库连接：标签 / 刷新 / 行操作都没有可作用的会话。
-        actions.set_workspace_ready(false);
+    let existing = state.workspace.borrow().clone();
+    let workspace = existing.unwrap_or_else(|| {
+        let workspace = Workspace::new(state, crate::window_state::load_panels());
+        state
+            .mcp_access
+            .attach_indicator(workspace.status().mcp_indicator());
+        state.workspace.replace(Some(Rc::clone(&workspace)));
+        workspace
+    });
+    if workspace.widget().parent().is_none() {
+        set_page(&state.slot, workspace.widget());
     }
-
-    let registry = state.registry.borrow().clone();
-    let browse_sessions = registry
+    if let Some(actions) = state.actions.borrow().as_ref() {
+        actions.set_workspace_ready(true);
+    }
+    state.toolbar().set_new_query_enabled(true);
+    workspace.tabs.set_initial_objects_hint(true);
+    workspace.tabs.set_backend_pid(snapshot.backend_pid);
+    workspace.tabs.set_backend_ready(true);
+    workspace.tabs.refresh_current();
+    if workspace.tabs.current_id().as_deref() == Some(crate::tabs::OBJECTS_TAB_ID) {
+        workspace
+            .status()
+            .show_no_table(l10n::t("status_bar.no_table_startup"));
+    }
+    workspace
+        .status()
+        .set_connection(Some(l10n::t("status_bar.not_connected")));
+    let browse_sessions = state
+        .registry
+        .borrow()
         .as_ref()
         .map_or(0, |registry| registry.connected_count());
-
-    let startup = crate::startup::StartupWorkspace::new(crate::startup::StartupConfig {
-        registry,
-        driver_count: snapshot.drivers.len(),
-        browse_sessions,
-        toolbar: state.toolbar(),
-        actions: crate::startup::StartupActions {
-            connect_saved: {
-                let state = Rc::clone(state);
-                Rc::new(move |key: String| connect_saved(&state, &key))
-            },
-            edit: {
-                let state = Rc::clone(state);
-                Rc::new(move |key: String| open_connection_dialog_for(&state, Some(&key)))
-            },
-            disconnect: {
-                let state = Rc::clone(state);
-                Rc::new(move |key: String| disconnect_saved(&state, &key))
-            },
-            delete: {
-                let state = Rc::clone(state);
-                Rc::new(move |key: String| confirm_delete_saved(&state, &key))
-            },
-        },
-    });
-    state
-        .mcp_access
-        .attach_indicator(startup.shell().status().mcp_indicator());
-    state.startup.replace(Some(Rc::clone(&startup)));
-    state.title.set_title("Sqarvo");
-    state
-        .title
-        .set_subtitle(l10n::t("shell.title_not_connected"));
-    set_page(&state.slot, startup.widget());
+    workspace
+        .status()
+        .set_idle_summary(Some(&crate::startup::idle_status_text(
+            snapshot.drivers.len(),
+            browse_sessions,
+        )));
+    workspace
+        .status()
+        .set_sql_summary(l10n::t("status_bar.sql_not_connected"));
     eprintln!(
-        "[bench] t=+{}ms state=StartupWorkspace（未连接；{} 条已保存连接）",
-        crate::qa::elapsed_ms(),
-        startup.connection_count()
+        "[bench] t=+{}ms state=StartupWorkspace",
+        crate::qa::elapsed_ms()
     );
 }
 
-/// 断开一条连接的浏览会话（侧栏右键「断开」）：与树上的右键走同一条确认路径。
-fn disconnect_saved(state: &Rc<UiState>, key: &str) {
-    let Some(registry) = state.registry.borrow().clone() else {
-        return;
-    };
-    let Some(snapshot) = registry.snapshot(key) else {
-        eprintln!("[startup] 断开：注册表里没有 {key}");
-        return;
-    };
-    if !snapshot.state.is_connected() {
-        eprintln!("[startup] 断开：连接「{}」当前未连接，忽略", snapshot.name);
-        return;
-    }
-    confirm_disconnect(state, snapshot, false);
-}
-
-/// 删除一条已保存连接（侧栏右键「删除连接」）：二次确认 → 按修订删除共享档案。
 fn confirm_delete_saved(state: &Rc<UiState>, key: &str) {
     let Some(registry) = state.registry.borrow().clone() else {
         return;
@@ -1920,52 +1983,43 @@ fn show_message(state: &Rc<UiState>, heading: &str, body: &str) {
 ///
 /// 标签、会话与页面都在 [`crate::tabs::TabSet`] 里；本函数只负责把它接上外壳、
 /// 对象树与 DDL 面板，并把「当前标签」的状态转成状态栏与 `win.*` 动作的可用性。
-fn show_workspace(state: &Rc<UiState>, outcome: &ConnectOutcome, profile_id: Option<&str>) {
-    let panel_layout = state
-        .startup
-        .borrow()
-        .as_ref()
-        .map(|startup| startup.shell().layout_state())
-        .or_else(|| {
-            state
-                .workspace
-                .borrow()
-                .as_ref()
-                .map(|workspace| workspace.shell.layout_state())
-        })
-        .unwrap_or_else(crate::window_state::load_panels);
-    state.startup.borrow_mut().take();
-
-    let connection_name = profile_id
-        .and_then(|key| state.registry.borrow().as_ref()?.label_for_key(key))
-        .unwrap_or_else(|| l10n::t("object_tree.connection_unnamed").to_owned());
-    // 旧工作区（若有）先释放：它的标签会话属于上一次连接，不能留在新工作区里。
-    if let Some(previous) = state.workspace.borrow_mut().take() {
-        previous.shutdown();
+fn workspace_connected(state: &Rc<UiState>, outcome: &ConnectOutcome, profile_id: Option<&str>) {
+    let Some(workspace) = state.workspace.borrow().clone() else {
+        return;
+    };
+    let first = workspace
+        .session_id
+        .replace(Some(outcome.session_id.clone()))
+        .is_none();
+    if first {
+        workspace.tabs.set_initial_objects_hint(false);
     }
-
-    let workspace = Workspace::new(
-        state,
-        outcome,
-        profile_id,
-        &connection_name,
-        &outcome.server_version,
-        panel_layout,
-    );
-    state
-        .mcp_access
-        .attach_indicator(workspace.status().mcp_indicator());
-    state.workspace.replace(Some(Rc::clone(&workspace)));
-    set_page(&state.slot, workspace.widget());
-    if let Some(actions) = state.actions.borrow().as_ref() {
-        actions.set_workspace_ready(true);
+    if first
+        && matches!(
+            workspace.tree.navigation_target(),
+            crate::workspace_context::TargetState::None
+        )
+        && let Some(profile_id) = profile_id
+    {
+        workspace.tree.select_initial_connection(profile_id);
     }
-    eprintln!("[bench] t=+{}ms state=Workspace", crate::qa::elapsed_ms());
-    // #144：树挂载后补一次「已连接连接层展开」。
-    //
-    // 浏览会话的 `Opened` 事件可能先于树订阅到达（notify 丢掉），而行又是懒创建的：
-    // 没有这一步，「保存并连接」之后的连接层要等用户/脚本去点才展开。
+    let name = profile_id.and_then(|key| state.registry.borrow().as_ref()?.label_for_key(key));
+    workspace.status().set_connection(name.as_deref());
+    workspace.status().set_idle_summary(None);
+    workspace.status().set_sql_summary(&l10n::tf(
+        "status_bar.sql_connected",
+        &[("version", outcome.server_version.clone())],
+    ));
     workspace.expand_connected_layers();
+    workspace.tabs.refresh_current();
+    eprintln!(
+        "[bench] t=+{}ms state=Workspace focus={}",
+        crate::qa::elapsed_ms(),
+        workspace.shell.layout_state().focus,
+    );
+    if !first {
+        return;
+    }
     if let Some(script) = crate::qa::tabs_script() {
         match crate::tabs::parse_script(&script) {
             Ok(steps) => workspace.tabs.run_qa_script(steps),
@@ -2027,11 +2081,14 @@ fn apply_tab_status(
             );
             if let Some(actions) = actions {
                 actions.apply_row_ops(&snapshot.row_ops);
+                actions.apply_query_actions(false, false, true);
             }
         }
         crate::tabs::TabStatus::Query {
             summary,
             timing_ms,
+            can_execute,
+            bound,
             row_ops,
         } => {
             shell.status().show_query_ops(row_ops);
@@ -2044,6 +2101,7 @@ fn apply_tab_status(
             shell.toolbar().set_active(None);
             if let Some(actions) = actions {
                 actions.apply_row_ops(row_ops);
+                actions.apply_query_actions(*can_execute, row_ops.cancel, *bound);
             }
         }
         crate::tabs::TabStatus::Objects { shortcut } => {
@@ -2057,6 +2115,7 @@ fn apply_tab_status(
             shell.toolbar().set_active(*shortcut);
             if let Some(actions) = actions {
                 actions.apply_row_ops(&crate::tabs::TabSet::empty_row_ops());
+                actions.apply_query_actions(false, false, false);
             }
         }
     }
@@ -2127,7 +2186,7 @@ struct Workspace {
     /// 刷新对象树 + 表列表（「视图 → 刷新」与 F5）。
     refresh: Rc<dyn Fn()>,
     /// 「保存并连接」时的会话 ID（「关于 Squarvo」里给出短形式；标签会话各自另有 ID）。
-    session_id: String,
+    session_id: RefCell<Option<String>>,
 }
 
 impl Workspace {
@@ -2151,15 +2210,7 @@ impl Workspace {
         show_objects_for_kind(&self.tree, &self.tabs, shortcut);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        state: &Rc<UiState>,
-        outcome: &ConnectOutcome,
-        profile_id: Option<&str>,
-        connection_name: &str,
-        version: &str,
-        panel_layout: layout::PanelLayout,
-    ) -> Rc<Self> {
+    fn new(state: &Rc<UiState>, panel_layout: layout::PanelLayout) -> Rc<Self> {
         let worker = state
             .worker
             .borrow()
@@ -2215,9 +2266,6 @@ impl Workspace {
             let tabs_slot = Rc::clone(&tabs_slot);
             let pinned = Rc::clone(&pinned);
             let state = Rc::clone(state);
-            let server_version = version.to_owned();
-            let latency = outcome.latency_millis;
-            let owner = profile_id.map(str::to_owned);
             Rc::new(move |selection: TreeSelection| {
                 let tab_id = tabs_slot
                     .borrow()
@@ -2249,16 +2297,9 @@ impl Workspace {
                             usize::from(snapshot.state.is_connected())
                                 + tabs.live_session_count_for(&snapshot.key)
                         });
-                        // 服务端版本与延迟只有「保存并连接」那条连接有：其它连接
-                        // 拿不到就不显示这两行（不编造）。
-                        let mine = owner.as_deref() == Some(snapshot.key.as_str());
                         let live = ConnectionLive {
-                            server_version: if mine {
-                                server_version.clone()
-                            } else {
-                                String::new()
-                            },
-                            latency_millis: mine.then_some(latency),
+                            server_version: snapshot.server_version.clone(),
+                            latency_millis: snapshot.latency_millis,
                             sessions,
                         };
                         inspector.show_connection(
@@ -2545,6 +2586,14 @@ impl Workspace {
                 let tree = Rc::clone(&tree);
                 Rc::new(move |message| tree.show_hint(message))
             },
+            binding_credentials: {
+                let state = Rc::downgrade(state);
+                Rc::new(move |tab_id, key, reason| {
+                    if let Some(state) = state.upgrade() {
+                        prompt_for_binding_credentials(&state, tab_id, key, reason);
+                    }
+                })
+            },
             on_status: {
                 let shell_slot = Rc::clone(&shell_slot);
                 let inspector = Rc::clone(&inspector);
@@ -2767,14 +2816,6 @@ impl Workspace {
         });
         shell_slot.replace(Some(Rc::clone(&shell)));
         shell.mount_search(&tree.search_widget(), &tree.search_status_widget());
-        // 工作区已建立：工具条「新建查询」恢复可点（后端就绪时再打一行 6/6 的实测日志）。
-        shell.toolbar().set_new_query_enabled(true);
-        shell.status().set_connection(Some(connection_name));
-        shell.status().set_sql_summary(&l10n::tf(
-            "status_bar.sql_connected",
-            &[("version", version.to_owned())],
-        ));
-
         // 接线：树与信息面板都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
         match state.registry.borrow().clone() {
             Some(registry) => {
@@ -2785,9 +2826,6 @@ impl Workspace {
                     })
                 });
                 tree.attach(registry);
-                if let Some(profile_id) = profile_id {
-                    tree.select_initial_connection(profile_id);
-                }
             }
             None => tree.mark_unavailable("连接注册表不可用：无法读取对象树"),
         }
@@ -2803,7 +2841,7 @@ impl Workspace {
             tabs,
             inspector,
             refresh,
-            session_id: outcome.session_id.clone(),
+            session_id: RefCell::new(None),
         })
     }
 
@@ -2889,10 +2927,6 @@ impl Workspace {
         }
     }
 
-    fn worker(&self) -> Option<Rc<WorkerHandle>> {
-        self.tabs.worker()
-    }
-
     /// 按表名打开（数据页 QA 与「打开指定表」共用树的同一条路径）。
     ///
     /// v0.2.3.2 删掉侧栏平铺列表后，这里走 `qa_open`：选中 + 与双击行相同的打开回调，
@@ -2910,20 +2944,6 @@ impl Workspace {
             Err(reason) => {
                 eprintln!("[qa] 打开 {name} 失败：{reason}");
                 false
-            }
-        }
-    }
-
-    /// 停止工作区：关闭全部标签会话（窗口关闭 / 重新连接时调用）。
-    fn shutdown(&self) {
-        for tab in self.tabs.tabs() {
-            if tab.kind.has_session()
-                && let Some(worker) = self.worker()
-            {
-                if let Some(sql) = tab.sql.as_ref() {
-                    sql.close_query();
-                }
-                worker.close_tab_session(&tab.id);
             }
         }
     }
@@ -4231,7 +4251,22 @@ fn confirm_edit_saved(state: &Rc<UiState>, key: &str) {
     } else {
         l10n::t("object_tree.dlg_edit_no_dirty_line").to_owned()
     };
-    let body = l10n::tf("object_tree.dlg_edit_body", &[("dirty_line", dirty_line)]);
+    let targets = workspace.as_ref().map_or_else(Vec::new, |workspace| {
+        workspace.tabs.tabs_for_connection(key)
+    });
+    let sql: Vec<_> = targets
+        .iter()
+        .filter(|tab| tab.has_unsaved_sql())
+        .map(|tab| tab.kind.title())
+        .collect();
+    let mut body = l10n::tf("object_tree.dlg_edit_body", &[("dirty_line", dirty_line)]);
+    if !sql.is_empty() {
+        body.push('\n');
+        body.push_str(&l10n::tf(
+            "object_tree.dlg_edit_sql_line",
+            &[("titles", sql.join(", "))],
+        ));
+    }
     let dialog = adw::AlertDialog::new(Some(l10n::t("object_tree.dlg_edit_heading")), Some(&body));
     dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
     dialog.add_response("edit", l10n::t("object_tree.dlg_edit_btn"));
@@ -4253,7 +4288,7 @@ fn confirm_edit_saved(state: &Rc<UiState>, key: &str) {
                 return;
             }
             let closed = state.workspace.borrow().as_ref().map_or(0, |workspace| {
-                workspace.tabs.close_tabs_for_connection(&key)
+                workspace.tabs.close_tabs_for_connection(&key, &targets)
             });
             eprintln!("[connections] 编辑连接：已关闭 {closed} 个标签，断开「{name}」");
             registry.disconnect(&key);
@@ -4339,8 +4374,6 @@ fn show_unavailable_tree_target(state: &UiState) {
     let message = l10n::t("object_tree.target_unavailable");
     if let Some(workspace) = state.workspace.borrow().as_ref() {
         workspace.tree.show_hint(message);
-    } else if let Some(startup) = state.startup.borrow().as_ref() {
-        startup.shell().status().set_idle_summary(Some(message));
     }
 }
 
@@ -4434,15 +4467,12 @@ fn collect_widget_text_into(widget: &gtk::Widget, out: &mut String) {
 
 /// #139：启动态断言——主区域是 `Objects` 空态，主界面不含后端诊断字段。
 fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
-    if state.workspace.borrow().is_some() {
-        return Err("已经连接数据库：当前不是启动态工作区".to_owned());
-    }
     let startup = state
-        .startup
+        .workspace
         .borrow()
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "启动态工作区尚未建立".to_owned())?;
+        .clone()
+        .filter(|workspace| workspace.session_id.borrow().is_none())
+        .ok_or_else(|| "当前不是未连接的工作区".to_owned())?;
     let text = collect_widget_text(startup.widget().upcast_ref());
     for required in ["Objects", "从左侧选择一个连接开始", "未连接", "浏览会话"] {
         if !text.contains(required) {
@@ -4461,7 +4491,10 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
         }
     }
     // v0.2.3.2：信息面板在启动态即常驻（280，240–520 为可拖区间），不是 0 宽的折叠态。
-    let (inspector_width, inspector_visible) = startup.inspector_state();
+    let (inspector_width, inspector_visible) = (
+        startup.shell.inspector_width(),
+        startup.shell.inspector_visible(),
+    );
     if !inspector_visible {
         return Err(format!(
             "启动态信息面板应当可见，实际 visible={inspector_visible}（宽度 {inspector_width}）"
@@ -4473,7 +4506,11 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
         ));
     }
     // 形状同一：启动态 `Objects` 也是钉住的固定页（窄、无关闭按钮），不是普通标签。
-    let objects_pinned = startup.objects_pinned();
+    let objects_pinned = startup
+        .tabs
+        .tabs()
+        .first()
+        .is_some_and(|tab| tab.page.is_pinned());
     if !objects_pinned {
         return Err(format!(
             "启动态 Objects 标签应当 pinned=true，实际 pinned={objects_pinned}"
@@ -4483,7 +4520,11 @@ fn verify_startup_workspace(state: &Rc<UiState>) -> Result<String, String> {
     // 不再有居中大标题 / 说明文字需要断言。
     Ok(format!(
         "启动态=Objects 空态（已保存连接 {} 条，主界面无后端诊断字段，信息面板 {}px 可见，Objects pinned）",
-        startup.connection_count(),
+        state
+            .registry
+            .borrow()
+            .as_ref()
+            .map_or(0, |registry| registry.snapshots().len()),
         inspector_width
     ))
 }
@@ -5335,7 +5376,6 @@ impl WindowActions {
         if !ready {
             for action in [
                 &self.new_tab,
-                &self.close_tab,
                 &self.refresh,
                 &self.execute,
                 &self.cancel,
@@ -5376,20 +5416,21 @@ impl WindowActions {
         self.delete_row.set_enabled(ops.delete);
     }
 
+    fn apply_query_actions(&self, execute: bool, cancel: bool, export: bool) {
+        let ready = self.backend_ready.get();
+        self.execute.set_enabled(ready && execute);
+        self.cancel.set_enabled(ready && cancel);
+        self.export_csv.set_enabled(ready && export);
+    }
+
     /// 没有工作区时，需要会话的动作一律禁用（不是点了没反应）。
     fn set_workspace_ready(&self, ready: bool) {
+        self.close_tab.set_enabled(ready);
         let ready = ready && self.backend_ready.get();
-        for action in [
-            &self.refresh,
-            &self.execute,
-            &self.cancel,
-            &self.new_tab,
-            &self.close_tab,
-            &self.export_csv,
-        ] {
-            action.set_enabled(ready);
-        }
+        self.refresh.set_enabled(ready);
+        self.new_tab.set_enabled(ready);
         if !ready {
+            self.apply_query_actions(false, false, false);
             for action in [
                 &self.begin_txn,
                 &self.commit_txn,
@@ -5426,8 +5467,6 @@ fn install_window_actions(
         clear_selection.connect_activate(move |_, _| {
             if let Some(workspace) = state.workspace.borrow().as_ref() {
                 workspace.tree.clear_selection();
-            } else if let Some(startup) = state.startup.borrow().as_ref() {
-                startup.clear_selection();
             }
         });
     }
@@ -5483,8 +5522,6 @@ fn install_window_actions(
         action.connect_activate(move |_, _| {
             if let Some(workspace) = state.workspace.borrow().as_ref() {
                 command(&workspace.shell);
-            } else if let Some(startup) = state.startup.borrow().as_ref() {
-                command(startup.shell());
             }
         });
         action
@@ -5509,12 +5546,10 @@ fn install_window_actions(
     {
         let state = Rc::clone(state);
         focus_search.connect_activate(move |_, _| {
-            if let Some(workspace) = state.workspace.borrow().as_ref().cloned() {
-                if workspace.shell.reveal_navigation() {
-                    workspace.tree.focus_search();
-                }
-            } else if let Some(startup) = state.startup.borrow().as_ref() {
-                startup.focus_search();
+            if let Some(workspace) = state.workspace.borrow().as_ref().cloned()
+                && workspace.shell.reveal_navigation()
+            {
+                workspace.tree.focus_search();
             }
         });
     }
@@ -5885,7 +5920,9 @@ fn show_lang_restart_dialog(state: &Rc<UiState>, target: l10n::Lang) {
     let state_for_dialog = Rc::clone(state);
     dialog.connect_response(None, move |_, response| {
         if response == "restart" {
-            restart_in_new_process(&state_for_dialog, target);
+            state_for_dialog.restart_language.set(Some(target));
+            let window = state_for_dialog.window.clone();
+            glib::idle_add_local_once(move || window.close());
         } else if let Some(actions) = state_for_dialog.actions.borrow().as_ref() {
             // 「稍后」：不持久化，把勾选回滚到当前生效偏好。
             refresh_lang_actions(actions);
@@ -5902,24 +5939,17 @@ fn show_lang_restart_dialog(state: &Rc<UiState>, target: l10n::Lang) {
 /// 单实例转发（main.rs 的 application-id 注释）会让新进程在旧实例释放 D-Bus 名字
 /// 之前注册失败、以 0 退出，所以带 `SQARVO_RESTART_WAIT_PID` 让新进程等旧进程
 /// 消失再启动（等待逻辑在 main.rs）。
-fn restart_in_new_process(state: &Rc<UiState>, target: l10n::Lang) {
+fn restart_in_new_process(state: &Rc<UiState>, target: l10n::Lang) -> bool {
     eprintln!(
         "[l10n] 用户确认换语言重启：{}（{}）",
         target.label(),
         target.id()
     );
-    l10n::set_current(target);
-    if let Err(error) = crate::window_state::remember_language(target.id()) {
-        eprintln!("[l10n] 偏好未能记入 window.json：{error}");
-    }
-    if let Some(actions) = state.actions.borrow().as_ref() {
-        refresh_lang_actions(actions);
-    }
     let exe = match std::fs::read_link("/proc/self/exe") {
         Ok(path) => path,
         Err(error) => {
             eprintln!("[l10n] 无法定位自身可执行文件，放弃自动重启：{error}");
-            return;
+            return false;
         }
     };
     let mut argv: Vec<std::ffi::OsString> = vec![exe.into_os_string()];
@@ -5939,12 +5969,21 @@ fn restart_in_new_process(state: &Rc<UiState>, target: l10n::Lang) {
     let argv_refs: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsString::as_os_str).collect();
     match launcher.spawn(&argv_refs) {
         Ok(_) => {
-            // 关窗即清理（脏行守卫、worker 停后端、ShutdownComplete 后 quit）；
-            // `Ok(subprocess)` 的句柄在这里离开作用域被弃养（见上）。
-            state.window.close();
+            l10n::set_current(target);
+            if let Err(error) = crate::window_state::remember_language(target.id()) {
+                eprintln!("[l10n] 偏好未能记入 window.json：{error}");
+            }
+            if let Some(actions) = state.actions.borrow().as_ref() {
+                refresh_lang_actions(actions);
+            }
+            true
         }
         Err(error) => {
             eprintln!("[l10n] 重启失败：{error}；新窗口不会打开，请手动重启 Sqarvo");
+            if let Some(actions) = state.actions.borrow().as_ref() {
+                refresh_lang_actions(actions);
+            }
+            false
         }
     }
 }
@@ -5986,8 +6025,7 @@ fn apply_tier_choice(window: &adw::ApplicationWindow, state: &Rc<UiState>, targe
                 Some(Rc::clone(&workspace.tabs)),
             )
         } else {
-            let startup = state.startup.borrow();
-            (startup.as_ref().map(|s| Rc::clone(s.shell())), None)
+            (None, None)
         }
     };
     match crate::density::switch(window, shell.as_ref(), tabs.as_ref(), target) {
@@ -6124,10 +6162,12 @@ fn show_about(state: &Rc<UiState>) {
         ));
     }
     if let Some(workspace) = state.workspace.borrow().as_ref() {
-        lines.push(l10n::tf(
-            "dialogs.about_initial_session",
-            &[("session_id", short_id(&workspace.session_id))],
-        ));
+        if let Some(session_id) = workspace.session_id.borrow().as_deref() {
+            lines.push(l10n::tf(
+                "dialogs.about_initial_session",
+                &[("session_id", short_id(session_id))],
+            ));
+        }
         let tabs = workspace.tabs.session_lines();
         lines.push(l10n::tf_n(
             "dialogs.about_tab_sessions",

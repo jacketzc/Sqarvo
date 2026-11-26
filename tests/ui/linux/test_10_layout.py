@@ -303,8 +303,23 @@ def test_density_changes_keep_panel_preferences(ui_instance):
     A.find_one(frame, role_in=("grouping",), name="全局状态栏", timeout=15)
     with ops.step("density_round_trip"):
         for tier, target in (("comfortable", (1050, 750)), ("large", (1260, 900)), ("compact", (840, 600))):
+            log_offset = len(inst.log_text())
             A.window_action(frame, f"win.tier-{tier}")
-            A.wait_until(lambda: json.loads(prefs.read_text()).get("tier") == tier, 5, f"{tier} persisted")
+
+            def tier_configured():
+                # The application records geometry after native size changes
+                # settle. The window manager can clamp the requested default.
+                actual = re.search(
+                    r"窗口几何 (\d+)x(\d+).*已记入",
+                    inst.log_text()[log_offset:],
+                )
+                return (
+                    actual is not None
+                    and client_size(frame) == tuple(map(int, actual.groups()))
+                    and json.loads(prefs.read_text()).get("tier") == tier
+                )
+
+            A.wait_until(tier_configured, 5, f"{tier} configured and persisted")
             resize(*target)
             A.wait_until(lambda: client_size(frame) == target, 10, f"{tier} native minimum")
             ops.expect("sensitive" in A.states(layout_button(frame, "导航")),

@@ -23,28 +23,16 @@ def test_startup_readiness(app_bare):
 
 
 def test_main_window_accessibility(app_bare):
-    """主窗口可访问性：核心控件语义在位；未连接时「新建查询」按状态级不可用呈现（禁用+原因）。
+    """主窗口可访问性与未连接时的查询入口。
 
-    注册表组件: shell, startup, tabs.strip.new。
+    注册表组件: shell, startup.workspace, shell.toolbar.new_query, tabs.strip.new。
     """
-    with step("window_controls"):
-        frame = app_bare.frame()
-        btns = {A.nm(b): b for b in A.query(frame, role_in=("button",))}
-        expect("连接" in btns, "存在「连接」按钮", sorted(btns)[:8])
-        expect("sensitive" in A.states(btns["连接"]), "「连接」按钮可用", A.states(btns["连接"]))
-        for name in ("Tables", "Views", "Functions", "Queries"):
-            expect(name in btns, f"存在「{name}」按钮", sorted(btns)[:8])
-    with step("disabled_reason"):
-        # 未连接：新建查询入口可见、禁用、带原因文案（根 §8 / 前端 §8.1 状态级不可用）。
-        # 工具条按钮名保持「新建查询」，原因在 tooltip（accessible description）；
-        # 标签条按钮直接把原因写进可访问名。任一形式成立即可，但必须有一种。
-        disabled = [b for b in A.query(frame, role_in=("button",))
-                    if "查询" in A.nm(b) and "sensitive" not in A.states(b)]
-        expect(bool(disabled), "未连接时存在被禁用的「新建查询」入口",
-               [A.nm(b) for b in A.query(frame, role_in=("button",)) if "查询" in A.nm(b)])
-        reasons = [A.nm(b) + " " + A.description(b) for b in disabled]
-        expect(any("先连接" in r for r in reasons),
-               "禁用态给出原因（可访问名或 tooltip 含「先连接」）", reasons)
+    frame = app_bare.frame()
+    connect = A.find_one(frame, role_in=("button",), name="连接", timeout=20)
+    expect("sensitive" in A.states(connect), "「连接」按钮可用", A.states(connect))
+    for name in ("Tables", "Views", "Functions", "Queries", "新建查询"):
+        button = A.find_one(frame, role_in=("button",), name=name, timeout=10)
+        expect("sensitive" in A.states(button), f"「{name}」按钮可用", A.states(button))
 
 
 def test_connection_dialog_open_and_cancel(app_bare):

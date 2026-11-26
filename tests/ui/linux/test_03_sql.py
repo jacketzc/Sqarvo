@@ -74,6 +74,36 @@ def test_selection_rerun_after_commit(ui_instance):
         _close(frame)
 
 
+def test_review_combined_close_keeps_sql_and_result_edits(ui_instance):
+    """tabs.strip.tab.close, tabs.close_dialog, tabs.close_dialog.cancel, shell.window."""
+    app = ui_instance("close_sql_result").start(
+        autoconnect=True, extra_args=("--qa-query-edit", "0:qty:91"),
+    )
+    frame = app.frame()
+    ops.wait_connected(frame, "uitest.db")
+    page = ops.open_sql_page(frame)
+    editor = ops.write_sql(page, SQL)
+    A.wait_enabled(A.find_one(page, role_in=("button",), name="执行"), 10)
+    ops.execute_sql(page)
+    apply = A.find_one(frame, role_in=("button",), name="应用：提交所有脏行的变更", timeout=10)
+    A.wait_enabled(apply, 12)
+    before = ops.data_rows(page)
+    for action, heading, reasons in (
+        ("win.close-tab", "关闭标签？", ("未保存 SQL", "结果中的待提交更改")),
+        ("window.close", "有未提交的更改", ("未保存的 SQL", "待提交的结果更改")),
+    ):
+        A.window_action(frame, action)
+        dialog = A.wait_dialog(app.app, heading)
+        for reason in reasons:
+            A.find_one(dialog, role_in=("label",), name_contains=reason)
+        A.click(A.find_one(dialog, role_in=("button",), name="取消"))
+        A.wait_gone(lambda: A.find_dialog(app.app, heading), 10, "放弃确认已取消")
+        expect(A.text_value(editor) == SQL, "取消保留 SQL")
+        expect("sensitive" in A.states(apply) and ops.data_rows(page) == before,
+               "取消保留待提交结果和提交能力")
+    expect("请求释放" not in app.log_text(), "取消没有申请释放会话")
+
+
 def test_execute_sql(app_connected):
     """执行 SELECT：结果网格按行返回，行数正确。
 
@@ -156,7 +186,7 @@ DURATION_RE = re.compile(r"^\d+\.\d{3} s$")
 def _close(frame):
     """用例用完关掉自己开的查询标签（模块共用实例，有会话标签上限 8）。"""
     try:
-        ops.close_current_query_tab(frame)
+        ops.close_current_query_tab(frame, discard_sql=True)
     except Exception:
         pass
 

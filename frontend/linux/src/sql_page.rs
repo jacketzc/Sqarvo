@@ -107,6 +107,7 @@ pub struct SqlPageCallbacks {
 /// 选中另一条连接会把**这个标签**的会话重绑到它（顺序由 tabs 固定：取消在途查询 →
 /// 关游标 → 断开旧会话 → 用目标连接参数 `Connect`）。选择器自己不发 RPC。
 pub struct SqlPageConnection {
+    pub cancel: Rc<dyn Fn()>,
     /// 用户选了一条连接（参数是连接键，不是显示名）。
     pub select: Rc<dyn Fn(&str)>,
 }
@@ -315,6 +316,7 @@ impl SqlPage {
         // → 会话信息 → 执行。两枚选择器都没有可见文字，可访问名分别是「当前连接」/「当前库」。
         let connection = ConnectionPicker::new(ConnectionPickerCallbacks {
             select: Rc::clone(&callbacks.connection.select),
+            cancel: Rc::clone(&callbacks.connection.cancel),
         });
         let catalog = CatalogPicker::new(CatalogPickerCallbacks {
             select: Rc::clone(&callbacks.catalog.select),
@@ -569,6 +571,11 @@ impl SqlPage {
         self.session_label.set_text(text);
     }
 
+    pub fn show_binding_status(&self, message: Option<&str>) {
+        self.session_label.set_text(message.unwrap_or_default());
+        self.session_label.set_visible(message.is_some());
+    }
+
     /// 记录本标签连接的驱动（SQL 导出的引号风格按它选）。
     pub fn set_driver(&self, driver: &str) {
         self.results.set_driver(Some(driver));
@@ -596,6 +603,40 @@ impl SqlPage {
         self.session_ready.set(ready);
         self.apply_catalog_gate();
         self.sync_execute_controls();
+    }
+
+    pub fn session_opened(&self, ready: bool) {
+        if self.state.get() == PageState::Disconnected {
+            self.state.set(PageState::Idle);
+            self.banner.set_revealed(false);
+        }
+        self.set_transaction_open(false);
+        self.set_session_ready(ready);
+    }
+
+    pub fn set_unbound_backend_status(&self, reason: Option<&str>) {
+        if let Some(reason) = reason {
+            self.banner
+                .set_button_label(Some(l10n::t("shell.recovery_btn_restart")));
+            self.banner.set_title(reason);
+        }
+        self.banner.set_revealed(reason.is_some());
+    }
+
+    pub fn has_unsaved_sql(&self) -> bool {
+        let buffer = self.editor.buffer();
+        buffer
+            .start_iter()
+            .forward_find_char(|ch| !ch.is_whitespace(), None)
+            || (!buffer.start_iter().is_end() && !buffer.start_iter().char().is_whitespace())
+    }
+
+    pub fn has_open_transaction(&self) -> bool {
+        self.transaction_open.get()
+    }
+
+    pub fn has_active_query(&self) -> bool {
+        self.state.get().is_active()
     }
 
     /// 重算选择器的可用性（会话就绪 + 没有未提交事务 + 读到过真值）。
@@ -718,7 +759,7 @@ impl SqlPage {
         Ok(self.session_ready.get())
     }
 
-    fn can_execute(&self) -> bool {
+    pub fn can_execute(&self) -> bool {
         let state = self.state.get();
         self.session_ready.get() && !state.is_active() && state != PageState::Disconnected
     }
@@ -741,6 +782,12 @@ impl SqlPage {
             // GtkButton derives its accessible name from this label.
             self.execute_button.set_tooltip_text(Some(l10n::t(tooltip)));
         }
+        self.execute_button
+            .set_tooltip_text(Some(l10n::t(if self.session_ready.get() {
+                tooltip
+            } else {
+                "tabs.query_unbound"
+            })));
         self.execute_button.set_sensitive(self.can_execute());
         self.execute_selection_action.set_enabled(
             self.can_execute()
@@ -1239,11 +1286,22 @@ impl SqlPage {
         self.maybe_qa_export();
     }
 
+    pub fn set_reconnect_available(&self, available: bool) {
+        if self.state.get() == PageState::Disconnected {
+            self.banner.set_button_label(Some(l10n::t(if available {
+                "shell.error_disconnected_reconnect"
+            } else {
+                "shell.recovery_btn_restart"
+            })));
+        }
+    }
+
     /// 断连：保留已加载行，明确标注失连并禁用执行/取消。
     pub fn mark_disconnected(self: &Rc<Self>, reason: &str) {
         eprintln!("[query] 状态=Disconnected：{reason}");
         // 会话没了就不能切库：选择器留在原位、可见但禁用，tooltip 说明原因。
         self.set_session_ready(false);
+        self.set_transaction_open(false);
         let loaded = self.results.row_count();
         self.results
             .set_state(RunState::Disconnected, loaded, false, Some(reason));
@@ -2375,7 +2433,9 @@ impl SqlPage {
             self.cancel_sent.set(false);
         }
         // 顶栏只显示连接信息：状态备注放在结果区第二行，避免把按钮挤出窗口。
-        self.session_label.set_text(&self.session_base);
+        if !self.session_label.is_visible() {
+            self.session_label.set_text(&self.session_base);
+        }
         // 状态一变（尤其是 Idle → Running）就要让状态栏重算：行 1 的「取消」按在途状态
         // 给值，晚一拍才刷新会让用户在长查询期间看到一枚点不动的取消。
         (self.callbacks.state_changed)();
@@ -2628,7 +2688,6 @@ impl CatalogPicker {
             root.append(&caption);
         }
         root.append(&dropdown);
-
         let picker = Rc::new(Self {
             root,
             dropdown,
@@ -2846,6 +2905,7 @@ pub const ACTION_ROW_PICKERS: [(&str, Option<&str>); 2] = [
 
 /// 连接选择器的接线（选中交给 tabs 重绑会话；选择器自己不持有会话）。
 pub struct ConnectionPickerCallbacks {
+    pub cancel: Rc<dyn Fn()>,
     /// 用户选了一条连接（参数是连接键，不是显示名）。
     pub select: Rc<dyn Fn(&str)>,
 }
@@ -2861,6 +2921,8 @@ pub struct ConnectionPickerCallbacks {
 pub struct ConnectionPicker {
     root: gtk::Box,
     dropdown: gtk::DropDown,
+    cancel: gtk::Button,
+    available: Cell<bool>,
     /// `(连接键, 连接名)`：每一项都来自注册表，没有占位项。
     items: RefCell<Vec<(String, String)>>,
     /// 本标签实际绑定的连接键（只用于显示与「选的是不是同一条」的判断）。
@@ -2894,9 +2956,17 @@ impl ConnectionPicker {
         }
         root.append(&dropdown);
 
+        let cancel = gtk::Button::with_label(l10n::t("tabs.query_cancel_binding"));
+        cancel.set_visible(false);
+        let on_cancel = Rc::clone(&callbacks.cancel);
+        cancel.connect_clicked(move |_| on_cancel());
+        root.append(&cancel);
+
         let picker = Rc::new(Self {
             root,
             dropdown,
+            cancel,
+            available: Cell::new(true),
             items: RefCell::new(Vec::new()),
             current: RefCell::new(None),
             updating: Cell::new(false),
@@ -2915,7 +2985,11 @@ impl ConnectionPicker {
                 let Some(index) = usize::try_from(picker.dropdown.selected()).ok() else {
                     return;
                 };
-                let Some((key, name)) = picker.items.borrow().get(index).cloned() else {
+                let Some((key, name)) = index
+                    .checked_sub(1)
+                    .and_then(|i| picker.items.borrow().get(i).cloned())
+                else {
+                    picker.restore_after_selection();
                     return;
                 };
                 if picker.current.borrow().as_deref() == Some(key.as_str()) {
@@ -2944,8 +3018,9 @@ impl ConnectionPicker {
             self.items.borrow().as_slice(),
             self.current.borrow().as_deref(),
         );
-        options
-            .get(selected)
+        selected
+            .checked_sub(1)
+            .and_then(|index| options.get(index))
             .map_or_else(String::new, |(_, name)| name.clone())
     }
 
@@ -2982,7 +3057,11 @@ impl ConnectionPicker {
 
     pub fn set_pending(&self, target: Option<&str>) {
         self.pending.set(target.is_some());
-        self.dropdown.set_sensitive(target.is_none());
+        self.dropdown
+            .set_sensitive(target.is_none() && self.available.get());
+        if target.is_none() {
+            self.set_cancellable(false);
+        }
         if let Some(target) = target {
             let text = l10n::tf(
                 "tabs.picker_connection_pending_tip",
@@ -2992,6 +3071,19 @@ impl ConnectionPicker {
             self.dropdown.set_tooltip_text(Some(&text));
         } else {
             self.refresh_tooltip();
+        }
+    }
+
+    pub fn set_cancellable(&self, cancellable: bool) {
+        self.cancel.set_visible(cancellable && self.available.get());
+    }
+
+    pub fn set_available(&self, available: bool) {
+        self.available.set(available);
+        self.dropdown
+            .set_sensitive(available && !self.pending.get());
+        if !available {
+            self.set_cancellable(false);
         }
     }
 
@@ -3008,7 +3100,7 @@ impl ConnectionPicker {
             .iter()
             .position(|(key, name)| name == connection || key == connection)
             .ok_or_else(|| format!("连接列表里没有「{connection}」"))?;
-        let selected = u32::try_from(position).map_err(|_| "连接列表过长".to_owned())?;
+        let selected = u32::try_from(position + 1).map_err(|_| "连接列表过长".to_owned())?;
         self.dropdown.set_selected(selected);
         Ok(())
     }
@@ -3032,11 +3124,18 @@ impl ConnectionPicker {
             self.items.borrow().as_slice(),
             self.current.borrow().as_deref(),
         );
-        let labels: Vec<&str> = options.iter().map(|(_, name)| name.as_str()).collect();
+        let labels: Vec<&str> = std::iter::once(l10n::t("tabs.query_choose_connection"))
+            .chain(options.iter().map(|(_, name)| name.as_str()))
+            .collect();
         let model = gtk::StringList::new(&labels);
         self.updating.set(true);
         self.dropdown.set_model(Some(&model));
-        self.dropdown.set_selected(selected);
+        self.dropdown
+            .set_selected(if selected == gtk::INVALID_LIST_POSITION {
+                0
+            } else {
+                selected + 1
+            });
         self.updating.set(false);
         self.refresh_tooltip();
     }

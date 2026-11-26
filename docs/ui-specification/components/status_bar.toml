@@ -94,13 +94,12 @@ source = "src/shell.rs:1123、src/shell.rs:1133、src/data_page.rs:5043、src/da
 trigger = "load"
 precondition = "当前标签不是表标签（Objects 页 / 查询标签 / 启动态未连接）"
 result = "六个按钮全部禁用并给原因：Objects 页「Objects 页：在对象树里打开表或新建查询标签」；未连接「未连接：从左侧选择一个连接开始」；查询标签按结果可编辑性给原因（例如「结果只读：执行单表查询后才能编辑」）。唯一例外是「取消」（改动确认单 #7，两用）：查询标签上按**查询是否在途**给值——在途可点（点它取消查询），空闲置灰并写「当前没有执行中的查询」。同时分页摘要、选中数、Last Refresh 整格隐藏"
-source = "src/shell.rs:1166、src/ui.rs:1878、src/startup.rs:251、src/sql_page.rs:923"
+source = "src/ui.rs::show_startup_workspace、src/ui.rs::apply_tab_status、src/sql_page.rs::SqlPage::row_ops"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "245741dfd613"
-commit = ""
-evidence = "§7 行 1 行操作与可用性来源；apply_row_ops / show_no_table / show_query_ops"
+spec_hash = "d48af02fe71b"
+evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：已绑定 SQL 与行操作；tests/ui/linux/results/run.x16Mog9W/report.json：零连接和未绑定执行禁用；tests/ui/linux/results/run.d98WgmUQ/report.json 状态栏与断连用例通过。"
 
 [[component]]
 id = "status_bar.row1.ops.add"
@@ -557,13 +556,12 @@ source = "src/ui.rs:1879、src/shell.rs:925"
 trigger = "load"
 precondition = "连接断开 / 启动态未连接"
 result = "断连写「SQL: 连接已断开」；启动态写「SQL: 尚未连接」"
-source = "src/ui.rs:600、src/startup.rs:248"
+source = "src/ui.rs::show_startup_workspace、src/ui.rs::activate"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3859890ae206"
-commit = ""
-evidence = "§7 行 2 左段三种来源 + 断连 / 未执行文案 收尾用例检查两个表独立摘要、空白 SQL 回退、执行后摘要及失连后跨页保留断开提示。 tests/ui/linux/results/run.FlRhTuGR/report.json"
+spec_hash = "fff2b8c88b02"
+evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：已绑定 SQL 与行操作；tests/ui/linux/results/run.x16Mog9W/report.json：零连接和未绑定执行禁用；tests/ui/linux/results/run.d98WgmUQ/report.json 状态栏与断连用例通过。"
 
 [[component]]
 id = "status_bar.row2.last_refresh"
@@ -618,10 +616,9 @@ impl_notes = [
 trigger = "load"
 precondition = "没有表标签"
 result = "显示连接名，或「未连接 · 驱动 N · 浏览会话 M」（N / M 来自启动态与连接注册表的真实计数）；有表标签时整格隐藏"
-source = "src/shell.rs:1213、src/shell.rs:1233、src/startup.rs:66、src/startup.rs:243"
+source = "src/shell.rs::StatusBar::refresh_session、src/startup.rs::idle_status_text、src/ui.rs::show_startup_workspace"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6acc136b6516"
-commit = ""
-evidence = "test_01_startup.py 读取握手摘要；test_02_connection.py 连接后未连接摘要消失。 tests/ui/linux/results/run.9ME2GefI/report.json"
+spec_hash = "5f9b30854b56"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：真实握手和首次数据库连接，驱动摘要与连接状态。"

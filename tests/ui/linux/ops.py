@@ -174,8 +174,7 @@ def open_sql_page(frame):
     """点工具条「新建查询」开新标签，返回该页面板容器。"""
     before = query_tab_names(frame)
     btn = find_one(frame, role_in=("button",), name="新建查询", timeout=10)
-    expect("sensitive" in states(btn), "已连接时「新建查询」可用",
-           "sensitive" in states(btn))
+    wait_until(lambda: "sensitive" in states(btn), 15, "握手后「新建查询」可用")
     click(btn)
     wait_until(lambda: len(query_tab_names(frame)) > len(before), 15,
                "新查询标签出现")
@@ -439,11 +438,19 @@ def summary_columns(page):
     return out
 
 
-def close_current_query_tab(frame, timeout=15):
+def close_current_query_tab(frame, timeout=15, *, discard_sql=False):
     """关当前查询标签（`win.close-tab`，与 Ctrl+W 同一动作）：用例用完关页，
     避免模块内累计到「有会话标签」上限 8。"""
     before = query_tab_names(frame)
     window_action(frame, "win.close-tab")
+    if discard_sql:
+        dialog = wait_until(
+            lambda: len(query_tab_names(frame)) < len(before)
+            or next(iter(query(frame, role_in=("dialog", "alert"), name="关闭标签？")), None),
+            timeout, "关闭确认或空白查询关闭",
+        )
+        if dialog is not True:
+            click(find_one(dialog, role_in=("button",), name="放弃更改并关闭"))
     wait_until(lambda: len(query_tab_names(frame)) < len(before), timeout,
                "当前查询标签关闭")
 

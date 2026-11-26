@@ -53,7 +53,7 @@ use crate::backend::table::{TableEntry, TableFailure};
 use crate::backend::worker::QueryEvent;
 use crate::backend::worker::{TabSessionOpened, TableEvent, WorkerHandle};
 use crate::browse::ConnectionRegistry;
-use crate::data_page::{DataCallbacks, DataPage, RowOpsState, StatusSnapshot};
+use crate::data_page::{DataCallbacks, DataPage, DataState, RowOpsState, StatusSnapshot};
 use crate::layout::{Gap, gap};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
 use crate::workspace_context::{ActionTarget, ResourceIdentity, TargetState, object_scope};
@@ -476,13 +476,14 @@ pub struct ClosePrompt {
     pub dirty: usize,
     /// 未提交事务的徽标文案（`None` = 自动提交 / 已断开）。
     pub transaction: Option<String>,
+    query_loss: bool,
 }
 
 impl ClosePrompt {
     /// 是否需要弹三选（没有脏行也没有事务就不打扰用户）。
     #[must_use]
     pub fn is_needed(&self) -> bool {
-        self.dirty > 0 || self.transaction.is_some()
+        self.dirty > 0 || self.transaction.is_some() || self.query_loss
     }
 }
 
@@ -519,6 +520,7 @@ pub fn close_prompt(title: &str, snapshot: Option<&StatusSnapshot>) -> CloseProm
         body: lines.join("\n"),
         dirty,
         transaction,
+        query_loss: false,
     }
 }
 
@@ -569,6 +571,8 @@ pub struct TabHandle {
     close_phase: Cell<ClosePhase>,
     session_attempt: Cell<Option<u64>>,
     binding_settled: Cell<bool>,
+    restore_after_close: Cell<bool>,
+    binding_failure: RefCell<Option<String>>,
     connection_label: RefCell<Option<String>>,
     /// 查询标签最近一次摘要（状态栏行 2 左段）。
     sql_summary: RefCell<Option<String>>,
@@ -599,6 +603,10 @@ impl TabHandle {
             TabKind::Query { .. } => self.binding.bound(),
             kind => kind.connection_key().unwrap_or_default().to_owned(),
         }
+    }
+
+    pub fn has_unsaved_sql(&self) -> bool {
+        self.sql.as_ref().is_some_and(|sql| sql.has_unsaved_sql())
     }
 
     fn query_ready(&self) -> bool {
@@ -652,6 +660,7 @@ pub type TableResolver = Rc<dyn Fn(&str) -> Option<TableEntry>>;
 /// 窗口标题接线：(标题, 副标题)。
 pub type DriverName = Rc<dyn Fn(&str) -> Option<String>>;
 pub type TitleSink = Rc<dyn Fn(&str, &str, &str)>;
+pub type BindingCredentials = Rc<dyn Fn(&str, &str, &str)>;
 
 /// 标签条要用的外部接线。
 pub struct TabContext {
@@ -672,6 +681,7 @@ pub struct TabContext {
     pub resolve_table: TableResolver,
     pub navigation_target: Rc<dyn Fn() -> TargetState>,
     pub command_feedback: Rc<dyn Fn(&str)>,
+    pub binding_credentials: BindingCredentials,
     /// 当前标签的状态变化（状态栏 / 工具条 / 窗口动作）。
     pub on_status: Rc<dyn Fn(TabStatus)>,
     /// 窗口标题（标题, 副标题）。
@@ -855,6 +865,8 @@ pub enum TabStatus {
         summary: Option<String>,
         /// 上一次查询耗时（毫秒；没有就是 `None`）。
         timing_ms: Option<u64>,
+        can_execute: bool,
+        bound: bool,
         /// 状态栏行操作（v0.2.5）：结果可编辑时 `+ - ✓ ↶` 才亮。
         row_ops: crate::data_page::RowOpsState,
     },
@@ -1685,10 +1697,25 @@ fn collect_tab_widths(widget: &gtk::Widget, out: &mut Vec<(Vec<String>, i32)>) {
 }
 
 /// 标签工作区。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabSessionState {
+    Unbound,
+    Opening,
+    Established,
+    Closing,
+    Disconnected,
+}
+
 pub struct TabSet {
     root: gtk::Box,
     view: adw::TabView,
     bar: adw::TabBar,
+    plus: gtk::Button,
+    backend_ready: Cell<bool>,
+    // Entries survive page detachment until the worker confirms release.
+    session_slots: RefCell<HashMap<String, (u32, TabSessionState)>>,
+    backend_pid: Cell<u32>,
+    close_requests: RefCell<HashMap<String, u64>>,
     tabs: RefCell<Vec<Rc<TabHandle>>>,
     /// 固定 `Objects` 页的对象概览（#135：只跟随信息面板的快照）。
     objects: RefCell<Option<Rc<ObjectsPage>>>,
@@ -1709,6 +1736,7 @@ pub struct TabSet {
     /// 收尾。若改成再发一次 `close_page()`，页面已经在「关闭中」，这次请求会被丢掉——
     /// 标签既关不掉，后续每次关闭也都不再有任何反应（中键关脏标签就是这样卡住的）。
     pending_close: RefCell<Option<adw::TabPage>>,
+    confirmed_connection_close: RefCell<Option<String>>,
     /// 正在显示的上限提示对话框。
     limit_dialog: Rc<RefCell<Option<adw::AlertDialog>>>,
     /// 可见库列表的缓存（**按连接键**，ADR 0030）：库列表对整条连接是同一份。
@@ -1768,6 +1796,11 @@ impl TabSet {
             root,
             view,
             bar,
+            plus: plus.clone(),
+            backend_ready: Cell::new(true),
+            session_slots: RefCell::new(HashMap::new()),
+            backend_pid: Cell::new(0),
+            close_requests: RefCell::new(HashMap::new()),
             tabs: RefCell::new(Vec::new()),
             objects: RefCell::new(None),
             context,
@@ -1778,6 +1811,7 @@ impl TabSet {
             last_limit_message: RefCell::new(None),
             qa_close_answer: Cell::new(None),
             pending_close: RefCell::new(None),
+            confirmed_connection_close: RefCell::new(None),
             limit_dialog: Rc::new(RefCell::new(None)),
             catalogs: RefCell::new(HashMap::new()),
         });
@@ -1890,12 +1924,6 @@ impl TabSet {
         &self.root
     }
 
-    /// worker 句柄（工作区级动作，例如平铺表列表）。
-    #[must_use]
-    pub fn worker(&self) -> Option<Rc<WorkerHandle>> {
-        Some(Rc::clone(&self.context.worker))
-    }
-
     /// 没有表标签时的行操作状态：全部禁用，并说明原因（不是无声地灰着）。
     #[must_use]
     pub fn empty_row_ops() -> RowOpsState {
@@ -1923,11 +1951,94 @@ impl TabSet {
     /// 有会话的标签数（上限只算这些）。
     #[must_use]
     pub fn session_tab_count(&self) -> usize {
+        self.session_slots.borrow().len()
+    }
+
+    pub fn session_state(&self, tab_id: &str) -> Option<TabSessionState> {
+        self.session_slots
+            .borrow()
+            .get(tab_id)
+            .map(|(_, state)| *state)
+            .or_else(|| {
+                let tab = self.by_id(tab_id)?;
+                tab.kind.has_session().then(|| {
+                    if tab.bound_connection().is_empty() {
+                        TabSessionState::Unbound
+                    } else {
+                        TabSessionState::Disconnected
+                    }
+                })
+            })
+    }
+
+    pub fn set_initial_objects_hint(&self, initial: bool) {
+        if let Some(objects) = self.objects.borrow().as_ref() {
+            objects.set_empty_text(
+                crate::l10n::t("objects_page.empty_title"),
+                crate::l10n::t(if initial {
+                    "objects_page.empty_body_startup"
+                } else {
+                    "objects_page.empty_body"
+                }),
+            );
+        }
+    }
+
+    pub fn set_backend_ready(&self, ready: bool) {
+        self.backend_ready.set(ready);
+        self.plus.set_sensitive(ready);
+        self.plus.set_tooltip_text(Some(crate::l10n::t(if ready {
+            "tabs.new_tooltip"
+        } else {
+            "tabs.query_backend_unavailable"
+        })));
+        if ready {
+            for tab in self.tabs() {
+                if tab.bound_connection().is_empty()
+                    && let Some(sql) = tab.sql.as_ref()
+                {
+                    sql.set_unbound_backend_status(None);
+                }
+            }
+        }
+        self.refresh_connection_labels();
+    }
+
+    fn reserve_session(self: &Rc<Self>, tab_id: &str) -> Result<(), String> {
+        if self.session_tab_count() >= MAX_TABS {
+            let message = limit_message(self.session_tab_count());
+            self.show_limit(&message);
+            return Err(message);
+        }
+        self.session_slots.borrow_mut().insert(
+            tab_id.to_owned(),
+            (self.backend_pid.get(), TabSessionState::Opening),
+        );
+        Ok(())
+    }
+
+    fn close_session(&self, tab_id: &str) {
+        let mut slots = self.session_slots.borrow_mut();
+        if let Some((_, state)) = slots.get_mut(tab_id)
+            && *state != TabSessionState::Closing
+        {
+            *state = TabSessionState::Closing;
+            let request = NEXT_SESSION_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.close_requests
+                .borrow_mut()
+                .insert(tab_id.to_owned(), request);
+            self.context.worker.close_tab_session(tab_id, request);
+        }
+    }
+
+    /// S6 can read the content state independently of the tab's connection or transaction.
+    pub fn unsaved_sql_tabs(&self) -> Vec<String> {
         self.tabs
             .borrow()
             .iter()
-            .filter(|tab| tab.kind.has_session())
-            .count()
+            .filter(|tab| tab.has_unsaved_sql())
+            .map(|tab| tab.kind.title())
+            .collect()
     }
 
     /// 当前标签。
@@ -2292,31 +2403,32 @@ impl TabSet {
 
     /// 按位置找标签（QA 脚本用；0 = Objects）。
     #[must_use]
-    /// 关闭某条连接名下的所有标签（表标签与查询标签）。
-    ///
-    /// 编辑已有连接前调用：用户已经在确认框里同意「关闭所有已打开的相关窗口」，
-    /// 所以这里按「放弃更改」关闭（`CloseAnswer::Discard`），走的是与用户点 ✕
-    /// 完全相同的清理路径（取消在途查询、释放会话、清槽位）。
-    ///
-    /// 返回实际关掉的标签数（`Objects` 固定页不参与）。
-    pub fn close_tabs_for_connection(self: &Rc<Self>, key: &str) -> usize {
-        let targets: Vec<Rc<TabHandle>> = self
-            .tabs
+    pub fn tabs_for_connection(&self, key: &str) -> Vec<Rc<TabHandle>> {
+        self.tabs
             .borrow()
             .iter()
             .filter(|tab| tab.bound_connection() == key)
             .cloned()
-            .collect();
+            .collect()
+    }
+
+    /// The connection edit confirmation describes these captured tabs and their changes.
+    pub fn close_tabs_for_connection(
+        self: &Rc<Self>,
+        key: &str,
+        targets: &[Rc<TabHandle>],
+    ) -> usize {
         let mut closed = 0;
-        for tab in targets.into_iter().rev() {
-            if self.by_id(&tab.id).is_some()
-                && self.close_tab_handle(&tab, Some(CloseAnswer::Discard))
-            {
+        for tab in targets.iter().rev() {
+            if tab.bound_connection() != key || self.by_id(&tab.id).is_none() {
+                continue;
+            }
+            self.confirmed_connection_close
+                .replace(Some(tab.id.clone()));
+            if self.close_workspace(&tab.id) {
                 closed += 1;
             }
-        }
-        if closed > 0 {
-            eprintln!("[tabs] 编辑连接前关闭了 {closed} 个标签（连接键 {key}）");
+            self.confirmed_connection_close.take();
         }
         closed
     }
@@ -2415,6 +2527,8 @@ impl TabSet {
             close_phase: Cell::new(ClosePhase::Idle),
             session_attempt: Cell::new(None),
             binding_settled: Cell::new(false),
+            restore_after_close: Cell::new(false),
+            binding_failure: RefCell::new(None),
             connection_label: RefCell::new(None),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
@@ -2457,15 +2571,10 @@ impl TabSet {
             self.select_page(&existing.page);
             return Ok(existing.id.clone());
         }
-        if self.session_tab_count() >= MAX_TABS {
-            let message = limit_message(self.session_tab_count());
-            eprintln!("[tabs] 拒绝新建表标签：{message}");
-            self.show_limit(&message);
-            return Err(message);
-        }
         let seq = self.next_tab_seq.get();
-        self.next_tab_seq.set(seq + 1);
         let tab_id = format!("tab-t{seq}");
+        self.reserve_session(&tab_id)?;
+        self.next_tab_seq.set(seq + 1);
         let binding = QueryBinding::new(&connection_key);
         let kind = TabKind::Table {
             name: entry.display_name.clone(),
@@ -2488,6 +2597,8 @@ impl TabSet {
             close_phase: Cell::new(ClosePhase::Idle),
             session_attempt: Cell::new(None),
             binding_settled: Cell::new(false),
+            restore_after_close: Cell::new(false),
+            binding_failure: RefCell::new(None),
             connection_label: RefCell::new(None),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
@@ -2509,33 +2620,36 @@ impl TabSet {
 
     /// 新建查询标签（工具条「新建查询」、`＋`、Ctrl+T 共用这一条路径）。
     pub fn new_query_tab(self: &Rc<Self>) -> Result<String, String> {
+        if !self.backend_ready.get() {
+            return Err(crate::l10n::t("tabs.query_backend_unavailable").to_owned());
+        }
         let target = match self.action_context() {
-            TargetState::Available(target) => target,
-            state => {
-                let key = if matches!(state, TargetState::None) {
-                    "object_tree.target_connection_required"
-                } else {
-                    "object_tree.target_unavailable"
-                };
-                let reason = crate::l10n::t(key);
+            TargetState::Available(target) => Some(target),
+            TargetState::None => None,
+            TargetState::Unavailable(_) => {
+                let reason = crate::l10n::t("object_tree.target_unavailable");
                 (self.context.command_feedback)(reason);
                 return Err(reason.to_owned());
             }
         };
-        if self.session_tab_count() >= MAX_TABS {
-            let message = limit_message(self.session_tab_count());
-            eprintln!("[tabs] 拒绝新建查询标签：{message}");
-            self.show_limit(&message);
-            return Err(message);
-        }
         let number = self.next_query_number.get();
-        self.next_query_number.set(number + 1);
         let tab_id = format!("tab-q{number}");
-        let request_catalog = target.scope_name().map(str::to_owned);
-        let binding = QueryBinding::new(&target.profile_id);
+        if target.is_some() {
+            self.reserve_session(&tab_id)?;
+        }
+        self.next_query_number.set(number + 1);
+        let request_catalog = target
+            .as_ref()
+            .and_then(|target| target.scope_name())
+            .map(str::to_owned);
+        let binding = QueryBinding::new("");
+        let connection_key = target.map_or_else(String::new, |target| target.profile_id);
+        if !connection_key.is_empty() {
+            binding.begin(&connection_key);
+        }
         let kind = TabKind::Query {
             number,
-            connection_key: target.profile_id,
+            connection_key,
         };
         let title = kind.title();
 
@@ -2553,6 +2667,8 @@ impl TabSet {
             close_phase: Cell::new(ClosePhase::Idle),
             session_attempt: Cell::new(None),
             binding_settled: Cell::new(false),
+            restore_after_close: Cell::new(false),
+            binding_failure: RefCell::new(None),
             connection_label: RefCell::new(None),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
@@ -2573,7 +2689,11 @@ impl TabSet {
         );
         // 连接选择器：条目 = 注册表里已保存的连接（键 + 显示名），当前值 = 本标签绑定值。
         self.fill_connection_picker(&tab_id);
-        self.request_session(&tab_id);
+        if self.session_state(&tab_id) == Some(TabSessionState::Opening) {
+            self.request_session(&tab_id);
+        } else {
+            sql.show_binding_status(Some(crate::l10n::t("tabs.query_unbound")));
+        }
         sql.focus_editor();
         Ok(tab_id)
     }
@@ -2601,11 +2721,20 @@ impl TabSet {
         let Some(sql) = tab.sql.as_ref() else {
             return;
         };
+        sql.set_reconnect_available(
+            self.backend_ready.get()
+                && self.session_state(tab_id) == Some(TabSessionState::Disconnected),
+        );
         let bound = tab.bound_connection();
         let choices = self.connection_choices();
         sql.connection_picker().set_items(&choices);
         sql.connection_picker().set_current(&bound);
-        if tab.session_attempt.get().is_some() {
+        sql.connection_picker()
+            .set_available(self.backend_ready.get());
+        if tab.binding.pending().is_some()
+            || tab.session_attempt.get().is_some()
+            || self.session_state(tab_id) == Some(TabSessionState::Closing)
+        {
             self.show_connection_attempt(&tab);
         } else {
             sql.set_connection_pending(None);
@@ -2633,9 +2762,11 @@ impl TabSet {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
-        if !tab.kind.has_session() {
+        if !self.backend_ready.get() || self.session_state(tab_id) != Some(TabSessionState::Opening)
+        {
             return;
         }
+        tab.binding_failure.replace(None);
         let attempt = NEXT_SESSION_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tab.session_attempt.set(Some(attempt));
         self.show_connection_attempt(&tab);
@@ -2673,6 +2804,8 @@ impl TabSet {
         if let Some(sql) = tab.sql.as_ref() {
             let target = self.connection_name_for(&tab.binding.effective());
             sql.set_connection_pending(Some(&target));
+            sql.connection_picker()
+                .set_cancellable(tab.binding.pending().is_some());
         }
     }
 
@@ -2811,7 +2944,22 @@ impl TabSet {
                     set.refresh_current();
                 })
             },
-            backend_failure: Rc::clone(&self.context.backend_failure),
+            backend_failure: {
+                let weak = Rc::downgrade(self);
+                let id = id.clone();
+                let recover = Rc::clone(&self.context.backend_failure);
+                Rc::new(move || {
+                    if let Some(set) = weak.upgrade()
+                        && set.backend_ready.get()
+                        && set.session_state(&id) == Some(TabSessionState::Disconnected)
+                        && let Some(tab) = set.by_id(&id)
+                    {
+                        set.rebind_connection(&id, &tab.bound_connection());
+                    } else {
+                        recover();
+                    }
+                })
+            },
             edit_target: {
                 let weak = Rc::downgrade(self);
                 let id = id.clone();
@@ -2878,6 +3026,15 @@ impl TabSet {
                 },
             },
             connection: crate::sql_page::SqlPageConnection {
+                cancel: {
+                    let weak = Rc::downgrade(self);
+                    let id = id.clone();
+                    Rc::new(move || {
+                        if let Some(set) = weak.upgrade() {
+                            set.cancel_binding(&id);
+                        }
+                    })
+                },
                 select: {
                     let weak = Rc::downgrade(self);
                     let id = id.clone();
@@ -3203,6 +3360,14 @@ impl TabSet {
         {
             self.publish_tab_tooltip(tab);
             if let Some(sql) = tab.sql.as_ref() {
+                sql.connection_picker()
+                    .set_available(self.backend_ready.get());
+                sql.set_reconnect_available(
+                    self.backend_ready.get()
+                        && tab.session().is_none()
+                        && !tab.bound_connection().is_empty()
+                        && !self.session_slots.borrow().contains_key(&tab.id),
+                );
                 sql.connection_picker().set_items(&choices);
                 if tab.session_attempt.get().is_some() {
                     self.show_connection_attempt(tab);
@@ -3280,6 +3445,8 @@ impl TabSet {
                     tab.sql_summary.borrow().clone()
                 },
                 timing_ms: tab.query_timing.get(),
+                can_execute: page.can_execute(),
+                bound: !tab.bound_connection().is_empty(),
                 row_ops: page.row_ops(),
             },
             _ => TabStatus::Objects { shortcut: None },
@@ -3307,6 +3474,12 @@ impl TabSet {
 
     /// 推进「保存并关闭」：脏行 → 标签事务 → 摘页面。
     fn advance_close(self: &Rc<Self>, tab: &Rc<TabHandle>, snapshot: &StatusSnapshot) {
+        if matches!(snapshot.state, DataState::Disconnected | DataState::Error)
+            && tab.close_phase.replace(ClosePhase::Idle) != ClosePhase::Idle
+        {
+            self.finish_close_page(tab, false);
+            return;
+        }
         let transaction_open = is_transaction_open(&snapshot.txn_label);
         match tab.close_phase.get() {
             ClosePhase::Idle => {}
@@ -3372,6 +3545,9 @@ impl TabSet {
         // 否则会被下面的「通道不符」整批丢掉——那样提交后既没有回填也不会自动重跑
         // （实测日志 `丢弃事件：标签 tab-q1 是查询标签，不接收表数据事件`）。
         if tab.data.is_none() {
+            if tab.session().is_none() {
+                return;
+            }
             tab.record(event.name());
             if let Some(sql) = tab.sql.as_ref() {
                 sql.on_table_event(event);
@@ -3528,7 +3704,9 @@ impl TabSet {
             );
             return;
         };
-        if tab.session_attempt.get() != Some(attempt) {
+        if tab.session_attempt.get() != Some(attempt)
+            || self.session_state(&tab.id) != Some(TabSessionState::Opening)
+        {
             return;
         }
         let key = if tab.sql.is_some() {
@@ -3542,7 +3720,7 @@ impl TabSet {
             .as_ref()
             .is_none_or(|registry| registry.params_for_key(&key).is_none())
         {
-            self.context.worker.close_tab_session(&tab.id);
+            self.close_session(&tab.id);
             self.on_session_failed(
                 &tab.id,
                 attempt,
@@ -3554,6 +3732,10 @@ impl TabSet {
             return;
         }
         tab.session_attempt.set(None);
+        self.session_slots.borrow_mut().insert(
+            tab.id.clone(),
+            (self.backend_pid.get(), TabSessionState::Established),
+        );
         let restoring = tab.binding_settled.replace(true) && tab.binding.pending().is_none();
         let restore = restoring.then(|| tab.catalog.truth()).flatten();
         tab.set_session(opened.session_id.clone());
@@ -3562,7 +3744,9 @@ impl TabSet {
         // 「正在切换」态。必须赶在 tooltip / 标题刷新之前——它们读的是绑定值。
         if let Some(rebind) = tab.binding.pending() {
             let bound = tab.binding.finish(true);
-            tab.catalog.set_request(None);
+            if !rebind.from.is_empty() {
+                tab.catalog.set_request(None);
+            }
             tab.catalog.clear_truth();
             if let Some(sql) = tab.sql.as_ref() {
                 sql.set_connection_pending(None);
@@ -3594,6 +3778,7 @@ impl TabSet {
                 .as_ref()
                 .map(|_| self.connection_name_for(&tab.binding.bound()));
             sql.set_connection_pending(recovering.as_deref());
+            sql.show_binding_status(None);
             sql.set_session_line(&format!(
                 "会话 {} · 驱动 {} · 标签 {}",
                 short_id(&opened.session_id),
@@ -3607,7 +3792,7 @@ impl TabSet {
             tab.catalog.set_switchable(switchable);
             // Until the old scope is verified on a replacement session it cannot execute SQL.
             tab.catalog.switching.set(restore.is_some());
-            sql.set_session_ready(
+            sql.session_opened(
                 restore.is_none() && (switchable || tab.catalog.request().is_none()),
             );
             sql.catalog_picker().set_capability(switchable);
@@ -3703,7 +3888,7 @@ impl TabSet {
     }
 
     fn fail_catalog_restore(self: &Rc<Self>, tab: &TabHandle) {
-        self.context.worker.close_tab_session(&tab.id);
+        self.close_session(&tab.id);
         self.on_tab_lost(&tab.id, crate::l10n::t("tabs.query_rebind_restore_failed"));
     }
 
@@ -3956,7 +4141,7 @@ impl TabSet {
     /// c. 断开旧会话（worker 的 `CloseTabSession`：摘归属 → Cancel → Close → Disconnect）；
     /// d. 用目标连接的参数 `Connect`（既有 `request_session` / `open_tab_session` 那条路）；
     /// e / f 的收尾在 [`Self::on_session`] / [`Self::on_session_failed`] 里。
-    fn rebind_connection(self: &Rc<Self>, tab_id: &str, target: &str) {
+    pub fn rebind_connection(self: &Rc<Self>, tab_id: &str, target: &str) {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
@@ -3964,23 +4149,50 @@ impl TabSet {
             return;
         };
         let from = tab.bound_connection();
-        if target != from && sql.has_pending_result_edits() {
+        if !self.backend_ready.get()
+            || (target == from && tab.session().is_some())
+            || tab.binding.pending().is_some()
+            || tab.session_attempt.get().is_some()
+            || tab.catalog.switching.get()
+            || self.session_state(tab_id) == Some(TabSessionState::Closing)
+        {
+            sql.connection_picker().restore_after_selection();
+            return;
+        }
+        if sql.has_pending_result_edits() || sql.has_open_transaction() {
             sql.connection_picker().restore_after_selection();
             (self.context.command_feedback)(crate::l10n::t("tabs.query_rebind_dirty"));
             return;
         }
-        if tab.session_attempt.get().is_some()
-            || tab.catalog.switching.get()
-            || !tab.binding.begin(target)
+        let Some(saved) = self
+            .context
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.saved(target))
+        else {
+            sql.connection_picker().restore_after_selection();
+            (self.context.command_feedback)(crate::l10n::t("object_tree.target_unavailable"));
+            return;
+        };
+        if crate::browse::saved_click_action(crate::browse::ConnectionState::Disconnected, &saved)
+            == crate::browse::SavedClickAction::PromptForCredentials
         {
-            // 同一条连接（或已有一轮重绑在途）= no-op：不重建会话，显示回写到绑定值。
-            eprintln!(
-                "[tabs] 标签 {tab_id} 的连接选择器选中「{}」= 当前绑定：不重建会话",
-                self.connection_name_for(target)
+            sql.connection_picker().restore_after_selection();
+            (self.context.binding_credentials)(
+                tab_id,
+                target,
+                crate::l10n::t("dialogs.cred_missing_ref"),
             );
+            return;
+        }
+        if self.session_state(tab_id) != Some(TabSessionState::Established)
+            && self.reserve_session(tab_id).is_err()
+        {
             sql.connection_picker().restore_after_selection();
             return;
         }
+        tab.binding.begin(target);
+        self.show_connection_attempt(&tab);
         let from_name = self.connection_name_for(&from);
         let target_name = self.connection_name_for(target);
         eprintln!("[tabs] 标签 {tab_id} 重绑连接：{from_name} → {target_name}");
@@ -3989,7 +4201,7 @@ impl TabSet {
         // b. 关游标：页面只有在拿到过 query_id 时才发 Close。
         sql.release_results_session();
         // c. 断开旧会话（worker 侧 CloseTabSession 会先 Cancel 再 Close 再 Disconnect）。
-        tab.session.replace(None);
+        let had_session = tab.session.replace(None).is_some();
         sql.set_session_ready(false);
         // 库选择器属于旧连接：能力位、候选列表与真值全部作废，等新会话回话。
         tab.catalog.set_switchable(false);
@@ -3997,10 +4209,32 @@ impl TabSet {
         sql.catalog_picker().set_items(&[]);
         sql.catalog_picker().set_truth(None);
         sql.connection_picker().restore_after_selection();
-        self.context.worker.close_tab_session(tab_id);
-        // d. 用目标连接的参数 Connect（与新建标签同一条路径，不另写一套）。
-        self.request_session(tab_id);
+        if had_session {
+            self.close_session(tab_id);
+        } else {
+            self.request_session(tab_id);
+        }
         self.refresh_current();
+    }
+
+    fn cancel_binding(self: &Rc<Self>, tab_id: &str) {
+        let Some(tab) = self
+            .by_id(tab_id)
+            .filter(|tab| tab.binding.pending().is_some())
+        else {
+            return;
+        };
+        eprintln!("[tabs] 标签 {tab_id} 请求取消绑定");
+        tab.binding.finish(false);
+        tab.restore_after_close.set(true);
+        tab.catalog.set_request(None);
+        tab.session_attempt.set(None);
+        if let Some(sql) = tab.sql.as_ref() {
+            sql.connection_picker().set_cancellable(false);
+            sql.connection_picker().set_current(&tab.bound_connection());
+            sql.show_binding_status(Some(crate::l10n::t("tabs.query_binding_cancelled")));
+        }
+        self.close_session(tab_id);
     }
 
     /// 标签会话建立失败：保留标签（用户可关闭或重试），但把原因写在页面上。
@@ -4011,7 +4245,11 @@ impl TabSet {
         if tab.session_attempt.get() != Some(attempt) {
             return;
         }
+        if self.session_state(tab_id) == Some(TabSessionState::Opening) {
+            self.session_slots.borrow_mut().remove(tab_id);
+        }
         tab.session_attempt.set(None);
+        tab.binding_failure.replace(Some(failure.message()));
         // 重绑失败（改动确认单 #7 f）：**保留原绑定**，在结果区状态行给失败原因，
         // 并按原连接重新建立会话（旧会话已按固定顺序断开，标签不能就此废掉）。
         if let Some(rebind) = tab.binding.pending() {
@@ -4029,14 +4267,31 @@ impl TabSet {
                 // 走查询页既有的失败提示路径：结果区状态行写「查询失败：…（<错误码>）」。
                 sql.show_failure(&QueryFailure::Other {
                     code: failure.code().to_owned(),
-                    message: format!(
-                        "连接「{target_name}」没建成（已保留「{kept_name}」）：{}",
-                        failure.message()
+                    message: crate::l10n::tf(
+                        if kept.is_empty() {
+                            "tabs.query_binding_failed"
+                        } else {
+                            "tabs.query_rebind_failed"
+                        },
+                        &[
+                            ("target", target_name.clone()),
+                            ("kept", kept_name.clone()),
+                            ("reason", failure.message()),
+                        ],
                     ),
                 });
             }
-            eprintln!("[tabs] 标签 {tab_id} 按原连接「{kept_name}」重新建立会话");
-            self.request_session(tab_id);
+            if kept.is_empty() {
+                tab.catalog.set_request(None);
+                if let Some(sql) = tab.sql.as_ref() {
+                    sql.show_binding_status(Some(crate::l10n::t("tabs.query_unbound")));
+                }
+            } else {
+                tab.restore_after_close.set(true);
+                self.resume_binding_after_release(tab_id);
+            }
+            self.publish_tab_tooltip(&tab);
+            self.refresh_current();
             return;
         }
         eprintln!(
@@ -4049,16 +4304,112 @@ impl TabSet {
         } else if let Some(sql) = tab.sql.as_ref() {
             sql.set_connection_pending(None);
             sql.mark_disconnected(&failure.message());
+            self.fill_connection_picker(tab_id);
         }
         self.publish_tab_tooltip(&tab);
         self.refresh_current();
     }
 
+    pub fn pending_binding_target(&self, tab_id: &str, attempt: u64) -> Option<String> {
+        let tab = self.by_id(tab_id)?;
+        (tab.session_attempt.get() == Some(attempt))
+            .then(|| tab.binding.pending())
+            .flatten()
+            .map(|binding| binding.to)
+    }
+
+    pub fn on_session_release_uncertain(
+        self: &Rc<Self>,
+        tab_id: &str,
+        attempt: u64,
+        error: String,
+    ) {
+        if self
+            .by_id(tab_id)
+            .is_some_and(|tab| tab.session_attempt.get() == Some(attempt))
+            && self.session_state(tab_id) == Some(TabSessionState::Opening)
+        {
+            self.session_slots.borrow_mut().insert(
+                tab_id.to_owned(),
+                (self.backend_pid.get(), TabSessionState::Closing),
+            );
+            self.report_unconfirmed_release(tab_id, &error);
+        }
+    }
+
     /// 会话已释放（关闭标签的往返结果）。
-    pub fn on_session_closed(&self, tab_id: &str, result: &Result<(), String>) {
+    pub fn on_session_closed(
+        self: &Rc<Self>,
+        tab_id: &str,
+        request: u64,
+        result: &Result<(), String>,
+    ) {
+        if self.close_requests.borrow().get(tab_id) != Some(&request) {
+            return;
+        }
+        self.close_requests.borrow_mut().remove(tab_id);
         match result {
-            Ok(()) => eprintln!("[tabs] 标签 {tab_id} 的会话已释放"),
-            Err(error) => eprintln!("[tabs] 标签 {tab_id} 的会话释放失败：{error}"),
+            Ok(()) => {
+                self.session_slots.borrow_mut().remove(tab_id);
+                eprintln!("[tabs] 标签 {tab_id} 的会话已释放");
+                if !self.resume_binding_after_release(tab_id) {
+                    self.fill_connection_picker(tab_id);
+                    if let Some(tab) = self.by_id(tab_id)
+                        && tab.bound_connection().is_empty()
+                        && tab.binding.pending().is_none()
+                        && let Some(sql) = tab.sql.as_ref()
+                    {
+                        sql.show_binding_status(Some(crate::l10n::t("tabs.query_unbound")));
+                    }
+                }
+            }
+            Err(error) => self.report_unconfirmed_release(tab_id, error),
+        }
+    }
+
+    fn resume_binding_after_release(self: &Rc<Self>, tab_id: &str) -> bool {
+        let Some(tab) = self.by_id(tab_id).filter(|tab| tab.sql.is_some()) else {
+            return false;
+        };
+        if !self.backend_ready.get()
+            || self.session_slots.borrow().contains_key(tab_id)
+            || self
+                .pending_close
+                .borrow()
+                .as_ref()
+                .is_some_and(|page| page == &tab.page)
+            || (tab.binding.pending().is_none() && !tab.restore_after_close.get())
+        {
+            return false;
+        }
+        tab.restore_after_close.set(false);
+        if tab.binding.effective().is_empty() {
+            return false;
+        }
+        if let Err(message) = self.reserve_session(tab_id) {
+            let bound = tab.binding.finish(false);
+            if !bound.is_empty()
+                && let Some(sql) = tab.sql.as_ref()
+            {
+                sql.mark_disconnected(&message);
+            }
+            self.fill_connection_picker(tab_id);
+            return false;
+        }
+        self.request_session(tab_id);
+        true
+    }
+
+    fn report_unconfirmed_release(&self, tab_id: &str, error: &str) {
+        eprintln!("[tabs] 标签 {tab_id} 的会话释放失败：{error}");
+        (self.context.command_feedback)(crate::l10n::t("tabs.query_release_unconfirmed"));
+        if let Some(tab) = self.by_id(tab_id) {
+            tab.binding.finish(false);
+            tab.session_attempt.set(None);
+            if let Some(sql) = tab.sql.as_ref() {
+                sql.connection_picker().set_cancellable(false);
+                sql.show_binding_status(Some(crate::l10n::t("tabs.query_release_unconfirmed")));
+            }
         }
     }
 
@@ -4067,10 +4418,14 @@ impl TabSet {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
+        self.close_session(tab_id);
         tab.session.replace(None);
         tab.catalog.switching.set(false);
         eprintln!("[tabs] 标签 {tab_id} 的会话失效：{reason}");
         if let Some(data) = tab.data.as_ref() {
+            if tab.close_phase.replace(ClosePhase::Idle) != ClosePhase::Idle {
+                self.finish_close_page(&tab, false);
+            }
             data.mark_disconnected(reason);
         }
         if let Some(sql) = tab.sql.as_ref() {
@@ -4082,21 +4437,56 @@ impl TabSet {
     }
 
     /// 后端断开：所有标签进入 Disconnected，保留已加载行（ADR 0021 §6）。
+    pub fn set_backend_pid(&self, pid: u32) {
+        self.backend_pid.set(pid);
+    }
+
+    pub fn on_backend_sessions_released(&self, pid: u32) {
+        {
+            let mut slots = self.session_slots.borrow_mut();
+            let mut closes = self.close_requests.borrow_mut();
+            slots.retain(|id, (owner, _)| {
+                if *owner == pid {
+                    closes.remove(id);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if self.backend_ready.get() && pid != self.backend_pid.get() {
+            self.refresh_connection_labels();
+        }
+    }
+
     pub fn mark_disconnected(self: &Rc<Self>, reason: &str) {
+        for (pid, state) in self.session_slots.borrow_mut().values_mut() {
+            if *pid == self.backend_pid.get() {
+                *state = TabSessionState::Closing;
+            }
+        }
         if let Some(objects) = self.objects.borrow().as_ref() {
             objects.show_empty();
         }
-        for tab in self.tabs.borrow().iter() {
+        for tab in self.tabs() {
             tab.session.replace(None);
             tab.session_attempt.set(None);
+            tab.restore_after_close.set(false);
             tab.binding.finish(false);
             tab.catalog.switching.set(false);
             if let Some(data) = tab.data.as_ref() {
+                if tab.close_phase.replace(ClosePhase::Idle) != ClosePhase::Idle {
+                    self.finish_close_page(&tab, false);
+                }
                 data.mark_disconnected(reason);
             }
             if let Some(sql) = tab.sql.as_ref() {
                 sql.set_connection_pending(None);
-                sql.mark_disconnected(reason);
+                if !tab.bound_connection().is_empty() {
+                    sql.mark_disconnected(reason);
+                } else {
+                    sql.set_unbound_backend_status(Some(reason));
+                }
             }
         }
         self.refresh_connection_labels();
@@ -4104,6 +4494,44 @@ impl TabSet {
     }
 
     // -- 关闭 --------------------------------------------------------------
+
+    fn close_workspace_prompt(tab: &TabHandle) -> ClosePrompt {
+        let snapshot = tab.data.as_ref().map(|data| data.status_snapshot());
+        let mut prompt = close_prompt(&tab.kind.title(), snapshot.as_ref());
+        if let Some(sql) = tab.sql.as_ref() {
+            let reasons = [
+                (tab.has_unsaved_sql(), "tabs.close_sql_draft"),
+                (sql.has_pending_result_edits(), "tabs.close_sql_results"),
+                (sql.has_open_transaction(), "tabs.close_sql_transaction"),
+                (sql.has_active_query(), "tabs.close_sql_running"),
+            ];
+            let lines: Vec<_> = reasons
+                .iter()
+                .filter(|(active, _)| *active)
+                .map(|(_, key)| crate::l10n::t(key))
+                .collect();
+            prompt.query_loss = !lines.is_empty();
+            prompt.body = lines.join("\n");
+        }
+        prompt
+    }
+
+    pub fn active_close_titles(&self) -> Vec<String> {
+        self.tabs()
+            .iter()
+            .filter(|tab| {
+                tab.sql.as_ref().is_some_and(|sql| {
+                    sql.has_pending_result_edits()
+                        || sql.has_active_query()
+                        || sql.has_open_transaction()
+                }) || tab.data.as_ref().is_some_and(|data| {
+                    let snapshot = data.status_snapshot();
+                    is_transaction_open(&snapshot.txn_label)
+                })
+            })
+            .map(|tab| tab.kind.title())
+            .collect()
+    }
 
     /// `close-page` 的唯一处理点。
     fn on_close_page(self: &Rc<Self>, page: &adw::TabPage) -> glib::Propagation {
@@ -4121,8 +4549,25 @@ impl TabSet {
             eprintln!("[tabs] Objects 页固定存在，不可关闭");
             return glib::Propagation::Stop;
         }
-        let snapshot = tab.data.as_ref().map(|data| data.status_snapshot());
-        let prompt = close_prompt(&tab.kind.title(), snapshot.as_ref());
+        if self.confirmed_connection_close.borrow().as_deref() == Some(tab.id.as_str()) {
+            if let Some(data) = tab.data.as_ref() {
+                data.discard_changes();
+            }
+            return glib::Propagation::Proceed;
+        }
+        // A different tab may still be saving after its dialog closed.
+        if self
+            .pending_close
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending != page)
+        {
+            let view = self.view.clone();
+            let page = page.clone();
+            glib::idle_add_local_once(move || view.close_page_finish(&page, false));
+            return glib::Propagation::Stop;
+        }
+        let prompt = Self::close_workspace_prompt(&tab);
         if !prompt.is_needed() {
             self.clear_pending_close(page);
             return glib::Propagation::Proceed;
@@ -4164,11 +4609,10 @@ impl TabSet {
     ///
     /// 没有被拦下过的关闭（QA 的 `close` 步骤、直接调用方）仍然走 `close_page()`。
     fn finish_close_page(self: &Rc<Self>, tab: &Rc<TabHandle>, confirm: bool) {
-        let was_pending = self
-            .pending_close
-            .borrow_mut()
-            .take()
-            .is_some_and(|page| page == tab.page);
+        let was_pending = self.pending_close.borrow().as_ref() == Some(&tab.page);
+        if was_pending {
+            self.clear_pending_close(&tab.page);
+        }
         if was_pending {
             self.view.close_page_finish(&tab.page, confirm);
         } else if confirm {
@@ -4198,6 +4642,9 @@ impl TabSet {
             }
             dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
             dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        } else if prompt.query_loss {
+            dialog.add_response("discard", crate::l10n::t("tabs.close_btn_discard"));
+            dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
         } else {
             // 只有未提交事务：关闭 = 回滚，按钮文案直说，不用「放弃」吓人。
             dialog.add_response("discard", crate::l10n::t("tabs.close_btn_rollback"));
@@ -4248,6 +4695,7 @@ impl TabSet {
                 // 这次关闭请求已被拦下，必须明确收尾（confirm=false），否则页面会
                 // 一直停在「正在关闭」，用户下一次点关闭会被直接丢掉。
                 self.finish_close_page(tab, false);
+                self.resume_binding_after_release(&tab.id);
             }
             CloseAnswer::Discard => {
                 if let Some(data) = tab.data.as_ref() {
@@ -4258,7 +4706,7 @@ impl TabSet {
             }
             CloseAnswer::Save => {
                 let Some(data) = tab.data.as_ref() else {
-                    self.finish_close_page(tab, true);
+                    self.finish_close_page(tab, false);
                     return;
                 };
                 let snapshot = data.status_snapshot();
@@ -4302,7 +4750,7 @@ impl TabSet {
         // 关闭标签即释放它自己的会话：worker 的 `CloseTabSession` 先 Cancel 在途查询、
         // 再 Close 游标，最后 Disconnect。这里**不**单独发 `CloseQuery`——那会把游标
         // 提前摘掉，让 worker 看不到在途查询，从而跳过 Cancel。
-        self.context.worker.close_tab_session(&removed.id);
+        self.close_session(&removed.id);
         eprintln!(
             "[tabs] 标签 {} 已移除：会话 {} 请求释放（剩余 {} 个标签）",
             removed.id,
@@ -4322,8 +4770,16 @@ impl TabSet {
     pub fn close_current(self: &Rc<Self>) {
         if let Some(tab) = self.current() {
             eprintln!("[tabs] 请求关闭当前标签：{}", tab.kind.title());
-            self.view.close_page(&tab.page);
+            self.close_workspace(&tab.id);
         }
+    }
+
+    pub fn close_workspace(self: &Rc<Self>, tab_id: &str) -> bool {
+        let Some(tab) = self.by_id(tab_id).filter(|tab| tab.kind.has_session()) else {
+            return false;
+        };
+        self.view.close_page(&tab.page);
+        true
     }
 
     /// 按位置关闭（QA 脚本用）：仍然走 `close-page` 信号，`answer` 只决定自动响应。
@@ -4336,33 +4792,19 @@ impl TabSet {
     }
 
     fn close_tab_handle(self: &Rc<Self>, tab: &Rc<TabHandle>, answer: Option<CloseAnswer>) -> bool {
-        if matches!(tab.kind, TabKind::Objects) {
-            eprintln!("[qa] Objects 页不可关闭");
-            return false;
-        }
-        let snapshot = tab.data.as_ref().map(|data| data.status_snapshot());
-        let prompt = close_prompt(&tab.kind.title(), snapshot.as_ref());
-        if prompt.is_needed() {
-            self.present_close_dialog(tab, &prompt, answer);
-            return true;
-        }
-        self.view.close_page(&tab.page);
-        true
+        self.qa_close_answer.set(answer);
+        let closed = self.close_workspace(&tab.id);
+        self.qa_close_answer.take();
+        closed
     }
 
     /// 超限提示：对话框 + 日志（文案含上限与关闭建议）。
     fn show_limit(self: &Rc<Self>, message: &str) {
         // 同一段文案不重复弹窗：否则连点「＋」会堆一摞对话框。
-        let repeated = self.last_limit_message.borrow().as_deref() == Some(message);
         self.last_limit_message.replace(Some(message.to_owned()));
-        if repeated {
+        eprintln!("[tabs] {message}");
+        if self.limit_dialog.borrow().is_some() {
             return;
-        }
-        // 先把旧对话框从槽位里取出来再关：关闭会同步触发 response 回调，
-        // 回调里要再借用同一个 RefCell。
-        let previous = self.limit_dialog.borrow_mut().take();
-        if let Some(previous) = previous {
-            previous.close();
         }
         let dialog = adw::AlertDialog::new(Some(crate::l10n::t("tabs.limit_title")), Some(message));
         dialog.add_response("ok", crate::l10n::t("tabs.limit_btn_ok"));
@@ -4494,7 +4936,11 @@ impl TabSet {
             data.export();
             return true;
         }
-        if let Some(sql) = tab.sql.as_ref() {
+        if let Some(sql) = tab
+            .sql
+            .as_ref()
+            .filter(|_| !tab.bound_connection().is_empty())
+        {
             sql.export();
             return true;
         }
@@ -5333,8 +5779,13 @@ impl QaQueryTarget {
             return Err("查询工作区已关闭".to_owned());
         }
         let tab = tabs.by_id(&self.tab_id).ok_or("目标查询标签已关闭")?;
-        if tab.binding.generation.get() != self.generation || tab.binding.pending().is_some() {
+        if tab.binding.generation.get() != self.generation
+            || (tab.binding_settled.get() && tab.binding.pending().is_some())
+        {
             return Err("目标查询标签的连接已重绑".to_owned());
+        }
+        if let Some(reason) = tab.binding_failure.borrow().clone() {
+            return Err(reason);
         }
         let page = tab.sql.as_ref().ok_or("目标标签没有查询编辑器")?;
         if !page.qa_session_ready()? {
@@ -6305,6 +6756,7 @@ mod tests {
                     TargetState::Available(ActionTarget::new(&key, None))
                 }),
                 command_feedback: Rc::new(|_| {}),
+                binding_credentials: Rc::new(|_, _, _| {}),
                 on_status: Rc::new(|_| {}),
                 on_title: Rc::new(|_, _, _| {}),
                 qa: None,
@@ -6359,6 +6811,21 @@ mod tests {
             );
             let actual_title = tabs.window_title_and_subtitle(&tab).0;
             tabs.rebind_connection(&tab.id, &peer);
+            assert_eq!(tabs.session_state(&tab.id), Some(TabSessionState::Closing));
+            assert!(tab.session_attempt.get().is_none());
+            let close = tabs.close_requests.borrow()[&tab.id];
+            tabs.on_session_closed(&tab.id, close + 1, &Ok(()));
+            assert!(tab.session_attempt.get().is_none());
+            tabs.pending_close.replace(Some(tab.page.clone()));
+            tabs.on_session_closed(&tab.id, close, &Ok(()));
+            assert!(tab.session_attempt.get().is_none());
+            tabs.clear_pending_close(&tab.page);
+            assert!(tabs.resume_binding_after_release(&tab.id));
+            let count = tabs.session_tab_count();
+            tabs.on_session_closed(&tab.id, close, &Ok(()));
+            assert_eq!(tabs.session_tab_count(), count);
+            tabs.on_backend_sessions_released(42);
+            assert_eq!(tabs.session_tab_count(), count);
             let attempt = tab.session_attempt.get().unwrap();
             assert_eq!(tab.binding.effective(), peer);
             assert_eq!(tabs.window_title_and_subtitle(&tab).0, actual_title);
@@ -6401,16 +6868,28 @@ mod tests {
             tabs.rebind_connection(&tab.id, &peer);
             let closing_attempt = tab.session_attempt.get().unwrap();
             assert!(!tab.query_ready());
+            page.set_sql("");
             tabs.close_current();
+            assert_eq!(tabs.session_state(&tab.id), Some(TabSessionState::Closing));
             tabs.on_session(&reply, closing_attempt);
+            let close = tabs.close_requests.borrow()[&tab.id];
+            tabs.on_session_closed(&tab.id, close, &Err("release unconfirmed".to_owned()));
+            assert_eq!(tabs.session_state(&tab.id), Some(TabSessionState::Closing));
+            tabs.on_backend_sessions_released(42);
+            assert_eq!(tabs.session_state(&tab.id), Some(TabSessionState::Closing));
+            tabs.on_backend_sessions_released(0);
+            assert_eq!(tabs.session_state(&tab.id), None);
             tabs.on_session_failed(&tab.id, closing_attempt, &failure);
             assert!(tabs.by_id(&tab.id).is_none());
             assert!(matches!(target.session(), Err(reason) if reason.contains("标签已关闭")));
 
+            tabs.set_backend_pid(42);
             let id = tabs.new_query_tab().unwrap();
             let tab = tabs.by_id(&id).unwrap();
             let failed = QaQueryTarget::new(&tabs, &tab);
             assert!(matches!(failed.session(), Ok(None)));
+            tabs.on_backend_sessions_released(0);
+            assert_eq!(tabs.session_state(&id), Some(TabSessionState::Opening));
             let attempt = tab.session_attempt.get().unwrap();
             tabs.on_session_failed(
                 &id,
@@ -6545,11 +7024,11 @@ mod tests {
             "文案必须含上限数值：{message}"
         );
         assert!(
-            message.contains("关闭一个标签"),
+            message.contains("关闭有会话的标签"),
             "文案必须给出关闭建议：{message}"
         );
-        // 不是静默失败：文案也能直接说明「当前已开多少个」。
-        assert!(message.contains("当前已开 8 个"));
+        // 不是静默失败：文案同时给出真实的占用数量。
+        assert!(message.contains("当前占用 8 个"));
     }
 
     #[test]

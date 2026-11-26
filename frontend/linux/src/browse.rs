@@ -166,6 +166,7 @@ pub struct ConnectionSnapshot {
     pub driver: String,
     /// Server version acknowledged by this profile's browse connection.
     pub server_version: String,
+    pub latency_millis: Option<u64>,
     /// 目标（`user@host:port/db` 或文件路径）。
     pub target: String,
     /// 会话状态。
@@ -260,6 +261,7 @@ struct Entry {
     connection_id: String,
     session_id: String,
     server_version: String,
+    latency_millis: Option<u64>,
     detail: String,
     /// 该连接自己的元数据通道（一个连接一条）。
     hub: Option<Rc<MetadataHub>>,
@@ -317,6 +319,10 @@ enum SessionCommand {
         key: String,
         connection_id: String,
     },
+    ReleaseStale {
+        client: BackendClient,
+        connection_id: String,
+    },
     /// 读一次 `ListSessions` 并写日志（会话计数的验收证据）。
     ListSessions { request: u64, reason: String },
     /// 退出线程。
@@ -333,6 +339,7 @@ pub enum SessionEvent {
         key: String,
         /// `Connect` 的完整结果（含驱动 / 版本 / 能力位）。
         session: BrowseSession,
+        client: BackendClient,
     },
     /// 建立/断开失败（文案可直接展示）。
     Failed {
@@ -449,10 +456,11 @@ async fn session_loop(
                 let endpoint_path = endpoint_path.clone();
                 tokio::spawn(async move {
                     let event = match connect_once(&endpoint_path, &display_name, params).await {
-                        Ok(session) => SessionEvent::Opened {
+                        Ok((session, client)) => SessionEvent::Opened {
                             request,
                             key,
                             session,
+                            client,
                         },
                         Err(failure) => SessionEvent::Failed {
                             request,
@@ -481,6 +489,16 @@ async fn session_loop(
                             result,
                         })
                         .await;
+                });
+            }
+            SessionCommand::ReleaseStale {
+                client,
+                connection_id,
+            } => {
+                tokio::spawn(async move {
+                    if let Err(error) = disconnect_with(&client, &connection_id).await {
+                        eprintln!("[browse] 迟到的浏览会话释放未确认：{error}");
+                    }
                 });
             }
             SessionCommand::ListSessions { request, reason } => {
@@ -528,7 +546,7 @@ async fn connect_once(
     endpoint_path: &Path,
     display_name: &str,
     params: ConnectionParams,
-) -> Result<BrowseSession, ConnectionFailure> {
+) -> Result<(BrowseSession, BackendClient), ConnectionFailure> {
     let driver = params.driver_id.clone();
     let client = client_for(endpoint_path)
         .await
@@ -551,18 +569,25 @@ async fn connect_once(
          连接 {}，会话 {}，{latency_millis} ms",
         opened.driver_id, opened.connection_id, opened.session_id
     );
-    Ok(BrowseSession {
-        connection_id: opened.connection_id,
-        session_id: opened.session_id,
-        driver_id: opened.driver_id,
-        server_version: opened.server_version,
-        capabilities: opened.capabilities,
-        latency_millis,
-    })
+    Ok((
+        BrowseSession {
+            connection_id: opened.connection_id,
+            session_id: opened.session_id,
+            driver_id: opened.driver_id,
+            server_version: opened.server_version,
+            capabilities: opened.capabilities,
+            latency_millis,
+        },
+        client,
+    ))
 }
 
 async fn disconnect_once(endpoint_path: &Path, connection_id: &str) -> Result<(), String> {
     let client = client_for(endpoint_path).await?;
+    disconnect_with(&client, connection_id).await
+}
+
+async fn disconnect_with(client: &BackendClient, connection_id: &str) -> Result<(), String> {
     let mut service: ConnectionServiceClient<_> = client.connection_service().map_err(|error| {
         l10n::tf(
             "object_tree.transport_service_client",
@@ -738,6 +763,7 @@ impl ConnectionRegistry {
             connection_id: String::new(),
             session_id: String::new(),
             server_version: String::new(),
+            latency_millis: None,
             detail: l10n::t("object_tree.detail_click_to_connect").to_owned(),
             hub: None,
         }
@@ -759,6 +785,11 @@ impl ConnectionRegistry {
                 alias: entry.saved.alias.trim().to_owned(),
                 driver: entry.saved.driver.clone(),
                 server_version: entry.server_version.clone(),
+                latency_millis: entry
+                    .state
+                    .is_connected()
+                    .then_some(entry.latency_millis)
+                    .flatten(),
                 target: entry.saved.target_label(),
                 state: entry.state,
                 session_id: entry.session_id.clone(),
@@ -837,6 +868,8 @@ impl ConnectionRegistry {
     /// 保留连接列表（它们来自配置），只把状态清成「未连接」并给出原因：
     /// 重连之后点一下节点即可。
     pub fn reset_sessions(&self, reason: &str) {
+        self.pending.borrow_mut().clear();
+        self.sessions.replace(None);
         let mut entries = self.entries.borrow_mut();
         let mut dropped = 0usize;
         for entry in entries.iter_mut() {
@@ -867,7 +900,9 @@ impl ConnectionRegistry {
             };
             if matches!(
                 entry.state,
-                ConnectionState::Connected | ConnectionState::Connecting
+                ConnectionState::Connected
+                    | ConnectionState::Connecting
+                    | ConnectionState::Disconnecting
             ) {
                 return;
             }
@@ -1014,13 +1049,37 @@ impl ConnectionRegistry {
 
     // -- 事件 ---------------------------------------------------------------
 
+    pub fn accepts_event(&self, event: &SessionEvent) -> bool {
+        let request = match event {
+            SessionEvent::Opened { request, .. }
+            | SessionEvent::Failed { request, .. }
+            | SessionEvent::Closed { request, .. }
+            | SessionEvent::Sessions { request, .. } => request,
+            SessionEvent::Broken { .. } => return true,
+        };
+        self.pending.borrow().contains_key(request)
+    }
+
     /// 处理一条 worker 事件（只在主线程调用）。
     pub fn dispatch(self: &Rc<Self>, event: SessionEvent) {
+        if !self.accepts_event(&event) {
+            if let SessionEvent::Opened {
+                session, client, ..
+            } = event
+            {
+                self.worker.send(SessionCommand::ReleaseStale {
+                    client,
+                    connection_id: session.connection_id,
+                });
+            }
+            return;
+        }
         match event {
             SessionEvent::Opened {
                 request,
                 key,
                 session,
+                client,
             } => {
                 self.pending.borrow_mut().remove(&request);
                 let BrowseSession {
@@ -1031,10 +1090,8 @@ impl ConnectionRegistry {
                     ..
                 } = session;
                 if !self.entries.borrow().iter().any(|entry| entry.key == key) {
-                    let request = self.take_request("close");
-                    self.worker.send(SessionCommand::Close {
-                        request,
-                        key,
+                    self.worker.send(SessionCommand::ReleaseStale {
+                        client,
                         connection_id,
                     });
                     return;
@@ -1064,6 +1121,7 @@ impl ConnectionRegistry {
                     entry.connection_id = connection_id;
                     entry.session_id = session_id.clone();
                     entry.server_version = server_version;
+                    entry.latency_millis = Some(latency_millis);
                     entry.detail = l10n::tf(
                         "object_tree.detail_browse_session",
                         &[("latency_millis", latency_millis.to_string())],

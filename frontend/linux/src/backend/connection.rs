@@ -670,10 +670,34 @@ impl BackendClient {
             params: Some(params),
             display_name: display_name.to_owned(),
         };
+        eprintln!("[db-rpc] Connect");
         let response = tokio::time::timeout(DATABASE_TIMEOUT, client.connect(request))
             .await
-            .map_err(|_| ConnectionFailure::timeout("建立会话", DATABASE_TIMEOUT))?
-            .map_err(|status| ConnectionFailure::from_status(&status))?
+            .map_err(|_| ConnectionFailure::Other {
+                code: "transport.unconfirmed".to_owned(),
+                message: ConnectionFailure::timeout("建立会话", DATABASE_TIMEOUT)
+                    .detail()
+                    .to_owned(),
+            })?
+            .map_err(|status| {
+                if status.metadata().get(ERROR_CODE_METADATA_KEY).is_none()
+                    && matches!(
+                        status.code(),
+                        tonic::Code::Unavailable
+                            | tonic::Code::Cancelled
+                            | tonic::Code::Unknown
+                            | tonic::Code::Internal
+                            | tonic::Code::DeadlineExceeded
+                    )
+                {
+                    ConnectionFailure::Other {
+                        code: "transport.unconfirmed".to_owned(),
+                        message: sanitize(status.message()),
+                    }
+                } else {
+                    ConnectionFailure::from_status(&status)
+                }
+            })?
             .into_inner();
         Ok(SessionOpen {
             connection_id: response.connection_id,

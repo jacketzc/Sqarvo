@@ -652,14 +652,13 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "连接已连接"
-result = "取消：什么都不做；「关闭并编辑」：复核原浏览会话，会话失效时提示，仍有效时关闭该连接名下的表标签与查询标签（放弃未提交的更改）→ 断开连接 → 打开已预填的「编辑连接」对话框"
+result = "取消：什么都不做；「关闭并编辑」：复核原浏览会话，会话失效时提示，仍有效时关闭确认时捕获并且仍属于该连接的标签（正文列出将放弃的未保存 SQL 与未提交更改）→ 断开连接 → 打开已预填的「编辑连接」对话框"
 source = "src/ui.rs:3781、src/tabs.rs:2921"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6a53acfcc8d4"
-commit = ""
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：从已连接档案的原生菜单进入关闭确认，确认原会话仍有效时进入编辑。"
+spec_hash = "36ec3ad270e1"
+evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：已连接档案编辑确认列出待放弃 SQL；取消保留 SQL，确认后进入原档案编辑。"
 
 [[component]]
 id = "object_tree.ctx_menu.delete_connection"

@@ -240,10 +240,10 @@ impl BackendSupervisor {
 
     /// 关闭自己启动的后端：SIGTERM → 等待 → 超时 SIGKILL。
     ///
-    /// 后端收到 SIGTERM 后自行删除 socket 与端点文件。若等待超时，返回
-    /// [`BackendError::CleanupFailed`]，绝不假装清理成功。
+    /// 后端收到 SIGTERM 后自行删除端点文件。强制回收能证明会话结束，
+    /// 但端点文件可能残留。无法确认退出时保留子进程句柄供恢复流程重试。
     pub async fn shutdown(&mut self) -> Result<(), BackendError> {
-        let Some(mut child) = self.child.take() else {
+        let Some(child) = self.child.as_mut() else {
             return Ok(());
         };
         let pid = child.id();
@@ -269,6 +269,7 @@ impl BackendSupervisor {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     eprintln!("[sqarvo-desktop] 后端进程 {pid} 已退出（{status}）");
+                    self.child.take();
                     return Ok(());
                 }
                 Ok(None) => {}
@@ -284,15 +285,27 @@ impl BackendSupervisor {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        let _ = child.kill();
-        let status = child.wait();
-        Err(BackendError::CleanupFailed {
-            detail: format!(
-                "进程 {pid} 在 {} 秒内未响应 SIGTERM，已发送 SIGKILL（{status:?}）；\
-                 socket 与端点文件可能残留",
-                SHUTDOWN_GRACE.as_secs()
-            ),
-        })
+        if let Err(error) = child.kill()
+            && !child.try_wait().is_ok_and(|status| status.is_some())
+        {
+            return Err(BackendError::CleanupFailed {
+                detail: format!("无法终止进程 {pid}：{error}"),
+            });
+        }
+        match child.wait() {
+            Ok(status) => {
+                eprintln!("[sqarvo-desktop] 后端 {pid} 已强制回收（{status}）；端点文件可能残留");
+                self.child.take();
+                Ok(())
+            }
+            Err(error) => Err(BackendError::CleanupFailed {
+                detail: format!("无法确认进程 {pid} 已退出：{error}"),
+            }),
+        }
+    }
+
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     fn ensure_not_cancelled(&self) -> Result<(), BackendError> {

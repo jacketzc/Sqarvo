@@ -213,6 +213,12 @@ def test_navigation_target_and_clear_selection(ui_instance):
         tree_menu("ctx.edit-connection", "uitest.db", "已连接")
         dialog = A.wait_until(lambda: A.find_dialog(inst.app, "编辑连接？"),
                               10, "编辑已连接档案的确认框")
+        A.find_one(dialog, role_in=("label",), name_contains="未保存 SQL")
+        A.click(A.find_one(dialog, role_in=("button",), name="取消"))
+        A.wait_gone(lambda: A.find_dialog(inst.app, "编辑连接？"), 10, "取消编辑确认")
+        expect(A.text_value(ops.editor(third)).startswith("SELECT"), "取消保留已绑定 SQL")
+        tree_menu("ctx.edit-connection", "uitest.db", "已连接")
+        dialog = A.wait_dialog(inst.app, "编辑连接？")
         A.click(A.find_one(dialog, role_in=("button",), name="关闭并编辑"))
         A.wait_until(lambda: A.find_dialog(inst.app, "编辑连接"),
                      10, "有效的原连接可进入编辑")

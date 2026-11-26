@@ -127,11 +127,11 @@ style.metrics = ["sidebar_width", "inspector_width", "status_height", "tab_strip
 impl_notes = [
   "握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。",
   "侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。",
-  "启动态与连接态共用 Shell；切换时继承首选宽度、显示偏好、自动折叠历史、临时优先和专注模式。",
-  "标签条右侧的 ＋ 保留在启动态但置为不可用（tooltip「先连接数据库再新建查询标签」）；该按钮的登记权归标签条所属区，本区只在结果里提到它。",
-  "主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区只保证启动态停在这一页、不换内容。",
-  "这一页是 startup.rs 自己建的（不走 tabs::add_objects_page）：页签标题 / 图标 / pinned 与连接态同语义（startup.rs:188-192），关闭请求有兜底日志「[startup] Objects 页固定存在，不可关闭」（startup.rs:195-198），页内 open 回调换成日志「[startup] 尚未连接数据库，忽略打开表」（startup.rs:184-186，启动态不会有可打开的行）。页签结构仍归 objects_page 区，本区只记这一份构造。",
-  "信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时那两行不出现，不编造，startup.rs:110-135）。",
+  "握手完成创建一个 Workspace、TabSet 和 Shell；首次数据库连接更新同一实例。保留布局、标签顺序、活动页和草稿的未绑定状态。",
+  "握手完成后可从标签行、工具条、菜单和快捷键新建草稿。",
+  "主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区保证无普通标签时显示这一页。",
+  "由 TabSet 建立单个固定 Objects 页，首次连接保留这一页。",
+  "信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时省略）。",
   "启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。",
   "启动态没有表标签：中央操作行的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。",
 ]
@@ -140,13 +140,13 @@ impl_notes = [
 trigger = "load"
 precondition = "握手成功（Event::Connected）"
 result = "外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板按布局状态显隐，未选中对象时内容区留白、状态栏写「未连接」；连上数据库前不存在表标签"
-source = "src/ui.rs:1570、src/ui.rs:1608、src/startup.rs:99"
+source = "src/ui.rs::show_startup_workspace"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "主工具条是窗口级控件（不随外壳重建）"
-result = "握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时「新建查询」仍禁用、其余五个可用（5/6，tooltip「尚未连接数据库：先连接再新建查询标签」）"
-source = "src/startup.rs:237、src/shell.rs:862、src/shell.rs:912"
+result = "握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时六个入口均可用，缺少目标时按各命令规则处理"
+source = "src/ui.rs::show_startup_workspace、src/shell.rs::Toolbar::set_backend_ready"
 
 [[component.interaction]]
 trigger = "load"
@@ -157,11 +157,10 @@ source = "src/tree.rs:1520、src/tree.rs:3179"
 [[component.interaction]]
 trigger = "click"
 precondition = "点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接"
-result = "把固定 Objects 页摆到最前并**保持空态**：说明行仍是「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」，不列库 / 表、不换成「未实现」说明（不编造内容）；日志「[startup] 种类入口「<名称>」：尚未连接数据库，Objects 页保持空态」"
-source = "src/startup.rs:298、src/ui.rs:1092"
+result = "没有可用浏览目标时提示选择连接或数据库，保留当前工作区"
+source = "src/ui.rs::show_objects_for_kind"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ca02c5cd3043"
-commit = "7436cd5"
-evidence = "test_01_startup.py 握手与启动摘要；test_10_layout.py 启动态布局、连接后继承和 840×600 可达性。 tests/ui/linux/results/run.9ME2GefI/report.json"
+spec_hash = "0f51390e3bb1"
+evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：启动摘要、多个草稿、首次连接保留工作区及标签顺序。"

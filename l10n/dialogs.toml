@@ -1219,3 +1219,15 @@ key = "dialogs.profile_password_required"
 zh = "请输入密码（或复用已保存的凭据）"
 en = "Enter a password or use the saved credential."
 status = "done"
+
+[[entry]]
+key = "dialogs.close_guard_sql"
+zh = "以下查询标签有未保存的 SQL，退出将放弃这些内容：{titles}"
+en = "Quitting will discard unsaved SQL in these query tabs: {titles}"
+status = "done"
+
+[[entry]]
+key = "dialogs.close_guard_active"
+zh = "以下标签还有待提交的结果更改、活动事务或执行中的查询：{titles}"
+en = "These tabs have pending result edits, open transactions, or running queries: {titles}"
+status = "done"
