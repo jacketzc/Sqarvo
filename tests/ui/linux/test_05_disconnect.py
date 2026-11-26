@@ -1,12 +1,4 @@
-"""连接断开与会话可回收（任务 §6.7；根 AGENTS §10 生命周期）。
-
-产品里「断开连接」的入口是对象树行的右键手势菜单。Wayland 会话禁止任何输入合成
-（AT-SPI GenerateKeyboardEvent / Component.click 均返回 atspi_error，实测），
-外部自动化无法触发手势菜单 —— 这是环境限制，如实报告（任务 §10），不伪造通过。
-
-本模块覆盖真实可观察的断开语义：关窗 → 前端正常清理（退出码 0、后端无孤儿）→
-重新启动后连接仍在（已保存）但处于「未连接」态，证明会话被回收、状态可恢复。
-"""
+"""隔离 X11 中验证主动断开菜单及正常退出的会话回收。"""
 import pytest
 
 import adapter as A
@@ -47,9 +39,8 @@ def test_window_close_disposes_session():
             # 启动态连接行显示数据库文件路径；名称在 tooltip。按路径定位。
             row = A.wait_until(lambda: reopened_frame_has_row(frame), 30,
                                "重启后对象树仍列出保存的连接")
-            texts = [A.nm(x) for x in A.query(row, role_in=("label",), max_depth=8)]
-            expect(not any("已连接" in t for t in texts),
-                   "重启后连接行不是已连接态", texts)
+            texts = ops.tree_row_texts(row)
+            expect("未连接" in texts, "重启后连接行显示未连接", texts)
     finally:
         if reopened is not None:
             reopened.dispose()
@@ -60,13 +51,21 @@ def reopened_frame_has_row(frame):
     return ops.find_row(frame, "uitest.db")
 
 
-def test_menu_driven_active_disconnect_unreachable():
-    """已知限制：主动「断开连接」只有手势右键菜单入口，Wayland 禁合成输入。
-
-    注册表组件: object_tree.ctx_menu.disconnect。
-
-    应用自身的 `--qa-startup-menu <名> --qa-startup-menu-pick 断开连接` 通道可覆盖
-    （#144 验收脚本口径），但它作用于「启动态未连接行」，菜单里没有「断开连接」项，
-    因此不能等价替代。等应用侧提供非手势入口（或注册表新增按钮）后补真测试。
-    """
-    pytest.skip("环境限制：断开连接入口为手势右键菜单，Wayland 禁止输入合成（见 README 已知限制）")
+def test_menu_driven_active_disconnect(app_connected):
+    """object_tree.ctx_menu.disconnect: 真实右键菜单和确认框关闭浏览会话。"""
+    frame = app_connected.frame()
+    row = ops.find_row(frame, "uitest.db", "已连接", timeout=10)
+    A.mouse_click(A.find_one(row, role_in=("label",), name="uitest.db"), button=3)
+    menu = A.wait_until(
+        lambda: next((menu for menu in A.query(frame, role_in=("menu",))
+                      if "ctx.disconnect" in A.action_names(menu)), None),
+        10, "资源右键菜单")
+    A.window_action(menu, "ctx.disconnect")
+    dialog = A.wait_dialog(app_connected.app, "断开连接？")
+    A.click(A.find_one(dialog, role_in=("button",), name="断开连接"))
+    ops.find_row(frame, "uitest.db", "未连接", timeout=15)
+    expect(ops.find_row(frame, "main") is None, "主动断开移除该会话的树层")
+    with step("double_click_reconnects"):
+        row = ops.find_row(frame, "uitest.db", "未连接", timeout=15)
+        A.mouse_click(row, count=2)
+        ops.wait_connected(frame, "uitest.db", timeout=20)

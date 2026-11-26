@@ -124,6 +124,12 @@ GTK 的逻辑坐标：
 | `inspector_min < inspector_width < inspector_max` | 同上 |
 | `row_height_data > row_height_tree` | 数据行比树行松 |
 
+导航标题、标题按钮、资源行与固定搜索使用 `navigation_header_height`、
+`navigation_header_button`、`navigation_row_height`、`navigation_search_height`。
+缩进、行内缩、圆角、箭头与状态圆点分别取 `navigation_indent`、
+`gap_xs`、`radius_sm`、`tree_arrow_box`、
+`navigation_arrow_icon`、`status_dot_diameter`。箭头命中尺寸遵循 `min_target`。
+
 三档之外不许新增档位；要新增必须先满足上表并回填 `metrics.toml`。
 
 ## 4. 字号（C 轴）的处理

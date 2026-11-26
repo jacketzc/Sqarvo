@@ -1,6 +1,6 @@
 //! DDL 面板（#86）：显示 `GetDdl` 的结果。
 //!
-//! v0.2.3.3 起界面只留正文：来源徽标、「复制」按钮、来源说明行与面板自己的标题
+//! v0.2.3.3 起表 / 视图 DDL 页只留正文：来源徽标、「复制」按钮、来源说明行与面板自己的标题
 //! 全部移除——它们夹在 `[DDL] / [表信息]` 切换和正文之间，而两个驱动都只交付数据库
 //! 原文，这几行只是噪音。安全底线保留：`exact = false`（客户端拼装）时仍显示一行
 //! 琥珀警示。拼装结果有信息损失（缺 CHECK 约束、缺索引……），用户必须知道，否则会
@@ -179,11 +179,26 @@ pub struct DdlPanel {
     epoch: Rc<LoadEpoch>,
     /// 本面板最近一次加载的令牌。
     token: Cell<Option<LoadToken>>,
+    trigger_actions: Option<TriggerDdlActions>,
+}
+
+struct TriggerDdlActions {
+    copy: gtk::Button,
+    retry: gtk::Button,
 }
 
 impl DdlPanel {
     /// 构建面板（与信息面板共用一份加载周期计数器）。
     pub fn new(epoch: Rc<LoadEpoch>) -> Rc<Self> {
+        Self::build(epoch, false)
+    }
+
+    /// Table Info's trigger viewer has its own request lifetime and can copy raw DDL.
+    pub fn for_trigger() -> Rc<Self> {
+        Self::build(Rc::new(LoadEpoch::default()), true)
+    }
+
+    fn build(epoch: Rc<LoadEpoch>, trigger: bool) -> Rc<Self> {
         let warning = gtk::Label::new(None);
         warning.set_xalign(0.0);
         warning.set_wrap(true);
@@ -234,6 +249,15 @@ impl DdlPanel {
         stack.set_visible_child_name("state");
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        let trigger_actions = trigger.then(|| {
+            let copy = gtk::Button::with_label(l10n::t("inspector.copy_trigger_ddl"));
+            copy.set_sensitive(false);
+            let retry = gtk::Button::with_label(l10n::t("inspector.retry_trigger_ddl"));
+            retry.set_visible(false);
+            root.append(&copy);
+            root.append(&retry);
+            TriggerDdlActions { copy, retry }
+        });
         root.append(&warning);
         root.append(&stack);
 
@@ -250,8 +274,43 @@ impl DdlPanel {
             visible: Cell::new(false),
             epoch,
             token: Cell::new(None),
+            trigger_actions,
         });
 
+        if let Some(actions) = &panel.trigger_actions {
+            let weak = Rc::downgrade(&panel);
+            actions.copy.connect_clicked(move |button| {
+                let Some(panel) = weak.upgrade() else { return };
+                if panel.state.get() == DdlState::Ready
+                    && panel
+                        .token
+                        .get()
+                        .is_some_and(|token| panel.epoch.is_current(token))
+                    && panel
+                        .current
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|node| panel.hub(node).is_some())
+                {
+                    let buffer = panel.buffer();
+                    button.clipboard().set_text(&buffer.text(
+                        &buffer.start_iter(),
+                        &buffer.end_iter(),
+                        false,
+                    ));
+                }
+            });
+            let weak = Rc::downgrade(&panel);
+            actions.retry.connect_clicked(move |_| {
+                let Some(panel) = weak.upgrade() else { return };
+                let current = panel.current.borrow().clone();
+                if panel.state.get() == DdlState::Error
+                    && let Some(node) = current
+                {
+                    panel.show_trigger(node);
+                }
+            });
+        }
         install_css();
         panel
     }
@@ -272,6 +331,17 @@ impl DdlPanel {
     /// 标记面板可见性（ui.rs 的 revealer 变化时调用）。
     pub fn set_visible(&self, visible: bool) {
         self.visible.set(visible);
+    }
+
+    pub fn show_trigger(self: &Rc<Self>, node: NodeView) {
+        self.show_for(node, self.epoch.begin());
+    }
+
+    fn hub(&self, node: &NodeView) -> Option<Rc<MetadataHub>> {
+        self.hub_of
+            .borrow()
+            .as_ref()
+            .and_then(|resolver| resolver(&node.reference))
     }
 
     /// 查看某个对象的 DDL（清空上一次内容并进入 Loading，必发一次 `GetDdl`）。
@@ -295,12 +365,7 @@ impl DdlPanel {
             kind_label(node.kind),
             node.path_label()
         );
-        let hub = self
-            .hub_of
-            .borrow()
-            .as_ref()
-            .and_then(|resolver| resolver(&node.reference));
-        let Some(hub) = hub else {
+        let Some(hub) = self.hub(&node) else {
             self.set_state(
                 DdlState::Error,
                 l10n::t("data_page.ddl_no_session_title"),
@@ -332,6 +397,7 @@ impl DdlPanel {
         self.state_page.set_description(None);
         self.spinner.set_visible(false);
         self.spinner.stop();
+        self.update_trigger_actions(DdlState::Idle);
     }
 
     fn finish(
@@ -343,6 +409,7 @@ impl DdlPanel {
         // 有效性校验必须先于任何控件写入：迟到响应（含错误响应）不能污染当前面板。
         if !self.epoch.accepts(token, self.token.get())
             || self.current.borrow().as_ref() != Some(node)
+            || (self.trigger_actions.is_some() && self.hub(node).is_none())
         {
             eprintln!(
                 "[ddl] 丢弃过期响应（Token={:?}）：{}{}",
@@ -386,6 +453,7 @@ impl DdlPanel {
                 }
                 self.stack.set_visible_child_name("text");
                 self.state.set(DdlState::Ready);
+                self.update_trigger_actions(DdlState::Ready);
                 eprintln!(
                     "[ddl] t=+{}ms DDL {object}：{} 行，exact={}，source_detail={}",
                     crate::qa::elapsed_ms(),
@@ -422,6 +490,7 @@ impl DdlPanel {
 
     fn set_state(&self, state: DdlState, title: &str, description: &str) {
         self.state.set(state);
+        self.update_trigger_actions(state);
         self.state_page.set_title(title);
         self.state_page.set_description(Some(description));
         self.spinner.set_visible(state == DdlState::Loading);
@@ -431,6 +500,13 @@ impl DdlPanel {
             self.spinner.stop();
         }
         self.stack.set_visible_child_name("state");
+    }
+
+    fn update_trigger_actions(&self, state: DdlState) {
+        if let Some(actions) = &self.trigger_actions {
+            actions.copy.set_sensitive(state == DdlState::Ready);
+            actions.retry.set_visible(state == DdlState::Error);
+        }
     }
 
     fn buffer(&self) -> gtk::TextBuffer {

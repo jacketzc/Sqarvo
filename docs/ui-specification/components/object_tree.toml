@@ -10,7 +10,7 @@
 [area]
 id = "object_tree"
 display_name = "对象树"
-summary = "左侧栏：对象树本体、搜索区、右键菜单与临时提示行。对象树是唯一的数据库对象入口，Objects 页与信息面板都跟着它的选中变化。"
+summary = "左侧导航包含连接标题、本地筛选及显式远程搜索、资源树、右键菜单与反馈。只有主动浏览会改变固定 Objects 的范围。"
 legacy_ref = "ui-behavior-contract.md §2（原章节已退役为指针，行为见本文件）"
 
 [[component]]
@@ -20,24 +20,20 @@ display_name = "对象树侧栏"
 kind = "area"
 status = "active"
 style.slot = "sidebar"
-style.metrics = ["sidebar_width", "sidebar_min", "sidebar_max", "row_height_tree"]
-impl_notes = [
-  "导航侧栏容纳搜索和对象树。",
-  "搜索框与搜索状态行在导航顶部（见 object_tree.search）。",
-]
+style.metrics = ["sidebar_width", "sidebar_min", "sidebar_max"]
+impl_notes = ["顶部标题和搜索区固定，资源树独立纵向滚动。"]
 
 [[component.interaction]]
 trigger = "key"
 keys = ["F5"]
-precondition = "工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态）"
-result = "整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树"
-source = "src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1462"
+precondition = "工作区外壳存在，当前页为 Objects 或查询"
+result = "重读已加载的导航层。对象列表沿用原范围；表数据页的 F5 继续刷新该表。"
+source = "src/tree.rs::TreePanel::reload、src/ui.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0b1186827e6e"
-commit = "7436cd5"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证 F5 后旧资源行移出导航，旧菜单被拒绝；test_15_refresh_regressions.py::test_objects_list_refreshes_on_reentry_and_f5 验证 Objects 原作用域重列。"
+spec_hash = "0641fdca1886"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：固定导航容器、真实动作和筛选；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：F5 列表变化拒绝旧菜单。"
 
 [[component]]
 id = "object_tree.tree"
@@ -45,80 +41,67 @@ parent = "object_tree"
 display_name = "树本体"
 kind = "container"
 status = "active"
-native_control = "gtk:GtkListView / winui:TreeView / swift:—"
+native_control = "gtk:GtkListView + GtkTreeListModel"
 style.slot = "sidebar"
-style.metrics = ["row_height_tree", "badge_min_height"]
+style.metrics = ["navigation_row_height"]
 a11y.name = "对象树"
-a11y.tab = "可聚焦；Tab 进入后 ↑ / ↓ 移动选中"
-impl_notes = [
-  "GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。",
-  "折叠后重新展开复用已读内容、不发请求。",
-  "层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（后端握手后由 ListProfiles 异步填充，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。",
-  "树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。",
-]
+a11y.tab = "可聚焦，方向键移动或展开，Enter 激活"
+impl_notes = ["层级为连接 → 库 → 可选 Schema → 分类 → 对象。GTK 虚拟化列表复用会话内缓存。"]
 
 [[component.interaction]]
 trigger = "key"
-keys = ["↑", "↓"]
+keys = ["↑", "↓", "←", "→"]
 precondition = "树有焦点"
-result = "移动选中和更新 Inspector 预览；只有主动 Browse 才改变 Objects 的范围。过滤、折叠、模型重建保持逻辑选择。明确失效的目标保留到重新选择或清除"
-source = "src/tree.rs:1983"
+result = "上下键移动逻辑选择；左右键展开、收起或移向父子资源。方向键不改变固定 Objects 范围。"
+source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Enter"]
-precondition = "行有焦点"
-result = "等同于双击（同一回调，走 activate 信号）"
-source = "src/tree.rs:2022"
+precondition = "资源或可操作的辅助行有焦点"
+result = "库、Schema、分类主动浏览固定 Objects；其他行激活其对应动作。"
+source = "src/tree.rs::TreePanel::activate_row"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "本地后端握手完成"
-result = "异步加载共享连接档案；失败时连接树保持空并在状态栏提示档案加载失败"
-source = "src/ui.rs:669"
+precondition = "显示的模型折叠、过滤或重建"
+result = "保留逻辑选择。失效目标持续拦截动作；明确重新选择或清除后更新目标。"
+source = "src/tree.rs::TreePanel::restore_visible_selection"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "显式定位命令给出完整资源身份"
+result = "在捕获档案的现有浏览会话内沿目标路径每层最多追加两页。成功后定位并在必要时清词；失败保留选择、检索词和搜索模式。达到上限、完整路径找不到资源与读取未完成分别提示。后续定位、主动选择或更改搜索使旧定位失效。"
+source = "src/tree.rs::TreePanel::reveal_target"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "bfb54cc8d8ca"
-evidence = "test_15_refresh_regressions.py::test_navigation_selection_survives_projection_without_requests：折叠并恢复已加载路径后选中同一资源，浏览、DDL、列、主键请求次数保持。test_16_workspace_context.py::test_navigation_target_and_clear_selection：折叠或断开后的明确目标仍优先。"
+spec_hash = "360900d24feb"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：真实方向键、Enter、筛选与清词恢复当前选择；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：隐藏目标、失效资源与固定页；隔离 GTK reveal_failure_preserves_search_and_newer_explicit_selection、reveal_distinguishes_page_limit_complete_absence_and_incomplete_data。"
 
 [[component]]
 id = "object_tree.tree.row"
 parent = "object_tree.tree"
-display_name = "行模板（箭头 · 图标 · 名称 · 行尾文字）"
+display_name = "行模板（箭头 · 图标 · 名称 · 状态）"
 kind = "row"
 status = "active"
 a11y.name = "对象树行"
 style.slot = "sidebar"
-style.metrics = ["row_height_tree", "tree_arrow_box", "gap_xs", "font_status"]
-style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+style.metrics = ["navigation_row_height", "gap_xs", "radius_sm", "navigation_indent", "gap_sm"]
+style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid", "sqarvo_brand_on_mid", "sqarvo_brand_on_soft"]
 style.states = { hover = "sqarvo_brand_soft", selected = "sqarvo_brand_mid" }
-impl_notes = [
-  "hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中底 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid。",
-  "缩进 4 + 14×层数 目前是代码常量，未进 metrics.toml（P1 补齐）。",
-  "搜索结果行复用本模板，不另立组件（§2.4：结果就是那棵树）。",
-  "行尾文字用 dim-label caption（font_status），连接行的行尾是连接态徽标。",
-]
+impl_notes = ["名称单行尾截断，完整名称和连接状态保留在 Tooltip 与可访问属性。"]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "行存在"
-result = "只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接"
-source = "src/tree.rs:1983"
-
-[[component.interaction]]
-trigger = "hover"
-precondition = "行存在"
-result = "底色换成品牌浅档（alpha 55%），不动前景色"
-source = "src/theme.rs:312"
-
-platform_notes.windows = "树行换成自带 ControlTemplate 的 TreeViewItem（Views/ShellView.xaml:51 起）：缩进走 TreeViewItemTemplateSettings.Indentation、折叠箭头用 SqarvoIconFontFamily 字形 + Size.TreeArrowBox、选中整行 SqarvoSelectionBrush + SqarvoOnSelectionTextBrush、ContentPresenter 显式 TemplateBinding FontSize/FontWeight（:185）。字重按行种类分派（Views/ShellView.xaml.cs:728 的 OnTreeRowLoaded）：连接 / 库 / 分组 = Weight.Heading，对象 / 占位 / 说明 = Weight.Ui；旧的「容器级 FontWeight 只粗 1 行、统一 400」已随之消除。展开/收起仍走 OnTreeExpanding/OnTreeCollapsed，HasUnrealizedChildren 语义不变。仍未对齐：行首图标、徽标右对齐弱色、Linux 的 4 + 14/层 缩进量（Windows 用框架 Indentation）。"
+precondition = "主动单击资源正文"
+result = "选择资源并将键盘焦点交给该行。库、Schema 与分类同时主动浏览；连接和对象保留当前工作区，后续 Enter 激活所选资源。"
+source = "src/tree.rs::TreePanel::install_handlers"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "3a55b23eabfc"
-commit = "7436cd5"
-evidence = "§2.2 单击行 + theme.rs 行状态规则"
+spec_hash = "82907ab4cee2"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：数据库和分类与连接选择事件各自分派；tests/ui/linux/test_10_layout.py::test_layout_preference_survives_first_connection、test_bottom_state_follows_active_workspace：真实单击后 Enter 激活连接及表；tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：连接状态可访问描述。"
 
 [[component]]
 id = "object_tree.tree.row.expander"
@@ -126,22 +109,20 @@ parent = "object_tree.tree.row"
 display_name = "行首箭头"
 kind = "control"
 status = "active"
-a11y.name = "展开 / 收起"
+a11y.name = "展开或折叠"
 a11y.tab = "不可聚焦（不占 Tab 位）"
-style.metrics = ["tree_arrow_box"]
-impl_notes = ["扁平按钮 + 箭头图标；只在行可展开时出现，不可展开的行留同宽空白。"]
+style.metrics = ["tree_arrow_box", "navigation_arrow_icon"]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "行可展开"
-result = "单击即展开 / 收起，不需要双击"
-source = "src/tree.rs:1254"
+precondition = "行有可展开的子层"
+result = "单独控制展开和收起；无业务选择变化。未连接行与对象叶子不提供箭头。"
+source = "src/tree.rs::TreePanel::toggle_branch"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c91da7cf96bd"
-commit = "7436cd5"
-evidence = "§2.2 行首箭头；arrow_button 接线与 set_focusable(false)"
+spec_hash = "60dfb62d6eac"
+evidence = "tests/ui/linux/test_04_tree.py::test_tree_navigation：箭头开合层级；tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：箭头保持活动查询。"
 
 [[component]]
 id = "object_tree.tree.row.conn"
@@ -149,106 +130,99 @@ parent = "object_tree.tree.row"
 display_name = "连接行"
 kind = "row"
 status = "active"
-style.icon = ["tree.connection"]
-a11y.name = "（行内容：连接显示名 + 连接态徽标）"
-impl_notes = [
-  "行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。",
-  "树、查询连接选择器和窗口共用显示名。优先用别名，其次用主机端口、文件名或内存库友好名。重名用简短目标信息及稳定顺序消歧义。",
-  "tooltip 首行用同一个显示名，补充驱动、可安全显示的端点及连接状态。",
-]
+style.icon = ["tree.connection", "tree.connection.local", "tree.connection.generic"]
+a11y.name = "（行内容：连接显示名；可访问描述：状态）"
+style.metrics = ["status_dot_diameter"]
+style.tokens = ["sqarvo_status_fg"]
+impl_notes = ["状态圆点取浏览会话状态。驱动使用系统符号图标，未知驱动使用通用图标。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "连接行"
+result = "选择连接并更新原有预览。"
+source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
 trigger = "double_click"
 precondition = "连接行"
-result = "已连接 → 展开 / 收起；未连接 → 按保存的凭据连接；凭据缺失 → 明确提示并打开预填对话框；连接中 / 断开中 → 忽略并写日志"
-source = "src/tree.rs:776、src/tree.rs:1701、src/ui.rs:845"
+result = "已连接时展开或收起；未连接时建立指定档案的浏览会话。缺凭据走原对话框，过渡态沿用连接入口守卫。"
+source = "src/tree.rs::TreePanel::activate_row"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "已连接"
-result = "首次展开发一次目录层 ListNodes 列出库，每页 500（NODE_PAGE_SIZE），带自己的分页 token"
-source = "src/tree.rs:2913"
+precondition = "首次展开已连接的档案"
+result = "读该连接的目录页，后续分页由用户显式触发。"
+source = "src/tree.rs::TreePanel::level_for"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "ed2ab05ad479"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：界面与 Inspector 使用 Peer 档案名；无别名 SQLite 显示文件名。resolved_connection_names_are_safe_and_unique 覆盖重名及异常端点。"
+spec_hash = "041a700672cc"
+evidence = "tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：主动断开后双击重新连接；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：Peer 别名及档案所有权。"
 
 [[component]]
 id = "object_tree.tree.row.catalog"
 parent = "object_tree.tree.row"
-display_name = "库 / schema 行"
+display_name = "库 / Schema 行"
 kind = "row"
 status = "active"
 style.icon = ["object.catalog", "object.schema"]
-a11y.name = "（行内容：库 / schema 名）"
-impl_notes = ["库与 schema 不合并成一层：驱动给 schema 层就多一层，资源按档案、catalog 和 Schema 精确区分，运行时另校验浏览会话。"]
-
-[[component.interaction]]
-trigger = "double_click"
-precondition = "行可展开"
-result = "展开 / 收起（展开库只出现分组行，分组仍保持收起）"
-source = "src/tree.rs:776"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "展开库 / schema"
-result = "0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开"
-source = "src/tree.rs:2913"
+a11y.name = "（行内容：库或 Schema 名）"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "主动单击库或 Schema 正文"
-result = "更新逻辑选择并在固定 Objects 页浏览此范围。行箭头只处理展开或折叠"
-source = "src/tree.rs::TreePanel::install_handlers、src/ui.rs::objects_target"
+precondition = "主动单击正文"
+result = "选择完整库或 Schema 范围并浏览固定 Objects。"
+source = "src/ui.rs::objects_target"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "主动双击正文"
+result = "第一击浏览一次，第二击展开或收起。"
+source = "src/tree.rs::TreePanel::activate_row"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "展开库或 Schema"
+result = "无 Schema 层的库与 Schema 节点创建支持的分组；驱动声明 Schema 层时按需读取该层。"
+source = "src/tree.rs::TreePanel::child_source"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "11a2433a00f6"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：同名 main 精确走 Peer；test_04_tree.py 验证箭头展开 / 折叠；objects_target_follows_the_selected_node_kind 覆盖库与 Schema Scope。"
+spec_hash = "0d447657c279"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：库单击与 Enter 浏览固定页；tests/ui/linux/test_04_tree.py::test_tree_navigation：独立展开；objects_target_follows_the_selected_node_kind 单测核对 Schema 作用域。"
 
 [[component]]
 id = "object_tree.tree.row.group"
 parent = "object_tree.tree.row"
-display_name = "分组行（Tables / Views / Functions / Queries；表下 Fields / Indexes / Foreign Keys / Triggers）"
+display_name = "资源分类行（Tables / Views）"
 kind = "row"
 status = "active"
-style.icon = ["tree.group.tables", "tree.group.views", "tree.group.functions", "tree.group.queries", "tree.table_group.fields", "tree.table_group.indexes", "tree.table_group.foreign_keys", "tree.table_group.triggers"]
+style.icon = ["tree.group.tables", "tree.group.views"]
 a11y.name = "（行内容：分组名）"
-impl_notes = [
-  "未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。",
-  "未实现分组展开只写一行说明：「函数列表尚未实现（点开看说明，不发请求）」「已保存的查询尚未实现（点开看说明）」「驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装」。",
-  "空分组的文案按组不同（这一组没有表 / 视图 / 函数 / 已保存的查询；这张表没有字段 / 索引 / 触发器）。",
-]
-
-[[component.interaction]]
-trigger = "double_click"
-precondition = "分组行"
-result = "展开 / 收起"
-source = "src/tree.rs:776"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "展开某个分组"
-result = "发一次 ListNodes(filter.kinds=…)，该层有自己的分页 token；Functions / Queries 不请求；Foreign Keys 写 capability.unsupported 说明"
-source = "src/tree.rs:2913、src/tree.rs:371"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "服务端返回空"
-result = "说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」"
-source = "src/tree.rs:360、src/tree.rs:441、src/tree.rs:499"
+impl_notes = ["在树中隐藏未实现的 Functions、Queries 和驱动明确返回能力不支持的分类。"]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "主动单击分组正文"
-result = "选择此分组并浏览所属范围。程序化选中和右键菜单不发起列表请求"
-source = "src/tree.rs::TreePanel::update_navigation、src/ui.rs::objects_target"
+precondition = "主动单击分类正文"
+result = "选择该分类并按精确范围浏览固定 Objects。"
+source = "src/tree.rs::TreePanel::update_navigation"
+
+[[component.interaction]]
+trigger = "double_click"
+precondition = "主动双击分类正文"
+result = "一次浏览，同一手势的第二击无额外请求。"
+source = "src/tree.rs::TreePanel::activate_row"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "通过独立箭头展开分类"
+result = "逐组使用已有 ListNodes 请求和分页；空列表保留分组，权限或读取失败保留重试入口。"
+source = "src/tree.rs::TreePanel::finish_page"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "716e856663f3"
-evidence = "test_15_refresh_regressions.py::test_loaded_rows_survive_tab_switch：单击 Tables 正文切到固定页，再返回数据标签保留 Inspector 行数。"
+spec_hash = "e84e410ff316"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：分类双击一次 Objects 请求；tests/ui/linux/test_04_tree.py::test_local_refresh_error_can_retry_while_filtered：未实现分类隐藏、可用空组、读取失败与重试。"
 
 [[component]]
 id = "object_tree.tree.row.object"
@@ -257,88 +231,74 @@ display_name = "表 / 视图行"
 kind = "row"
 status = "active"
 style.icon = ["object.table", "object.view"]
-a11y.name = "（行内容：对象名 + 种类）"
-impl_notes = ["可打开优先于可展开：表虽然有四组子节点，双击仍是打开数据标签。"]
+a11y.name = "（行内容：对象名；可访问描述：种类）"
+impl_notes = ["表和视图是叶节点。表信息仍在 Inspector 中显示字段、索引和触发器；数据网格列菜单提供字段详情。"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "具体对象"
+result = "更新选择和原有 Inspector 预览，保留当前工作区与 Objects 范围。"
+source = "src/tree.rs::TreePanel::update_navigation"
 
 [[component.interaction]]
 trigger = "double_click"
-precondition = "行可打开"
-result = "打开表数据标签。档案、catalog、Schema、对象种类和对象身份完全一致时复用已有同类型工作区。只选中对象时预览，Objects 范围保留"
-source = "src/tree.rs:776、src/tabs.rs:1637"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "展开表节点"
-result = "0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes"
-source = "src/tree.rs:2733、src/tree.rs:2756"
+precondition = "可打开的对象"
+result = "按完整资源身份打开或复用数据工作区。"
+source = "src/tree.rs::TreePanel::activate_row"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "836c0f7acb02"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：右键打开同一表复用标签，两条连接的同名表各建独立标签。object_identity_is_exact_and_independent_of_browse_session 单测覆盖 schema、种类和大小写。"
+spec_hash = "14e25eb60c1e"
+evidence = "tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：不同档案的同名表、复用、刷新后新身份；table_and_view_remain_leaf_nodes_even_with_metadata_children 单测确认叶节点。"
 
 [[component]]
 id = "object_tree.tree.row.field"
 parent = "object_tree.tree.row"
 display_name = "列 / 索引 / 触发器行"
 kind = "row"
-status = "active"
+status = "removed"
+removed_in = "v0.2.5"
+removed_reason = "表和视图保留为导航叶节点。字段详情仍从数据表列头打开。索引和触发器的分页、重试和 SQLite 触发器原文 DDL 的查看与复制迁入 Inspector 表信息；原单组刷新由显式刷新表信息承接。"
+superseded_by = "inspector.object.info"
 style.icon = ["object.column", "object.index", "object.trigger", "object.type"]
 a11y.name = "（行内容：列 / 索引 / 触发器名）"
 impl_notes = ["叶子对象：没有子层、没有菜单、不发请求。"]
 
-[[component.interaction]]
-trigger = "double_click"
-precondition = "叶子对象行"
-result = "无动作（不发请求）"
-source = "src/tree.rs:776"
-
 [component.sync.linux]
-state = "done"
-spec_hash = "2eca250a9431"
-commit = "7436cd5"
-evidence = "§2.2 双击列 / 索引 / 触发器"
+state = "removed"
 
 [[component]]
 id = "object_tree.tree.row.placeholder"
 parent = "object_tree.tree.row"
-display_name = "占位行（读取中 / 加载更多 / 读取失败 / 空说明 / 未实现）"
+display_name = "辅助行（读取中 / 加载更多 / 重试 / 空说明）"
 kind = "row"
 status = "active"
 style.icon = ["tree.note.loading", "tree.note.warning", "tree.note.info"]
-a11y.name = "占位行"
-style.metrics = ["row_height_tree", "font_status"]
-impl_notes = ["占位行不可展开、不携带层；右键直接返回，不给菜单。"]
+a11y.name = "（行内容：加载状态或可用操作）"
+style.metrics = ["navigation_row_height", "font_status"]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "「加载更多…」行且还有下一页"
-result = "选中即继续拉下一页（分页动作不要求双击）"
-source = "src/tree.rs:3017、src/tree.rs:1983"
-
-[[component.interaction]]
-trigger = "click"
-precondition = "任意占位行"
-result = "信息面板收到 None（回到空态 / 留白）；不打开任何东西"
-source = "src/tree.rs:1983"
+precondition = "当前层有加载更多或重试"
+result = "显式读取相应页。辅助动作保留原逻辑选择；刷新失败保留已读取数据。"
+source = "src/tree.rs::TreePanel::activate_row"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "层在飞 / 请求失败"
-result = "占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分"
-source = "src/tree.rs:3032、src/tree.rs:3221"
+precondition = "读取中、空数据、读取失败或权限不足"
+result = "按真实结果显示不同状态。只有分页和重试行可以主动激活。"
+source = "src/tree.rs::TreePanel::finish_page"
 
 [[component.interaction]]
 trigger = "right_click"
-precondition = "占位行"
-result = "直接返回，不弹菜单"
-source = "src/tree.rs:3266"
+precondition = "辅助行"
+result = "保持当前逻辑选择和工作区。"
+source = "src/tree.rs::TreePanel::install_handlers"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0df9bbc8ca0c"
-commit = "7436cd5"
-evidence = "§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单"
+spec_hash = "e78d7c875b1f"
+evidence = "tests/ui/linux/test_04_tree.py::test_filter_can_page_without_matches：无匹配手动分页一次；tests/ui/linux/test_04_tree.py::test_local_refresh_error_can_retry_while_filtered：真实读取失败保留旧数据、一次手动重试；隔离 GTK page_failure_keeps_loaded_rows_and_only_unsupported_hides_a_group。"
 
 [[component]]
 id = "object_tree.search"
@@ -347,14 +307,13 @@ display_name = "对象树搜索区"
 kind = "container"
 status = "active"
 style.slot = "sidebar"
-style.metrics = ["sidebar_width"]
-impl_notes = ["搜索框和反馈随导航侧栏显隐。"]
+style.metrics = ["sidebar_width", "navigation_search_height"]
+impl_notes = ["挂载于导航标题与资源树之间。"]
 
 [component.sync.linux]
 state = "done"
-spec_hash = "432fb27a981f"
-commit = "7436cd5"
-evidence = "test_10_layout.py Ctrl+F 在两种外壳下聚焦导航语义容器内的搜索入口。 tests/ui/linux/results/run.9ME2GefI/report.json"
+spec_hash = "0ad392a5f26e"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：在导航语义容器中找到搜索、远程入口和状态。"
 
 [[component]]
 id = "object_tree.search.box"
@@ -362,48 +321,36 @@ parent = "object_tree.search"
 display_name = "搜索输入框"
 kind = "control"
 status = "active"
-style.metrics = ["font_ui", "secondary_min_height"]
+style.metrics = ["font_ui", "navigation_search_height"]
 style.slot = "sidebar"
-a11y.name = "搜索连接、库、表"
-a11y.tab = "Ctrl+F 请求显示导航并聚焦；Esc 清空并回到树页"
-impl_notes = [
-  "placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。",
-  "连接名对注册表里全部连接在客户端做大小写不敏感 contains；库 / 表 / 视图只查已打开（已连接、有浏览会话）的连接，逐库发 ListNodes 名称包含，服务端下推 LIKE，前端不拼通配符。",
-]
+a11y.name = "搜索资源…"
+a11y.tab = "Ctrl+F 请求显示导航并聚焦；Esc 清词"
 
 [[component.interaction]]
 trigger = "key"
-keys = ["任意输入"]
-precondition = "搜索框有输入"
-result = "防抖 250 ms 后搜索；空白串不搜索并回到树页"
-source = "src/tree.rs:2198、src/tree.rs:2233"
+keys = ["输入", "Esc"]
+precondition = "输入、修改或清除关键词"
+result = "按名称或别名匹配已加载资源，大小写不敏感。保留祖先与匹配父节点的已加载子树、可用分页和重试。输入和清词零数据库请求；退出恢复普通树展开与当前逻辑选择。"
+source = "src/tree.rs::TreePanel::refresh_local_filter"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Enter"]
-precondition = "搜索框内有文本"
-result = "无条件重新派发一次搜索：取消待触发的定时器、代次 +1，重新清结果并发请求（同一关键词再按也真的再查一遍）；空文本按「停止搜索」处理"
-source = "src/tree.rs:2083、src/tree.rs:2181"
+precondition = "搜索框有焦点"
+result = "Enter 保留当前搜索模式。远程搜索有独立按钮。"
+source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
 trigger = "key"
 keys = ["Ctrl+F"]
-precondition = "启动态或连接态工作区外壳存在"
-result = "请求展开导航，空间足够时把焦点交给搜索框"
-source = "src/ui.rs:3884、src/tree.rs:1450"
-
-[[component.interaction]]
-trigger = "key"
-keys = ["Esc"]
-precondition = "搜索框有焦点"
-result = "清空输入、回到树页；结果行随列表销毁，结果页里收起过的层级一并忘掉"
-source = "src/tree.rs:2488"
+precondition = "工作区存在"
+result = "请求显示导航并聚焦输入框。"
+source = "src/ui.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "31e9a7e977e3"
-commit = "7436cd5"
-evidence = "§2.4 搜索；Ctrl+F / Enter / Esc 三键"
+spec_hash = "c52305deedf6"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：大小写不敏感、改词和清词、收起快照恢复，qa.rpc 业务计数不变。"
 
 [[component]]
 id = "object_tree.search.status"
@@ -414,63 +361,58 @@ status = "active"
 a11y.name = "搜索状态"
 style.slot = "sidebar"
 style.metrics = ["font_status"]
-impl_notes = ["单行省略，全文进 tooltip。"]
+impl_notes = ["可见文本单行省略，完整提示保留在 Tooltip。"]
 
 [[component.interaction]]
 trigger = "load"
-precondition = "搜索完成"
-result = "写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图）；有失败追加「；K 条连接失败（…）」；没有已打开连接追加「；没有已打开的连接，只匹配了连接名」；无匹配写「没有名称包含「<关键词>」的连接、库、表或视图。换个关键词试试。」；无权限写「没有权限读取对象列表：<错误>」；其它失败写「搜索失败：<错误>」"
-source = "src/tree.rs:2580、src/tree.rs:2233"
+precondition = "存在筛选关键词或远程结果"
+result = "本地提示仅筛选已加载资源或没有匹配。远程显示加载、结果、空、权限或失败及既有取数限制。"
+source = "src/tree.rs::TreePanel::set_remote_status"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "bd767c471d9f"
-commit = "7436cd5"
-evidence = "§2.4 状态行与三种失败文案"
+spec_hash = "d72b64d97c25"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：本地无匹配及远程第一页范围；tests/ui/linux/test_04_tree.py::test_filter_can_page_without_matches：无匹配可继续分页。"
 
 [[component]]
 id = "object_tree.search.results"
 parent = "object_tree.search"
-display_name = "搜索结果列表"
+display_name = "远程搜索结果列表"
 kind = "container"
 status = "active"
 style.slot = "sidebar"
-impl_notes = [
-  "搜索按捕获的档案和浏览会话校验异步结果。定位成功才更新逻辑选择，定位不会发起 Objects 浏览或 Inspector 预览。",
-  "结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。",
-  "v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。",
-  "只出现「连接名命中」或「其中有命中」的连接；命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 Tables 下；祖先行箭头可收起 / 再展开，收起状态按路径记、重新搜索仍生效。",
-]
+native_control = "gtk:GtkListView"
+a11y.name = "远程搜索结果"
+impl_notes = ["按远程代次、每条请求的档案会话及发布时整轮会话快照校验结果。按完整对象引用合并重复结果，保留不同范围的同名资源；列表虚拟化，按捕获身份打开或定位。"]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "表 / 视图行"
-result = "打开该对象的数据标签（与树双击同一条 open）；侧栏仍停在结果页，搜索框与命中数原样保留"
-source = "src/tree.rs:2107、src/tree.rs:4583"
+precondition = "表或视图结果"
+result = "打开数据工作区，保留结果和关键词。"
+source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "库行"
-result = "在树里逐层展开祖先并选中（切到树页）"
-source = "src/tree.rs:3544、src/tree.rs:2107"
+precondition = "库或 Schema 结果"
+result = "使用捕获资源身份定位；成功后更新逻辑选择和必要的搜索状态。"
+source = "src/tree.rs::TreePanel::reveal_target"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "连接行"
-result = "按该连接「点连接」同一条路径（未连接则连接、已连接则展开），并清空搜索框退出筛选"
-source = "src/tree.rs:2107"
+precondition = "连接结果"
+result = "明确激活该连接。"
+source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "分组行"
-result = "只有行内箭头能收起 / 展开；点行本身没有可点目标、不触发打开"
-source = "src/tree.rs:2107"
+precondition = "结果分支箭头"
+result = "只控制当前远程结果分支。"
+source = "src/tree.rs::TreePanel::install_remote_factory"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "e6490d62a054"
-commit = "7436cd5"
-evidence = "§2.4 结果行点击语义"
+spec_hash = "75a0830d74a2"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：具名远程结果列表、库行定位成功后清词；隔离 GTK late_remote_responses_leave_new_local_projection_untouched、retired_session_pages_cannot_publish_results_or_replace_new_cache；单测 remote_search_keeps_same_named_resources_in_distinct_scopes。"
 
 [[component]]
 id = "object_tree.ctx_menu"
@@ -480,23 +422,17 @@ kind = "container"
 status = "active"
 native_control = "gtk:GtkPopoverMenu / winui:— / swift:—"
 style.slot = "overlay"
-impl_notes = [
-  "贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。",
-  "收起时把 popover 的 unparent 推迟到 idle：GtkModelButton 是先 popdown（同步发 closed）再激活动作，closed 里同步摘控件树会让动作名解析不到 —— 表现就是「菜单收起、点了没反应」（#175 实测对照）。",
-  "条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。",
-  "没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。",
-]
 
 [[component.interaction]]
 trigger = "right_click"
-precondition = "非占位行"
-result = "右键选中此行并捕获菜单目标。点击条目时复核原连接、浏览会话及仍在原模型中的资源路径。失效时关闭菜单并提示。辅助行与无条目的行不出菜单"
-source = "src/tree.rs:3266、src/tree.rs:3388"
+precondition = "资源行有可用动作"
+result = "先更新逻辑选择，再用捕获的档案、会话及完整资源路径显示相应菜单，不切换固定 Objects。执行时重新校验目标。"
+source = "src/tree.rs::TreePanel::show_context_menu"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "2fa3e2e43486"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：捕获 B 后改选 A 仍打开 B；B 对象重命名并刷新后原菜单提示目标失效，新名称单独打开。"
+spec_hash = "6458470b0761"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：分类真实右键保留查询；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：捕获菜单身份、失效后拒绝。"
 
 [[component]]
 id = "object_tree.ctx_menu.connect_saved"
@@ -539,8 +475,7 @@ source = "src/tree.rs:3305、src/ui.rs:2954"
 [component.sync.linux]
 state = "done"
 spec_hash = "9ea91c17c175"
-commit = "7436cd5"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：从具名菜单确认断开 B，A 查询和 B 的独立查询会话均可继续使用。"
+evidence = "tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：隔离 X11 真实右击、菜单和确认、未连接后双击复连；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：独立查询会话断开后实际执行 SQL。"
 
 [[component]]
 id = "object_tree.ctx_menu.refresh_connection"
@@ -550,7 +485,7 @@ kind = "item"
 a11y.name = "刷新连接"
 status = "active"
 style.metrics = ["font_ui"]
-impl_notes = ["就地清空该层 store 再发第一页，不收起子树；一层都没建立过时不发请求。只在右键菜单里，没有快捷键。"]
+impl_notes = ["重读已经加载的层，失败时保留有效旧数据并提供重试。"]
 
 [[component.interaction]]
 trigger = "click"
@@ -576,7 +511,7 @@ style.metrics = ["font_ui"]
 [[component.interaction]]
 trigger = "click"
 precondition = "库 / schema 节点"
-result = "重读该库下已展开的分组与直接子对象层；分组全收起时只清缓存，提示行写「这个库的分组都收起着：展开时重新读取」"
+result = "重读该库或 Schema 已加载的资源层。没有已加载层时给出提示；失败时保留有效旧数据。"
 source = "src/tree.rs:3509、src/tree.rs:1949"
 
 [component.sync.linux]
@@ -593,7 +528,7 @@ kind = "item"
 a11y.name = "刷新这一组"
 status = "active"
 style.metrics = ["font_ui"]
-impl_notes = ["静态分组行（Groups / TableGroups）没有服务端内容，刷新直接返回。"]
+impl_notes = ["读取失败保留旧数据，从相应错误行可重试。"]
 
 [[component.interaction]]
 trigger = "click"
@@ -603,9 +538,8 @@ source = "src/tree.rs:3422、src/tree.rs:1949"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c831e2e56c1c"
-commit = "7436cd5"
-evidence = "§2.3 刷新这一组"
+spec_hash = "4d66ac590197"
+evidence = "tests/ui/linux/test_04_tree.py::test_local_refresh_error_can_retry_while_filtered：隔离 X11 真实分类菜单，SQLite 锁失败后保留已加载结果，解锁后手动重试。"
 
 [[component]]
 id = "object_tree.ctx_menu.edit_connection"
@@ -699,9 +633,8 @@ source = "src/tree.rs:3266、src/tree.rs:3305"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "35b0c10421f4"
-commit = "7436cd5"
-evidence = "§2.3 表 / 视图节点"
+spec_hash = "f9ef4e1e4ff3"
+evidence = "tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：真实表资源菜单打开、复用、两条同名表不串及旧目标拒绝。"
 
 [[component]]
 id = "object_tree.ctx_menu.dump_table"
@@ -738,7 +671,7 @@ status = "active"
 a11y.name = "侧栏提示"
 style.slot = "sidebar"
 style.metrics = ["font_status", "gap_xs"]
-impl_notes = ["只用于「刷新这一组 / 刷新库 / 刷新连接」的跳过后说明；4 秒后自行收起。"]
+impl_notes = ["用于刷新、命令目标与定位的临时反馈；4 秒后自行收起。"]
 
 [[component.interaction]]
 trigger = "load"
@@ -752,7 +685,111 @@ precondition = "工作区命令缺少必要的目标，或明确目标已不可�
 result = "提示选择所需资源，或重新选择、清除已失效的选择"
 source = "src/tree.rs::TreePanel::show_hint、src/ui.rs::show_objects_for_kind、src/tabs.rs::TabSet::new_query_tab"
 
+[[component.interaction]]
+trigger = "load"
+precondition = "有限定位未找到目标"
+result = "区分分页上限、目标路径已读完但无资源、目标列表未读完或不可用；达到分页上限时提示可手动加载更多。"
+source = "src/tree.rs::TreePanel::reveal_object"
+
 [component.sync.linux]
 state = "done"
-spec_hash = "841a2fd912ff"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：AT-SPI 读到只选连接时选择库的提示，断开及删除后读到目标不可用提示。"
+spec_hash = "e0aae34cee86"
+evidence = "tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：AT-SPI 读到选择库及明确目标不可用提示；隔离 GTK reveal_failure_preserves_search_and_newer_explicit_selection、reveal_distinguishes_page_limit_complete_absence_and_incomplete_data。"
+[[component]]
+id = "object_tree.header"
+parent = "object_tree"
+display_name = "连接标题"
+kind = "container"
+status = "active"
+style.slot = "sidebar"
+a11y.name = "连接"
+style.metrics = ["navigation_header_height"]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "302b9c7d0d93"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：顶部搜索、全部折叠、更多菜单位于导航语义容器。"
+
+[[component]]
+id = "object_tree.header.collapse_all"
+parent = "object_tree.header"
+display_name = "全部折叠"
+kind = "control"
+status = "active"
+style.slot = "sidebar"
+a11y.name = "全部折叠"
+style.icon = ["tree.collapse_all"]
+style.metrics = ["navigation_header_button"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "导航可用"
+result = "收起当前视图的资源分支，保留逻辑选择与普通树在搜索前的展开状态。"
+source = "src/tree.rs::TreePanel::collapse_all"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "477408045eba"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：搜索内全部折叠、改词保持折叠，清词恢复普通树。"
+
+[[component]]
+id = "object_tree.header.more"
+parent = "object_tree.header"
+display_name = "导航更多菜单"
+kind = "control"
+status = "active"
+style.slot = "sidebar"
+a11y.name = "更多"
+style.icon = ["tree.more"]
+style.metrics = ["navigation_header_button"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "导航可用"
+result = "打开包含清除选择的原生菜单。"
+source = "src/tree.rs::TreePanel::new"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "52ad5823c4fc"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：打开具名原生更多菜单后通过键盘激活。"
+
+[[component]]
+id = "object_tree.header.more.clear_selection"
+parent = "object_tree.header.more"
+display_name = "清除选择"
+kind = "item"
+status = "active"
+style.slot = "sidebar"
+a11y.name = "清除选择"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "更多菜单打开"
+result = "通过全局清除选择命令清空逻辑选择。固定 Objects 范围保持。"
+source = "src/tree.rs::TreePanel::clear_selection"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "8960a73d5be1"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：从具名原生更多菜单清除隐藏逻辑选择。"
+
+[[component]]
+id = "object_tree.search.remote"
+parent = "object_tree.search"
+display_name = "搜索已连接的数据库"
+kind = "control"
+status = "active"
+style.slot = "sidebar"
+a11y.name = "搜索已连接的数据库"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "已输入关键词"
+result = "执行显式远程搜索。返回本地、修改或清词使旧请求失效。远程仅查询目录及各库的第一页，不自动翻页或建立连接。"
+source = "src/tree.rs::TreePanel::search_now"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "08049ead732b"
+evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：显式按钮才发 MetadataHub 请求，改词返回本地；隔离 GTK 迟到目录与对象回包丢弃。"

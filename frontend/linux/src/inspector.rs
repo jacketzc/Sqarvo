@@ -9,7 +9,7 @@
 //! | 库 / catalog | 名称 + 已展开结果的表 / 视图计数 | 树的已加载层（不主动全量扫描） |
 //! | 表 / 视图 | `[DDL]` / `[表信息]` 两页 | `GetDdl` / `GetColumns` / `GetPrimaryKey` / `ListNodes` |
 //! | 列 | 该列的完整属性 | `GetColumns`（父表的列清单） |
-//! | 索引 / 触发器 | 仅 DDL；不支持的驱动给稳定错误码 | `GetDdl` |
+//! | 索引 / 触发器 | 表信息分页、SQLite 触发器 DDL | `ListNodes` / `GetDdl` |
 //!
 //! 三条硬规则：
 //!
@@ -34,8 +34,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::{gio, glib};
 
-use crate::backend::metadata::{MetadataError, MetadataHub, NodeView, ddl_supported, kind_label};
+use crate::backend::metadata::{
+    MetadataError, MetadataHub, NodePage, NodeView, ddl_supported, kind_label,
+};
 use crate::backend::table::{TableColumn, TableEntry};
 use crate::column_info::{column_info_rows, default_label, nullable_label};
 use crate::config::SavedConnection;
@@ -47,6 +50,7 @@ use crate::proto::services::v1::{ObjectKind, ObjectRef};
 /// DDL 面板的通道解析器（按对象自己的浏览会话找元数据通道）。
 pub type HubResolver =
     Rc<dyn Fn(&crate::proto::services::v1::ObjectRef) -> Option<Rc<MetadataHub>>>;
+type TriggerDdlSupport = Rc<dyn Fn(&str) -> bool>;
 
 /// 面板内的两页：「DDL」与「表信息」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -363,9 +367,14 @@ pub struct Inspector {
     // 表 / 视图：DDL 与表信息两页。
     table_stack: gtk::Stack,
     ddl: Rc<DdlPanel>,
-    info_box: gtk::Box,
+    info_facts: gtk::Box,
     info_status: gtk::Label,
-    // 索引 / 触发器：仅 DDL。
+    info_token: Cell<Option<LoadToken>>,
+    child_controls: ChildControls,
+    trigger_ddl: Rc<DdlPanel>,
+    trigger_heading: gtk::Label,
+    trigger_ddl_supported: RefCell<Option<TriggerDdlSupport>>,
+    // 其他仅 DDL 的对象预览。
     ddl_only: Rc<DdlPanel>,
     state_page: adw::StatusPage,
     hub_of: RefCell<Option<HubResolver>>,
@@ -400,13 +409,91 @@ pub struct Inspector {
 struct TableInfo {
     columns: Option<Vec<TableColumn>>,
     primary_key: Option<Vec<(u32, String)>>,
-    indexes: Option<Vec<String>>,
-    triggers: Option<Vec<String>>,
     loaded_rows: Option<usize>,
-    /// 索引 / 触发器读取失败的说明（保留错误码）。
-    children_error: Option<String>,
-    /// 索引 / 触发器只读到第一页时的如实提示（不冒充完整列表）。
-    children_note: Option<String>,
+    children: ChildPages,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChildPages {
+    indexes: Option<Vec<String>>,
+    next_token: String,
+    truncated: bool,
+    loading: bool,
+    error: Option<ChildPageError>,
+}
+
+#[derive(Debug, Clone)]
+struct ChildPageError {
+    message: String,
+    retry_from_start: bool,
+}
+
+struct ChildControls {
+    section: gtk::Box,
+    status: gtk::Label,
+    more: gtk::Button,
+    retry: gtk::Button,
+    trigger_rows: gio::ListStore,
+    trigger_choices: gtk::DropDown,
+    view_trigger: gtk::Button,
+}
+
+impl ChildControls {
+    fn new() -> Self {
+        let section = section(l10n::t("inspector.section_children"));
+        section.set_accessible_role(gtk::AccessibleRole::Group);
+        section.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "inspector.section_children",
+        ))]);
+        let status = gtk::Label::new(None);
+        status.set_xalign(0.0);
+        status.set_wrap(true);
+        status.add_css_class("dim-label");
+        status.add_css_class("sqarvo-panel-text");
+        let more = gtk::Button::with_label(l10n::t("inspector.load_more_children"));
+        let retry = gtk::Button::with_label(l10n::t("inspector.retry_children"));
+        let trigger_rows = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let trigger_choices = gtk::DropDown::builder().model(&trigger_rows).build();
+        trigger_choices.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "inspector.select_trigger",
+        ))]);
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
+                let label = gtk::Label::new(None);
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                label.set_xalign(0.0);
+                item.set_child(Some(&label));
+            }
+        });
+        factory.connect_bind(|_, item| {
+            if let Some(item) = item.downcast_ref::<gtk::ListItem>()
+                && let Some(row) = item.item().and_downcast::<glib::BoxedAnyObject>()
+                && let Some(label) = item.child().and_downcast::<gtk::Label>()
+            {
+                let node = row.borrow::<NodeView>();
+                label.set_label(&node.display_name);
+                label.set_tooltip_text(Some(&node.path_label()));
+            }
+        });
+        trigger_choices.set_factory(Some(&factory));
+        trigger_choices.set_list_factory(Some(&factory));
+        let view_trigger = gtk::Button::with_label(l10n::t("inspector.view_trigger_ddl"));
+        section.append(&status);
+        section.append(&more);
+        section.append(&retry);
+        section.append(&trigger_choices);
+        section.append(&view_trigger);
+        Self {
+            section,
+            status,
+            more,
+            retry,
+            trigger_rows,
+            trigger_choices,
+            view_trigger,
+        }
+    }
 }
 
 /// 请求种类（验收日志用的稳定标记）。
@@ -546,7 +633,13 @@ impl Inspector {
         info_box.set_margin_bottom(gap(Gap::Lg));
         info_box.set_margin_start(PANEL_CONTENT_LEFT);
         info_box.set_margin_end(gap(Gap::Lg));
+        let refresh_info = gtk::Button::with_label(l10n::t("inspector.refresh_table_info"));
         info_box.append(&info_status);
+        info_box.append(&refresh_info);
+        let child_controls = ChildControls::new();
+        info_box.append(&child_controls.section);
+        let info_facts = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Lg));
+        info_box.append(&info_facts);
         // 横向 Never 时子控件只拿到自己的最小宽度（折行标签的最小宽度可以很小），
         // 280 宽的面板会变成一条窄条：改用 Automatic——内容装得下就没有横向滚动条，
         // 装不下时滚动而不是把字段挤成两三个字一行。
@@ -561,6 +654,23 @@ impl Inspector {
         table_stack.set_vexpand(true);
         table_stack.add_named(ddl.widget(), Some("ddl"));
         table_stack.add_named(&info_scroll, Some("info"));
+        let trigger_ddl = DdlPanel::for_trigger();
+        let trigger_heading = gtk::Label::new(None);
+        trigger_heading.set_xalign(0.0);
+        trigger_heading.set_wrap(true);
+        let back = gtk::Button::with_label(l10n::t("inspector.back_to_table_info"));
+        let trigger_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(gap(Gap::Xs))
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
+        trigger_view.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "inspector.trigger_ddl_title",
+        ))]);
+        trigger_view.append(&back);
+        trigger_view.append(&trigger_heading);
+        trigger_view.append(trigger_ddl.widget());
+        table_stack.add_named(&trigger_view, Some("trigger-ddl"));
         table_stack.set_visible_child_name("ddl");
 
         let connection_page = scrolled(&connection_rows);
@@ -618,8 +728,13 @@ impl Inspector {
             column_rows,
             table_stack,
             ddl,
-            info_box,
+            info_facts,
             info_status,
+            info_token: Cell::new(None),
+            child_controls,
+            trigger_ddl,
+            trigger_heading,
+            trigger_ddl_supported: RefCell::new(None),
             ddl_only,
             state_page,
             hub_of: RefCell::new(None),
@@ -637,6 +752,35 @@ impl Inspector {
             tab_key: RefCell::new("tree".to_owned()),
         });
         panel.install_toggles();
+        let weak = Rc::downgrade(&panel);
+        refresh_info.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.force_reload();
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        back.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.close_trigger_ddl();
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.child_controls.view_trigger.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.open_trigger_ddl();
+            }
+        });
+        for (button, retry) in [
+            (&panel.child_controls.more, false),
+            (&panel.child_controls.retry, true),
+        ] {
+            let weak = Rc::downgrade(&panel);
+            button.connect_clicked(move |_| {
+                if let Some(panel) = weak.upgrade() {
+                    panel.continue_info_children(retry);
+                }
+            });
+        }
         panel
     }
 
@@ -660,14 +804,23 @@ impl Inspector {
     }
 
     /// 接线到「按会话找元数据通道」的解析器（DDL / 列 / 主键都要走对象自己的会话）。
-    pub fn attach_resolver(self: &Rc<Self>, resolver: HubResolver) {
+    pub fn attach_resolver(
+        self: &Rc<Self>,
+        resolver: HubResolver,
+        trigger_ddl_supported: TriggerDdlSupport,
+    ) {
         self.hub_of.replace(Some(resolver.clone()));
         self.ddl.attach_resolver(Rc::clone(&resolver));
+        self.trigger_ddl.attach_resolver(Rc::clone(&resolver));
         self.ddl_only.attach_resolver(resolver);
+        self.trigger_ddl_supported
+            .replace(Some(trigger_ddl_supported));
     }
 
     /// 开启一个新加载周期：此前所有在途响应就此失效。
     fn begin_load(&self) -> LoadToken {
+        self.info_token.set(None);
+        self.close_trigger_ddl();
         self.epoch.begin()
     }
 
@@ -697,6 +850,7 @@ impl Inspector {
         self.column.replace(None);
         self.column_count.set(0);
         *self.info.borrow_mut() = TableInfo::default();
+        self.child_controls.trigger_rows.remove_all();
         self.title.set_tooltip_text(None);
     }
 
@@ -1072,6 +1226,7 @@ impl Inspector {
     }
 
     fn apply_pane(&self, pane: TablePage, remember: bool) {
+        self.close_trigger_ddl();
         self.current_pane.set(pane);
         let name = match pane {
             TablePage::Ddl => "ddl",
@@ -1151,20 +1306,64 @@ impl Inspector {
         self.ddl.show_for(node, token);
     }
 
+    fn close_trigger_ddl(&self) {
+        if self.table_stack.visible_child_name().as_deref() == Some("trigger-ddl") {
+            self.trigger_ddl.clear();
+            self.trigger_heading.set_text("");
+            self.table_stack.set_visible_child_name("info");
+        }
+    }
+
+    fn can_view_trigger(&self, session: &str) -> bool {
+        self.trigger_ddl_supported
+            .borrow()
+            .as_ref()
+            .is_some_and(|supports| supports(session))
+    }
+
+    fn open_trigger_ddl(&self) {
+        let Some(table) = self.object.borrow().clone() else {
+            return;
+        };
+        if self.info_token.get().is_none()
+            || self.table_stack.visible_child_name().as_deref() != Some("info")
+            || !self.can_view_trigger(&table.reference.session_id)
+        {
+            return;
+        }
+        let Some(row) = self
+            .child_controls
+            .trigger_choices
+            .selected_item()
+            .and_downcast::<glib::BoxedAnyObject>()
+        else {
+            return;
+        };
+        let trigger = row.borrow::<NodeView>().clone();
+        if trigger.reference.session_id != table.reference.session_id
+            || trigger.reference.catalog != table.reference.catalog
+            || trigger.reference.schema != table.reference.schema
+            || self.hub(&trigger).is_none()
+        {
+            return;
+        }
+        self.trigger_heading.set_text(&trigger.path_label());
+        self.table_stack.set_visible_child_name("trigger-ddl");
+        self.trigger_ddl.show_trigger(trigger);
+    }
+
     /// 表信息子页：列 / 主键 / 索引与触发器三项，彼此独立展示失败。
     fn load_info(self: &Rc<Self>, node: NodeView, token: LoadToken) {
         let loaded_rows = self.info.borrow().loaded_rows;
         *self.info.borrow_mut() = TableInfo {
-            columns: None,
-            primary_key: None,
-            indexes: None,
-            triggers: None,
             loaded_rows,
-            children_error: None,
-            children_note: None,
+            ..TableInfo::default()
         };
+        self.info_token.set(Some(token));
+        self.child_controls.trigger_rows.remove_all();
         self.column_count.set(0);
         self.render_table_info();
+        self.render_child_controls(&node);
         self.info_status.set_visible(true);
         self.info_status.set_text(l10n::t("inspector.info_loading"));
         let Some(hub) = self.hub(&node) else {
@@ -1216,48 +1415,151 @@ impl Inspector {
             }),
         );
 
-        // 索引与触发器是表的直接子节点（`ListNodes`，按种类过滤）。
+        self.request_info_children(node, token, String::new());
+    }
+
+    fn continue_info_children(self: &Rc<Self>, retry: bool) {
+        let Some(token) = self.info_token.get() else {
+            return;
+        };
+        let Some(node) = self.object.borrow().clone() else {
+            return;
+        };
+        if self.table_stack.visible_child_name().as_deref() != Some("info") {
+            return;
+        }
+        let cursor = {
+            let info = self.info.borrow();
+            let page = &info.children;
+            if page.loading || retry != page.error.is_some() {
+                return;
+            }
+            if retry
+                && page
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.retry_from_start)
+            {
+                String::new()
+            } else {
+                page.next_token.clone()
+            }
+        };
+        if retry || !cursor.is_empty() {
+            self.request_info_children(node, token, cursor);
+        }
+    }
+
+    fn request_info_children(self: &Rc<Self>, node: NodeView, token: LoadToken, cursor: String) {
+        {
+            let mut info = self.info.borrow_mut();
+            info.children.loading = true;
+            info.children.error = None;
+        }
+        self.render_child_controls(&node);
+        let first_page = cursor.is_empty();
+        let Some(hub) = self.hub(&node) else {
+            self.finish_info_children(
+                &node,
+                first_page,
+                Err(MetadataError::SessionLost {
+                    message: l10n::t("inspector.info_no_session").to_owned(),
+                }),
+            );
+            return;
+        };
         let weak = Rc::downgrade(self);
         hub.request_group_as(
             "inspector.nodes",
             node.reference.clone(),
             &[ObjectKind::Index, ObjectKind::Trigger],
-            "",
+            &cursor,
             Rc::new(move |result| {
                 let Some(panel) = weak.upgrade() else { return };
-                if !panel.accepts(token, &node) {
+                if !panel.accepts(token, &node) || panel.hub(&node).is_none() {
                     return;
                 }
-                match result {
-                    Ok(page) => {
-                        let mut indexes = Vec::new();
-                        let mut triggers = Vec::new();
-                        for child in &page.nodes {
-                            match child.kind {
-                                ObjectKind::Index => indexes.push(child.display_name.clone()),
-                                ObjectKind::Trigger => triggers.push(child.display_name.clone()),
-                                _ => {}
-                            }
-                        }
-                        // 第一页不代表完整列表：has_more / truncated 时如实说明。
-                        let partial = page.has_more() || page.truncated;
-                        let mut info = panel.info.borrow_mut();
-                        info.indexes = Some(indexes);
-                        info.triggers = Some(triggers);
-                        info.children_note =
-                            partial.then(|| l10n::t("inspector.note_children_partial").to_owned());
-                        drop(info);
-                        panel.render_table_info();
-                    }
-                    Err(error) => {
-                        let text = StateText::from_error(&error);
-                        panel.info.borrow_mut().children_error =
-                            Some(format!("{}（{}）", text.headline, text.code));
-                        panel.render_table_info();
-                    }
-                }
+                panel.finish_info_children(&node, first_page, result);
             }),
         );
+    }
+
+    fn finish_info_children(
+        &self,
+        node: &NodeView,
+        first_page: bool,
+        result: Result<NodePage, MetadataError>,
+    ) {
+        let mut info = self.info.borrow_mut();
+        let children = &mut info.children;
+        children.loading = false;
+        match result {
+            Ok(page) => {
+                let indexes = children.indexes.get_or_insert_default();
+                if first_page {
+                    indexes.clear();
+                }
+                let mut triggers = Vec::new();
+                for child in page.nodes {
+                    match child.kind {
+                        ObjectKind::Index => indexes.push(child.display_name),
+                        ObjectKind::Trigger => triggers.push(glib::BoxedAnyObject::new(child)),
+                        _ => {}
+                    }
+                }
+                children.next_token = page.next_page_token;
+                children.truncated = page.truncated;
+                drop(info);
+                let rows = &self.child_controls.trigger_rows;
+                if first_page {
+                    rows.splice(0, rows.n_items(), &triggers);
+                } else {
+                    rows.extend_from_slice(&triggers);
+                }
+            }
+            Err(error) => {
+                let text = StateText::from_error(&error);
+                children.error = Some(ChildPageError {
+                    message: format!("{}（{}）", text.headline, text.code),
+                    retry_from_start: first_page || error.needs_first_page(),
+                });
+                drop(info);
+            }
+        }
+        self.render_child_controls(node);
+        self.render_table_info();
+    }
+
+    fn render_child_controls(&self, node: &NodeView) {
+        let info = self.info.borrow();
+        let pages = &info.children;
+        let controls = &self.child_controls;
+        let has_more = !pages.next_token.is_empty();
+        let has_triggers = controls.trigger_rows.n_items() > 0;
+        controls.more.set_visible(has_more && pages.error.is_none());
+        controls.more.set_sensitive(!pages.loading);
+        controls.retry.set_visible(pages.error.is_some());
+        controls.trigger_choices.set_visible(has_triggers);
+        controls
+            .view_trigger
+            .set_visible(has_triggers && self.can_view_trigger(&node.reference.session_id));
+        let status = if let Some(error) = &pages.error {
+            format!(
+                "{} {}",
+                l10n::t("inspector.note_read_failed"),
+                error.message
+            )
+        } else if pages.loading {
+            l10n::t("inspector.loading_children").to_owned()
+        } else if has_more || pages.truncated {
+            l10n::t("inspector.note_children_partial").to_owned()
+        } else if pages.indexes.is_some() && !has_triggers {
+            l10n::t("inspector.value_no_triggers").to_owned()
+        } else {
+            String::new()
+        };
+        controls.status.set_visible(!status.is_empty());
+        controls.status.set_text(&status);
     }
 
     /// 列节点：读父表的列清单，再挑出这一列（`GetColumns` 的粒度是表，不是列）。
@@ -1354,23 +1656,8 @@ impl Inspector {
 
     /// 重建表信息页：每一节只在有数据时出现，空值不占位。
     fn render_table_info(&self) {
-        while let Some(child) = self.info_box.first_child() {
-            if child == *self.info_status.upcast_ref::<gtk::Widget>() {
-                break;
-            }
-            self.info_box.remove(&child);
-        }
-        // 先摘掉旧内容，再按当前数据重排（提示行保持在最上面）。
-        let mut children = Vec::new();
-        let mut child = self.info_box.first_child();
-        while let Some(current) = child {
-            child = current.next_sibling();
-            if current != *self.info_status.upcast_ref::<gtk::Widget>() {
-                children.push(current);
-            }
-        }
-        for child in children {
-            self.info_box.remove(&child);
+        while let Some(child) = self.info_facts.first_child() {
+            self.info_facts.remove(&child);
         }
 
         let info = self.info.borrow();
@@ -1378,7 +1665,7 @@ impl Inspector {
         if let Some(columns) = info.columns.as_ref() {
             self.column_count.set(columns.len());
             if columns.is_empty() {
-                self.info_box.append(&section_note(
+                self.info_facts.append(&section_note(
                     l10n::t("inspector.section_columns"),
                     l10n::t("inspector.note_empty_columns"),
                 ));
@@ -1419,7 +1706,7 @@ impl Inspector {
                     }
                     section.append(&card);
                 }
-                self.info_box.append(&section);
+                self.info_facts.append(&section);
                 rendered += 1;
             }
         }
@@ -1429,10 +1716,13 @@ impl Inspector {
                 l10n::t("inspector.fact_pk_columns"),
                 &primary_key_label(primary_key),
             ));
-            self.info_box.append(&section);
+            self.info_facts.append(&section);
             rendered += 1;
         }
-        if let Some(indexes) = info.indexes.as_ref() {
+        if let Some(indexes) = info.children.indexes.as_ref()
+            && (!indexes.is_empty()
+                || (info.children.next_token.is_empty() && !info.children.truncated))
+        {
             let section = section(l10n::t("inspector.section_indexes"));
             section.append(&compact_row(
                 l10n::t("inspector.section_indexes"),
@@ -1443,38 +1733,13 @@ impl Inspector {
                 )
                 .value,
             ));
-            self.info_box.append(&section);
-            rendered += 1;
-        }
-        if let Some(triggers) = info.triggers.as_ref() {
-            let section = section(l10n::t("inspector.section_triggers"));
-            section.append(&compact_row(
-                l10n::t("inspector.section_triggers"),
-                &list_fact(
-                    l10n::t("inspector.section_triggers"),
-                    triggers,
-                    l10n::t("inspector.value_no_triggers"),
-                )
-                .value,
-            ));
-            self.info_box.append(&section);
+            self.info_facts.append(&section);
             rendered += 1;
         }
         if let Some(fact) = loaded_rows_fact(info.loaded_rows) {
             let section = section(l10n::t("inspector.section_rows"));
             section.append(&compact_row(fact.label, &fact.value));
-            self.info_box.append(&section);
-            rendered += 1;
-        }
-        if let Some(note) = info.children_error.as_ref() {
-            let section = section(l10n::t("inspector.section_children"));
-            section.append(&section_note(l10n::t("inspector.note_read_failed"), note));
-            self.info_box.append(&section);
-            rendered += 1;
-        } else if let Some(note) = info.children_note.as_ref() {
-            let section = section(l10n::t("inspector.section_children"));
-            section.append(&section_note("", note));
-            self.info_box.append(&section);
+            self.info_facts.append(&section);
             rendered += 1;
         }
         if rendered > 0 {

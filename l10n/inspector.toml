@@ -410,6 +410,66 @@ status = "done"
 
 [[entry]]
 key = "inspector.note_children_partial"
-zh = "只显示了已读到的索引与触发器（还有后续页或结果被截断，不是完整列表）"
-en = "Only the indexes and triggers read so far are shown (more pages or truncated; not a complete list)"
+zh = "当前显示已读取的索引与触发器，列表尚不完整。"
+en = "Showing the indexes and triggers read so far. The list is incomplete."
+status = "done"
+
+[[entry]]
+key = "inspector.refresh_table_info"
+zh = "刷新表信息"
+en = "Refresh Table Info"
+status = "done"
+
+[[entry]]
+key = "inspector.loading_children"
+zh = "正在读取索引与触发器…"
+en = "Loading indexes and triggers…"
+status = "done"
+
+[[entry]]
+key = "inspector.load_more_children"
+zh = "加载更多索引和触发器"
+en = "Load More Indexes and Triggers"
+status = "done"
+
+[[entry]]
+key = "inspector.retry_children"
+zh = "重试读取索引和触发器"
+en = "Retry Loading Indexes and Triggers"
+status = "done"
+
+[[entry]]
+key = "inspector.select_trigger"
+zh = "选择触发器"
+en = "Select Trigger"
+status = "done"
+
+[[entry]]
+key = "inspector.view_trigger_ddl"
+zh = "查看触发器 DDL"
+en = "View Trigger DDL"
+status = "done"
+
+[[entry]]
+key = "inspector.trigger_ddl_title"
+zh = "触发器 DDL"
+en = "Trigger DDL"
+status = "done"
+
+[[entry]]
+key = "inspector.copy_trigger_ddl"
+zh = "复制触发器 DDL"
+en = "Copy Trigger DDL"
+status = "done"
+
+[[entry]]
+key = "inspector.back_to_table_info"
+zh = "返回表信息"
+en = "Back to Table Info"
+status = "done"
+
+[[entry]]
+key = "inspector.retry_trigger_ddl"
+zh = "重试读取触发器 DDL"
+en = "Retry Loading Trigger DDL"
 status = "done"

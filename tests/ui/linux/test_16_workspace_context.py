@@ -48,8 +48,12 @@ def test_navigation_target_and_clear_selection(ui_instance):
 
     def select_row(*labels):
         row = ops.find_row(frame, *labels, timeout=15)
-        position = row.get_index_in_parent()
-        expect(Atspi.Selection.select_child(row.get_parent(), position), f"选中 {labels}")
+        label = A.find_one(row, role_in=("label",), name=labels[0])
+        if labels[0] == "main":
+            A.mouse_click(label, button=3)
+            A.press_keys("Escape")
+        else:
+            A.mouse_click(label)
         A.wait_until(lambda: "selected" in A.states(row), 10, f"{labels} 已选中")
         return row
 
@@ -59,12 +63,14 @@ def test_navigation_target_and_clear_selection(ui_instance):
         A.find_one(objects, role_in=("label",), name=expected, timeout=15)
 
     def capture_tree_menu(action, *labels):
-        row = ops.find_row(frame, *labels, timeout=10)
-        A.mouse_click(A.find_one(row, role_in=("label",), name=labels[0]), button=3)
-        # Native GtkPopoverMenu exports the semantic GActions on its menu container.
-        return A.wait_until(lambda: next(
+        def label():
+            row = ops.find_row(frame, *labels, exact_name=labels[0])
+            return next(iter(A.query(row, role_in=("label",), name=labels[0])), None) if row else None
+
+        return ops.click_tree_until(label, lambda: next(
             (menu for menu in A.query(frame, role_in=("menu",))
-             if action in A.action_names(menu)), None), 10, f"资源菜单动作 {action}")
+             if action in A.action_names(menu)), None),
+            button=3, what=f"资源菜单动作 {action}")
 
     def tree_menu(action, *labels):
         A.window_action(capture_tree_menu(action, *labels), action)
@@ -102,9 +108,13 @@ def test_navigation_target_and_clear_selection(ui_instance):
         A.window_action(frame, "win.tab-2")
         ops.expand_tree_row(peer_row)
         A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "B 的 main 被折叠")
+        search = A.find_one(frame, role_in=("entry",), name="搜索资源…")
+        A.set_text(search, "no_loaded_peer_match")
+        A.find_one(frame, role_in=("label",), name="已加载的资源中没有匹配项", timeout=10)
         second = ops.open_sql_page(frame)
         query_owner(second, "B")
-        expect("Peer" in A.nm(frame), "新标签实际绑定 B", A.nm(frame))
+        expect("Peer" in A.nm(frame), "隐藏并过滤后新标签仍实际绑定 B", A.nm(frame))
+        A.set_text(search, "")
         A.window_action(frame, "win.tab-2")
 
     with step("table_workspace_reuse_by_profile"):
@@ -128,7 +138,9 @@ def test_navigation_target_and_clear_selection(ui_instance):
 
     with step("menu_keeps_its_target_and_rejects_renamed_row"):
         menu = capture_tree_menu("ctx.open-object", "orders", "表")
-        select_row("uitest.db", "已连接")
+        primary = ops.find_row(frame, "uitest.db", "已连接", timeout=10)
+        expect(Atspi.Selection.select_child(primary.get_parent(), primary.get_index_in_parent()),
+               "菜单打开期间改变 GTK 可见选择")
         A.window_action(menu, "ctx.open-object")
         A.wait_until(lambda: A.nm(frame) == "orders @ Peer — Sqarvo",
                      10, "改选 A 后菜单仍打开原先捕获的 B")
@@ -138,13 +150,15 @@ def test_navigation_target_and_clear_selection(ui_instance):
         with sqlite3.connect(peer) as con:
             con.execute("ALTER TABLE orders RENAME TO renamed_orders")
         A.window_action(frame, "win.refresh")
-        A.wait_gone(lambda: ops.find_row(frame, "orders", "表"), 10, "旧资源行已移除")
+        A.wait_gone(lambda: ops.find_row(frame, "表", exact_name="orders"), 10, "旧资源行已移除")
         A.window_action(menu, "ctx.open-object")
         A.find_one(frame, role_in=("label",), name="所选资源已不可用，请重新选择或清除选择。",
                    timeout=10)
-        ops.expand_tree_row(ops.find_row(frame, "main", "库", timeout=10))
-        ops.expand_tree_row(ops.find_row(frame, "Tables", timeout=10))
-        ops.find_row(frame, "renamed_orders", "表", timeout=10)
+        if ops.find_row(frame, "Tables") is None:
+            ops.expand_tree_row(ops.find_row(frame, "main", "库", timeout=10))
+        if ops.find_row(frame, "renamed_orders") is None:
+            ops.expand_tree_row(ops.find_row(frame, "Tables", timeout=10))
+        ops.find_row(frame, exact_name="renamed_orders", timeout=10)
         unavailable = "所选资源已不可用，请重新选择或清除选择。"
         refusals = inst.log_text().count(unavailable)
         before = ops.query_tab_names(frame)

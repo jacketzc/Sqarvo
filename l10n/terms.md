@@ -23,6 +23,11 @@
 | 回滚 | Rollback | 按钮用动词 Roll Back 时按条目文本，术语本身 Rollback |
 | 刷新 | Refresh | |
 | 导航 | Navigation | 窗口左侧资源区 |
+| 全部折叠 | Collapse All | 导航标题动作 |
+| 更多 | More | 导航标题菜单 |
+| 搜索资源 | Search resources | 导航搜索输入 |
+| 本地筛选 | Local filter | 当前已加载资源 |
+| 远程搜索 | Remote search | 已连接数据源的显式搜索 |
 | 信息面板 | Inspector | 窗口右侧信息区 |
 | 专注模式 | Focus Mode | |
 | 重置布局 | Reset Layout | |

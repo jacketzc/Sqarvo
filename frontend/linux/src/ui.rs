@@ -50,7 +50,7 @@ use crate::layout::{self, Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
 use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar};
 use crate::theme;
-use crate::tree::{KindGroup, RowGroup, TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
+use crate::tree::{KindGroup, TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
 use crate::workspace_context::{TargetState, object_scope};
 
 /// 主窗口与连接对话框共享的状态。
@@ -1605,18 +1605,13 @@ fn objects_target(selection: &TreeSelection) -> ObjectsTarget {
             }),
         },
         TreeSelection::Group { group, parent } => match group {
-            RowGroup::Catalog(KindGroup::Views) => ObjectsTarget::List(parent.clone(), views),
-            RowGroup::Catalog(KindGroup::Tables) => ObjectsTarget::List(parent.clone(), tables),
+            KindGroup::Views => ObjectsTarget::List(parent.clone(), views),
+            KindGroup::Tables => ObjectsTarget::List(parent.clone(), tables),
             // 入口已画出、列表能力还没有：页内如实说明（与工具条入口同一套文案）。
-            RowGroup::Catalog(KindGroup::Functions) => {
+            KindGroup::Functions => {
                 ObjectsTarget::Unavailable(crate::tabs::KindShortcut::Functions)
             }
-            RowGroup::Catalog(KindGroup::Queries) => {
-                ObjectsTarget::Unavailable(crate::tabs::KindShortcut::Queries)
-            }
-            RowGroup::Table(_) => object_scope(parent).map_or(ObjectsTarget::Empty, |scope| {
-                ObjectsTarget::List(scope, tables)
-            }),
+            KindGroup::Queries => ObjectsTarget::Unavailable(crate::tabs::KindShortcut::Queries),
         },
         TreeSelection::Connection(_) | TreeSelection::None => ObjectsTarget::Empty,
     }
@@ -2478,6 +2473,15 @@ impl Workspace {
                     }
                 })
             },
+            reveal_navigation: {
+                let shell_slot = Rc::clone(&shell_slot);
+                Rc::new(move || {
+                    shell_slot
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|shell| shell.reveal_navigation())
+                })
+            },
             health: {
                 Rc::new(move |health: TreeHealth| {
                     eprintln!("[tree] 健康状态：{}", health.name());
@@ -2819,12 +2823,19 @@ impl Workspace {
         // 接线：树与信息面板都按「对象自己的会话」找通道（一个窗口里可以有多条连接）。
         match state.registry.borrow().clone() {
             Some(registry) => {
-                inspector.attach_resolver({
-                    let registry = Rc::clone(&registry);
-                    Rc::new(move |object: &crate::proto::services::v1::ObjectRef| {
-                        registry.hub_for_session(&object.session_id)
-                    })
-                });
+                inspector.attach_resolver(
+                    {
+                        let registry = Rc::clone(&registry);
+                        Rc::new(move |object| registry.hub_for_session(&object.session_id))
+                    },
+                    {
+                        let registry = Rc::clone(&registry);
+                        Rc::new(move |session| {
+                            registry.driver_for_session(session).as_deref()
+                                == Some(crate::config::SQLITE_DRIVER_ID)
+                        })
+                    },
+                );
                 tree.attach(registry);
             }
             None => tree.mark_unavailable("连接注册表不可用：无法读取对象树"),
@@ -3399,7 +3410,7 @@ fn maybe_run_qa_tree(state: &Rc<UiState>) {
             delay,
             Rc::new(move || {
                 tree.qa_type_search(&query);
-                Ok(format!("在搜索框输入「{query}」（等防抖）"))
+                Ok(format!("在搜索框输入「{query}」（本地筛选）"))
             }),
         );
         delay += 900;
@@ -6416,7 +6427,7 @@ mod tests {
     fn objects_target_handles_group_rows_and_empty_selection() {
         let catalog = node("sqarvo_demo", ObjectKind::Catalog, "sqarvo_demo");
         let tables = TreeSelection::Group {
-            group: RowGroup::Catalog(KindGroup::Tables),
+            group: KindGroup::Tables,
             parent: catalog.reference.clone(),
         };
         let ObjectsTarget::List(_, kinds) = objects_target(&tables) else {
@@ -6425,7 +6436,7 @@ mod tests {
         assert_eq!(kinds, vec![ObjectKind::Table]);
 
         let views = TreeSelection::Group {
-            group: RowGroup::Catalog(KindGroup::Views),
+            group: KindGroup::Views,
             parent: catalog.reference.clone(),
         };
         let ObjectsTarget::List(_, kinds) = objects_target(&views) else {
@@ -6439,28 +6450,13 @@ mod tests {
             (KindGroup::Queries, crate::tabs::KindShortcut::Queries),
         ] {
             let selection = TreeSelection::Group {
-                group: RowGroup::Catalog(group),
+                group,
                 parent: catalog.reference.clone(),
             };
             let ObjectsTarget::Unavailable(shortcut) = objects_target(&selection) else {
                 panic!("{group:?} 组应落到「尚未实现」说明页");
             };
             assert_eq!(shortcut, expected);
-        }
-
-        // 表下的二级分组（Fields / Indexes / Foreign Keys / Triggers）→ 该表所在库的表。
-        let table = node("orders", ObjectKind::Table, "sqarvo_demo");
-        for group in crate::tree::TableGroup::ALL {
-            let selection = TreeSelection::Group {
-                group: RowGroup::Table(group),
-                parent: table.reference.clone(),
-            };
-            let ObjectsTarget::List(parent, kinds) = objects_target(&selection) else {
-                panic!("表分组应给出列表作用域");
-            };
-            assert_eq!(parent.kind, ObjectKind::Catalog as i32);
-            assert_eq!(parent.name, "sqarvo_demo");
-            assert_eq!(kinds, vec![ObjectKind::Table]);
         }
 
         // 连接与占位行没有作用域：Objects 页回到空态。

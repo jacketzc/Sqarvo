@@ -347,23 +347,233 @@ status = "active"
 style.slot = "inspector"
 style.metrics = ["font_panel", "gap_lg", "gap_sm"]
 impl_notes = [
-  "分节渲染：列、主键、索引、触发器、行；没有数据的节整节不出现。",
+  "分节提供列、主键、索引、触发器和行数。索引与触发器保留分页状态和显式刷新入口。",
   "按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。",
   "正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。",
-  "索引 / 触发器读取失败时那一节换成「读取失败」+「<文案>（<稳定错误码>）」，已读回的列仍然显示。",
+  "索引 / 触发器读取失败时显示错误及重试入口，已读回的本表资料仍然显示。",
   "内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "切到表信息页（每次都重新查询列 / 主键 / 索引与触发器）"
-result = "按节渲染本次读回的内容：列、主键、索引与触发器、当前对象的已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据；只读到第一页时如实写「不完整列表」，不冒充完整"
-source = "src/inspector.rs:1070、src/inspector.rs:1250"
+result = "查询当前表的列、主键和首批索引与触发器。后续页仅由显式操作读取，SQLite 触发器可在表信息中读取独立 DDL。过期响应不写入其他对象的展示。"
+source = "src/inspector.rs::Inspector::load_info"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "212c8eec52b1"
-evidence = "test_15_refresh_regressions.py 验证后台标签关闭与 A 分页时预览 B，计数更新不提交元数据请求"
+spec_hash = "7d695d1bd9f7"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py 覆盖显式分页、重试、刷新、触发器查看和对象切换；test_15_refresh_regressions.py 验证行数更新不提交元数据请求。"
+
+[[component]]
+id = "inspector.object.info.children"
+parent = "inspector.object.info"
+display_name = "索引与触发器"
+kind = "container"
+status = "active"
+native_control = "gtk:GtkBox"
+a11y.name = "索引与触发器"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "读取当前表的索引和触发器"
+result = "显示已读取的索引和触发器。分页或重试失败时保留本次已加载的数据，错误带稳定错误码。"
+source = "src/inspector.rs::Inspector::finish_info_children"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "7585099b2154"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh"
+
+[[component]]
+id = "inspector.object.info.children.trigger_picker"
+parent = "inspector.object.info.children"
+display_name = "触发器选择"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkDropDown"
+a11y.name = "选择触发器"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "已读取一个或多个触发器"
+result = "选中带完整对象引用的触发器。仅改变选择，不发元数据请求。"
+source = "src/inspector.rs::ChildControls::new"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6484992088d7"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation"
+
+[[component]]
+id = "inspector.object.info.children.load_more"
+parent = "inspector.object.info.children"
+display_name = "加载更多索引和触发器"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkButton"
+a11y.name = "加载更多索引和触发器"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前表还有有效分页令牌"
+result = "显式读取一页索引与触发器，追加到当前表的结果。正在读取时禁止重复派发。"
+source = "src/inspector.rs::Inspector::continue_info_children"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "bbdb6973fe82"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh"
+
+[[component]]
+id = "inspector.object.info.children.retry"
+parent = "inspector.object.info.children"
+display_name = "重试读取索引和触发器"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkButton"
+a11y.name = "重试读取索引和触发器"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前表的索引或触发器读取失败"
+result = "重试失败页。分页状态失效时从第一页重读，成功前保留已显示数据。"
+source = "src/inspector.rs::Inspector::continue_info_children"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "6570414ea4ab"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh"
+
+[[component]]
+id = "inspector.object.info.children.view_ddl"
+parent = "inspector.object.info.children"
+display_name = "查看触发器 DDL"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkButton"
+a11y.name = "查看触发器 DDL"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前 SQLite 浏览会话中选中了触发器"
+result = "按选中对象的完整引用请求一次 GetDdl，在表信息中打开触发器正文。"
+source = "src/inspector.rs::Inspector::open_trigger_ddl"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "62a50846f18d"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation"
+
+[[component]]
+id = "inspector.object.info.refresh"
+parent = "inspector.object.info"
+display_name = "刷新表信息"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkButton"
+a11y.name = "刷新表信息"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "显示当前表的表信息"
+result = "显式重新读取当前表的列、主键及首批索引和触发器。"
+source = "src/inspector.rs::Inspector::force_reload"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "8b075c3bad9b"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh"
+
+[[component]]
+id = "inspector.object.info.trigger_ddl"
+parent = "inspector.object.info"
+display_name = "触发器 DDL 正文"
+kind = "container"
+status = "active"
+native_control = "gtk:GtkStack + GtkTextView"
+a11y.name = "触发器 DDL"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "load"
+precondition = "已明确请求当前 SQLite 触发器的 DDL"
+result = "复用 DDL 面板显示数据库原文和所属触发器。切换对象或离开正文使在途结果失效。"
+source = "src/ddl.rs::DdlPanel::show_trigger"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "0a713ffc1fe8"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation"
+
+[[component]]
+id = "inspector.object.info.trigger_ddl.copy"
+parent = "inspector.object.info.trigger_ddl"
+display_name = "复制触发器 DDL"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkButton"
+a11y.name = "复制触发器 DDL"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前触发器已取得 DDL"
+result = "复制当前触发器的完整正文到系统剪贴板，不发请求。"
+source = "src/ddl.rs::DdlPanel::build"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "d46586b19156"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation"
+
+[[component]]
+id = "inspector.object.info.trigger_ddl.back"
+parent = "inspector.object.info.trigger_ddl"
+display_name = "返回表信息"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkButton"
+a11y.name = "返回表信息"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "显示触发器 DDL"
+result = "返回当前表信息和已读页面，不重复读取元数据。"
+source = "src/inspector.rs::Inspector::close_trigger_ddl"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "36cafa201593"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation"
+
+[[component]]
+id = "inspector.object.info.trigger_ddl.retry"
+parent = "inspector.object.info.trigger_ddl"
+display_name = "重试读取触发器 DDL"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkButton"
+a11y.name = "重试读取触发器 DDL"
+style.slot = "inspector"
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前触发器 DDL 读取失败"
+result = "按原触发器引用重试一次 GetDdl。"
+source = "src/ddl.rs::DdlPanel::show_trigger"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "83af3fc81d31"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation"
 
 [[component]]
 id = "inspector.object.info.columns"

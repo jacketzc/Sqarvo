@@ -35,7 +35,7 @@ zh = "读取失败：{headline}（{code}）"
 en = "Read failed: {headline} ({code})"
 status = "done"
 
-# -- 对象种类名（树行尾标签，backend/metadata.rs::kind_label） --------------
+# -- 对象种类名（可访问描述，backend/metadata.rs::kind_label） --------------
 
 [[entry]]
 key = "object_tree.kind_catalog"
@@ -162,38 +162,6 @@ status = "done"
 # -- 分组说明：表下的二级分组（TableGroup） --------------------------------
 
 [[entry]]
-key = "object_tree.table_fields_empty"
-zh = "（这张表没有字段）"
-en = "(No fields in this table)"
-status = "done"
-
-[[entry]]
-key = "object_tree.table_indexes_empty"
-zh = "（这张表没有索引）"
-en = "(No indexes in this table)"
-status = "done"
-
-[[entry]]
-key = "object_tree.table_foreign_keys_empty"
-zh = "（驱动未提供外键列表）"
-en = "(The driver does not provide a foreign key list)"
-status = "done"
-
-[[entry]]
-key = "object_tree.table_triggers_empty"
-zh = "（这张表没有触发器）"
-en = "(No triggers in this table)"
-status = "done"
-
-[[entry]]
-key = "object_tree.table_foreign_keys_unsupported"
-zh = "驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装"
-en = "The driver does not provide a foreign key list (capability.unsupported): it appears once the backend gains foreign key support; nothing is guessed or assembled here"
-status = "done"
-
-# -- 行 tooltip（tree.rs） --------------------------------------------------
-
-[[entry]]
 key = "object_tree.tooltip_browse_session"
 zh = "浏览会话 {session}（{detail}）"
 en = "Browse session {session} ({detail})"
@@ -201,14 +169,8 @@ status = "done"
 
 [[entry]]
 key = "object_tree.tooltip_connection"
-zh = "{label} · {driver}\n{target}\n{state}{active_note}\n右键：连接 / 断开连接 / 刷新连接"
-en = "{label} · {driver}\n{target}\n{state}{active_note}\nRight-click: Connect / Disconnect / Refresh connection"
-status = "done"
-
-[[entry]]
-key = "object_tree.tooltip_active_connection"
-zh = "\n（当前数据页绑定的连接）"
-en = "\n(The connection the data page is bound to)"
+zh = "{label} · {driver}\n{target}\n{state}\n右键：连接 / 断开连接 / 刷新连接"
+en = "{label} · {driver}\n{target}\n{state}\nRight-click: Connect / Disconnect / Refresh connection"
 status = "done"
 
 [[entry]]
@@ -349,8 +311,20 @@ status = "done"
 
 [[entry]]
 key = "object_tree.status_reveal_failed"
-zh = "没有在树里定位到 {path}：它可能不在当前可见的连接/库里"
-en = "Could not locate {path} in the tree: it may not be in a visible connection or database"
+zh = "无法定位 {path}，所需的资源列表暂不可用或未读取完整"
+en = "Could not locate {path}. The required resource list is unavailable or incomplete"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_reveal_missing"
+zh = "已查完目标路径，未找到 {path}"
+en = "Checked the complete target path. {path} was not found"
+status = "done"
+
+[[entry]]
+key = "object_tree.status_reveal_page_limit"
+zh = "定位 {path} 已达到分页上限。可手动加载更多后重试"
+en = "Reached the page limit while locating {path}. Load more entries and try again"
 status = "done"
 
 [[entry]]
@@ -405,8 +379,8 @@ status = "done"
 
 [[entry]]
 key = "object_tree.state_no_connections_body"
-zh = "用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。"
-en = "Save a connection with Connect in the toolbar; it then appears as a node under My Connections."
+zh = "用工具条的「连接」保存一条连接。保存后可在导航中找到它。"
+en = "Save a connection using Connect in the toolbar. The saved connection appears in Navigation."
 status = "done"
 
 [[entry]]
@@ -443,14 +417,8 @@ status = "done"
 
 [[entry]]
 key = "object_tree.search_placeholder"
-zh = "搜索连接、库、表..."
-en = "Search connections, databases, tables..."
-status = "done"
-
-[[entry]]
-key = "object_tree.search_debounce_pending"
-zh = "输入后 {ms} ms 开始搜索…"
-en = "Searching starts {ms} ms after typing…"
+zh = "搜索资源…"
+en = "Search resources…"
 status = "done"
 
 [[entry]]
@@ -856,4 +824,106 @@ status = "done"
 key = "object_tree.dlg_edit_sql_line"
 zh = "关闭将放弃这些标签的未保存 SQL：{titles}"
 en = "Closing will discard unsaved SQL in these tabs: {titles}"
+status = "done"
+
+[[entry]]
+key = "object_tree.connections"
+zh = "连接"
+en = "Connections"
+status = "done"
+
+[[entry]]
+key = "object_tree.collapse_all"
+zh = "全部折叠"
+en = "Collapse All"
+status = "done"
+
+[[entry]]
+key = "object_tree.more"
+zh = "更多"
+en = "More"
+status = "done"
+
+[[entry]]
+key = "object_tree.clear_selection"
+zh = "清除选择"
+en = "Clear Selection"
+status = "done"
+
+[[entry]]
+key = "object_tree.toggle_branch"
+zh = "展开或折叠"
+en = "Expand or collapse"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_remote"
+zh = "搜索已连接的数据库"
+en = "Search connected databases"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_back_local"
+zh = "返回本地筛选"
+en = "Return to local filter"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_remote_scope"
+zh = "远程搜索仅覆盖已连接数据库的目录及各库搜索结果的第一页。"
+en = "Remote search covers the first catalog page and first result page per database of connected profiles."
+status = "done"
+
+[[entry]]
+key = "object_tree.search_local_scope"
+zh = "仅筛选已加载的资源"
+en = "Filtering loaded resources"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_local_empty"
+zh = "已加载的资源中没有匹配项"
+en = "No matching loaded resources"
+status = "done"
+
+[[entry]]
+key = "object_tree.selection_hidden"
+zh = "已选资源当前不可见，可从更多菜单清除选择。"
+en = "The selected resource is hidden. Use More to clear the selection."
+status = "done"
+
+[[entry]]
+key = "object_tree.retry_level"
+zh = "重试：{error}"
+en = "Retry: {error}"
+status = "done"
+
+[[entry]]
+key = "object_tree.badge_disconnected"
+zh = "未连接"
+en = "Not connected"
+status = "done"
+
+[[entry]]
+key = "object_tree.tree_name"
+zh = "对象树"
+en = "Resource tree"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_remote_status"
+zh = "{message} · {scope}"
+en = "{message} · {scope}"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_remote_scope_short"
+zh = "远程范围：各库仅第一页"
+en = "Remote scope: first pages only"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_results_name"
+zh = "远程搜索结果"
+en = "Remote search results"
 status = "done"

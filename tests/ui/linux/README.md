@@ -148,7 +148,7 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
 
 - 测试沿用 AT-SPI Action、EditableText 和 GAction。建 SQLite 档案走 `--qa-profile`，
   由同一控件回调处理。SQL 选区执行覆盖工具栏按钮和编辑器上下文菜单的鼠标路径。
-  主动断开菜单保留显式 skip，关窗、后端会话回收及重启未连接仍由现有用例验证。
+  主动断开从隔离 X11 的真实指针右键打开资源菜单，并经确认框断开。关窗、会话回收及重启状态仍由独立用例验证。
 - 新行编辑器双击入口保留原有 skip，初始状态规则由 Linux Rust 单测覆盖。
 - 功能验收范围为交互、状态及可访问性语义。
 - MCP HTTP 用例的端口由内核临时分配，释放后再交给应用绑定。并行时若被其他本机进程

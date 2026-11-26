@@ -77,8 +77,8 @@
 //!   `--qa-objects-activate <name>`（发 `GtkColumnView::activate`，与双击 / 回车同一条
 //!   路径，会开表数据标签）；
 //!   `--qa-expect-objects selected=<name>` 断言哪一行处于选中态；
-//! - `--qa-search <query>`（走搜索框防抖同一条路径）+ `--qa-search-clear`（清空退出筛选）
-//!   + `--qa-search-click-object`（点结果里第一个表 / 视图行，走 `row-activated` 信号：
+//! - `--qa-search <query>`（输入并筛选本地已加载资源）+ `--qa-search-clear`（清空退出筛选）
+//!   + `--qa-search-click-object`（点结果里第一个表 / 视图行，走 `GtkListView::activate` 信号：
 //!     打开数据标签而结果页原地保留，v0.2.4）+ `--qa-expect-search <field>=<value>`：
 //!     `hits|row|rows|highlight|status|state`，
 //!     断言结果树的**行序**与**高亮行集合**（v0.2.4）；
@@ -1047,19 +1047,19 @@ struct Args {
     tree_activate: Option<String>,
     /// `--qa-tree-search <query>`：搜索关键词。
     tree_search: Option<String>,
-    /// `--qa-search <query>`：走搜索框 `changed` → 防抖 → 请求的同一条路径（#搜索树）。
+    /// `--qa-search <query>`：走搜索框输入触发本地筛选的同一路径。
     search_query: Option<String>,
     /// `--qa-expect-search <field>=<value>`：结果行序 / 高亮行集合的断言（可重复）。
     expect_search: Vec<SearchExpectation>,
     /// `--qa-search-clear`：搜索后把输入框清空（走用户清空 / Esc 同一条路径）。
     search_clear: bool,
     /// `--qa-search-enter`：在搜索框上发一次真实的回车（`activate` 信号），
-    /// 文本不变也必须重新派发一次搜索。
+    /// 断言远程派发次数没有变化。
     search_enter: bool,
-    /// `--qa-tree-click-result`：点第一条搜索结果（跳转）。
+    /// `--qa-tree-click-result`：点第一条远程搜索结果（跳转）。
     tree_click_result: bool,
     /// `--qa-search-click-object`（v0.2.4）：点结果里第一个**可打开的对象**行
-    /// （表 / 视图），走真实 `row-activated` 信号 → 打开数据标签，结果页原地保留。
+    /// （表 / 视图），走真实 `GtkListView::activate` 信号 → 打开数据标签，结果页原地保留。
     search_click_object: bool,
     /// `--qa-tree-load-more`：点第一个「加载更多…」占位行。
     tree_load_more: bool,
@@ -1741,7 +1741,7 @@ pub fn tree_search() -> Option<String> {
     ARGS.get().and_then(|args| args.tree_search.clone())
 }
 
-/// 走搜索框同一条输入路径的关键词（`--qa-search`，含 250ms 防抖）。
+/// 走搜索框同一条输入路径的本地筛选关键词（`--qa-search`）。
 #[must_use]
 pub fn search_query() -> Option<String> {
     ARGS.get().and_then(|args| args.search_query.clone())
@@ -3126,15 +3126,12 @@ fn parse(args: &[String]) -> Result<Args, String> {
     }
     // 点结果行必须先有结果：没有搜索参数时这一步只会重试 40 次后静悄悄过去，
     // 直接拒掉才能看出是脚本写错了。
-    if parsed.search_click_object && parsed.search_query.is_none() && parsed.tree_search.is_none() {
-        return Err(
-            "--qa-search-click-object 需要 --qa-search 或 --qa-tree-search（先跑一次搜索）"
-                .to_owned(),
-        );
+    if parsed.search_click_object && parsed.tree_search.is_none() {
+        return Err("--qa-search-click-object 需要 --qa-tree-search（显式远程搜索）".to_owned());
     }
     if parsed.search_enter && parsed.search_query.is_none() && parsed.tree_search.is_none() {
         return Err(
-            "--qa-search-enter 需要 --qa-search 或 --qa-tree-search（先搜一次，再验证文本不变的重复搜索）"
+            "--qa-search-enter 需要 --qa-search 或 --qa-tree-search（先输入关键词，再验证回车不派发远程搜索）"
                 .to_owned(),
         );
     }
@@ -4647,16 +4644,24 @@ mod tests {
         assert!(parse(&args(&["app", "--qa-expect-search", "row="])).is_err());
         assert!(parse(&args(&["app", "--qa-expect-search", "bogus=1"])).is_err());
 
-        // v0.2.4：`--qa-search-click-object` 要跟着一次搜索一起用（否则只会重试到超时）。
         let clicked = parse(&args(&[
             "app",
-            "--qa-search",
+            "--qa-tree-search",
             "user",
             "--qa-search-click-object",
         ]))
         .unwrap();
         assert!(clicked.search_click_object);
         assert!(parse(&args(&["app", "--qa-search-click-object"])).is_err());
+        assert!(
+            parse(&args(&[
+                "app",
+                "--qa-search",
+                "user",
+                "--qa-search-click-object"
+            ]))
+            .is_err()
+        );
 
         // 路径断言：`*` 只匹配一段，不能把 `users` 当成 `user`。
         assert!(search_path_matches(

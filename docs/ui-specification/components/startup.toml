@@ -151,7 +151,7 @@ source = "src/ui.rs::show_startup_workspace、src/shell.rs::Toolbar::set_backend
 [[component.interaction]]
 trigger = "load"
 precondition = "连接注册表为空（没有已保存的连接）"
-result = "侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么"
+result = "侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接。保存后可在导航中找到它。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么"
 source = "src/tree.rs:1520、src/tree.rs:3179"
 
 [[component.interaction]]
@@ -162,5 +162,5 @@ source = "src/ui.rs::show_objects_for_kind"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0f51390e3bb1"
-evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：启动摘要、多个草稿、首次连接保留工作区及标签顺序。"
+spec_hash = "00cf99ead43e"
+evidence = "tests/ui/linux/test_01_startup.py::test_startup_readiness：空注册表显示导航标题与保存连接说明（run.Sa2tjWUj）；test_18_unbound_query.py 覆盖启动态固定 Objects 和草稿、首次连接及容量保护（run.GrmzAToC）。"

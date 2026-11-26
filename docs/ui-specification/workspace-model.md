@@ -40,7 +40,7 @@
 |---|---|---|---|
 | 01 窗口外壳 | `header_height` | 全宽标题与菜单 | `AdwHeaderBar` |
 | 02 主工具条 | `toolbar_height` | 左组：连接 / 新建查询；分隔线；**种类入口**（`Tables` / `Views` / `Functions` / `Queries`，纯文字无图标，与「新建查询」同一套 flat 样式、离分隔线同样 14px）；高亮 = 当前列的种类。右侧为三个布局按钮；工作区外壳建立后可用 | `GtkBox` + flat 按钮（窗口级，挂 headerbar 之下） |
-| 03 对象树 | 自适应 | 导航搜索、反馈、对象树 | 外层 `GtkPaned` 起始侧 |
+| 03 对象树 | 自适应 | 连接标题、固定搜索、反馈、独立滚动对象树 | 外层 `GtkPaned` 起始侧 |
 | 04 工作区 | 自适应 | 标签、业务内容、行操作和分页 | 内层 `GtkPaned` 起始侧 |
 | 05 状态栏 | `status_height` | 全宽 SQL 摘要、最后刷新、启动态连接摘要及 MCP 状态 | 窗口底部 `GtkBox` |
 | 06 信息面板 | 自适应 | Inspector 内容 | 内层 `GtkPaned` 末端侧 |
@@ -77,13 +77,13 @@
 
 ## 4. 对象树
 
-见 [`components/object_tree.toml`](components/object_tree.toml)（25 个组件）。侧栏宽度的算术在本文
+见 [`components/object_tree.toml`](components/object_tree.toml)。侧栏宽度的算术在本文
 §2.1，行为口径的指针见行为契约 §2。
 
 ## 5. 信息面板（Inspector）
 
-见 [`components/inspector.toml`](components/inspector.toml)（20 个组件：标题块、四种视图、两页切换、
-空态）。宽度与钳制规则在 §2.1 与 metrics.toml。
+见 [`components/inspector.toml`](components/inspector.toml)。表信息承接导航叶节点的索引与触发器分页、
+刷新和 SQLite 触发器独立 DDL 操作。宽度与钳制规则在 §2.1 与 metrics.toml。
 
 ## 6. 表格浏览
 
@@ -126,7 +126,6 @@
 |---|---|
 | 导入（`IN`） | 按钮禁用 + tooltip「导入在 v0.2.5 提供」，不弹假对话框 |
 | 导出（`EX`） | CSV 已可用：查询结果导出**已加载的行**（不重跑 SQL）；表数据弹出范围选择：**当前页**（默认，只写本页已加载行）或**整张表**（按 offset 逐页取回、写进同一个文件，带进度与取消；取消 / 失败不留半截文件）。JSON / SQL 格式禁用并说明 |
-| `Functions` / `Queries` 分组 | v0.2.3.3 起**只画入口**：分组行在树里可见（带图标、英文名），展开写一行「尚未实现（点开看说明）」，0 次 RPC、不摆假数据 |
 | `More` 菜单 | 只放已实现项；空则隐藏 |
 | 结构对比、ER 图、数据同步 | 不出现 |
 | 视图切换（`▦ / ▥`） | 面板视图不实现，按钮隐藏 |

@@ -8,7 +8,7 @@
 
 **已接入后端 gRPC**：启动后按下面「启动顺序」完成握手，窗口在
 Loading / Connected / Error / Disconnected 四态之间切换。握手成功后**直接落地工作区**：
-侧栏是与连接态**同一个对象树**（`My Connections` + 已保存连接，全部处于未连接态；
+侧栏是与连接态**同一个对象树**（`Connections` 标题与已保存连接，全部处于未连接态；
 对象树搜索框在窗口左下角的**状态栏左边沟**，与树同一列宽），主区域是固定 `Objects` 标签的空态
 （「从左侧选择一个连接开始」），状态栏显示「未连接」、驱动数与浏览会话数；
 后端版本 / 协议 / PID / 端点文件 / 驱动清单在「帮助 → 关于 Squarvo」里
@@ -165,7 +165,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/main.rs` | 应用入口与动作（`Ctrl+Q` 退出：有窗口时先 `window.close()`，与关闭按钮同一条脏行守卫） |
 | `src/ui.rs` | 窗口外壳（区域 01：`AdwHeaderBar` + 标题规则 + 主菜单与窗口动作）、四态状态页、启动态落地与「关于 Squarvo」诊断、事件泵与关闭流程 |
 | `src/shell.rs` | 区域 02–06 的外壳：主工具条、`GtkPaned` 侧栏 / 工作区、信息面板、两行状态栏；模块文档给出六个区域的槽位表 |
-| `src/startup.rs` | 启动落地工作区（#139）：未连接时复用连接态的对象树（搜索 + `My Connections`）、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
+| `src/startup.rs` | 启动落地工作区（#139）：未连接时复用连接态的对象树（固定资源搜索与 `Connections` 标题）、固定 `Objects` 空态、状态栏「未连接 · 驱动 N · 浏览会话 M」 |
 | `src/layout.rs` | 布局算术（§1 / §2.1）的常量与纯函数（`content_height` / `grid_width` / `grid_height` / `status_y` / 拖拽钳制），含 1200×800 与 960×640 单测 |
 | `src/theme.rs` | 紧凑密度 CSS（全局 `CssProvider`，行高 24/32、字号 12/13/11，最小点击区 24×24）；表格右边界与**下边界**（`row:last-child`）、图标按钮命中区 |
 | `src/icons.rs` + `resources/icons/` | 图标标准与自有符号图标：唯一尺寸 16×16（以状态栏 `+` 为基准）+ 固定命中区 28×24，`--qa-layout-audit` 断言；`resources/icons/*.svg` 由 `build.rs` 编成 GResource（漏斗等 Adwaita 没有的形状） |
@@ -185,7 +185,7 @@ CI 也跑这三项：`cargo fmt --all -- --check`、`cargo clippy --all-targets 
 | `src/table_data.rs` | 表编辑纯逻辑：文本 → 强类型值、NULL/空串、全文本草稿与批次构造、风险判定、只读文案、事务状态机（可单测） |
 | `src/data_page.rs` | 数据页：虚拟化网格（`DataRowStore`）、单元格编辑弹窗、提交/回滚与风险确认、事务控制行（开始 / 提交 / 回滚互斥显示）、逐行错误列表 |
 | `src/backend/metadata.rs` | 元数据域（#86）：节点/种类映射、请求构造、DDL 来源与错误分类（纯逻辑，可单测）+ 独立元数据线程与主线程请求路由（`MetadataHub`） |
-| `src/tree.rs` | 对象树：`GtkTreeListModel` 懒加载、自定义展开箭头、分页「加载更多」、搜索防抖（250 ms）与跳转、树的健康状态 |
+| `src/tree.rs` | 对象树：`GtkTreeListModel` 懒加载、自定义展开箭头、分页「加载更多」、已加载资源筛选、显式远程搜索与定位、树的健康状态 |
 | `src/ddl.rs` | DDL 面板：`GetDdl` 正文（与表信息同字号、不折行、横向滚动）、拼装警示、四态文案 |
 | `src/proto.rs` | 由 `proto/` 生成、位于 `OUT_DIR` 的客户端代码（勿手改） |
 | `scripts/bench.sh` | 可复现基准：冷启动、空闲内存、10 万行、200 列宽表、不滚动背压证据 |
@@ -529,7 +529,7 @@ debug 与 release 的差异来自构建类型：差别集中在**值转换与批
   token 的语义不一致；
 - **分页**：每页 500，`next_page_token` 非空时在末尾显示「加载更多…（已加载 N 个）」，
   点它继续；`truncated` 只在本页被上限截断**且没有下一页**时才提示「有数据拿不到」；
-- **搜索**：输入防抖 250 ms，带 `filter.name.contains` 请求根层；关键词原样下推，
+- **搜索**：默认按名称和别名筛选已加载的导航资源。显式远程搜索才发送 `filter.name.contains`，
   客户端不拼通配符、不做二次过滤（大小写敏感性跟随数据库）。空结果与
   `metadata.permission_denied` 是两句不同的话（后者给出授权建议）；点结果在树里
   逐层展开并选中，失败时在状态行说明「不在当前库的目录层下」；
@@ -715,7 +715,7 @@ rowid / ctid 之类的近似定位方式。
 | `--qa-open-about` | 握手完成后打开「关于 Squarvo」，截图目标是该对话框（#139） |
 | `--qa-expect-about <substring>` | 「关于 Squarvo」里必须出现的文案（可重复，例如 `后端版本`、`SQLite`；#139） |
 | `--qa-refresh` | 触发一次与 `F5` 相同的 `win.refresh` 动作（不另开刷新路径）：有表标签刷当前表、否则刷对象树，日志写明走了哪条 |
-| `--qa-search-enter` | 在搜索框发一次真实 `activate`（回车）：**文本不变也重搜**；派发次数必须 +1（自断言）。需与 `--qa-search` / `--qa-tree-search` 同用 |
+| `--qa-search-enter` | 在搜索框发一次真实 `activate`（回车），断言远程派发次数保持。需与 `--qa-search` 或 `--qa-tree-search` 同用 |
 | `--qa-open-menu` | 截图后把主菜单弹出层与「表」子菜单渲染成 PNG，并把菜单模型逐项打进日志；需要活动窗口（无人值守时可 `GDK_BACKEND=broadway` + `gtk4-broadwayd` 跑） |
 
 `--qa-expect-*` 必须与 `--screenshot` 一起用（断言发生在截图那一刻，画面先落盘再断言，
@@ -1186,25 +1186,23 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
   `--qa-tree-activate <库名>`（走双击那条 `activate` 信号）；
 - `--qa-tree-open <name>`：选中并打开表（与双击行同一条回调），进入数据页；
 - `--qa-tree-activate <name>`：**走双击 / 回车那条 `GtkListView::activate` 信号**激活节点
-  （v0.2.3.2）：表 / 视图应打开数据标签，库 / schema 才展开。与 `--qa-tree-open` 的区别是
-  它不直接调打开回调，而是回到「激活」的判定里，用来回归「双击表只展开、不打开」；
+  表或视图打开数据标签，库或 Schema 浏览固定 Objects。真实鼠标双击库或 Schema
+  时，第二击控制展开或收起；
 - `--qa-tree-ddl` 在 v0.2.3.2 **已移除**（右键「查看 DDL」与侧栏 DDL 按钮一起删掉）：
   旧脚本传这个参数会直接报错，不会安静地什么都不做。DDL 改在信息面板的 `[DDL]` 页看；
-- `--qa-search <query>`（v0.2.4）：把关键词填进搜索框，走用户输入同一条
-  `changed` → 250 ms 防抖 → 请求路径（**不**跳过防抖）；`--qa-search-clear` 随后清空
+- `--qa-search <query>`：输入关键词并筛选已加载资源。`--qa-search-clear` 随后清空
   输入框，走用户清空 / `Esc` 的同一条清理路径（用于证明结果行与高亮不残留）；
-  `--qa-expect-search <字段=值>`（可重复）在截图时刻断言搜索结果：
+  `--qa-expect-search <字段=值>`（可重复）断言远程搜索的结果状态：
   `hits=N`（高亮行数）、`row=连接/库/Tables/表`（必须出现，`*` 匹配单段，可逗号分隔多条）、
   `rows=…`（完整行序，逐项相等）、`highlight=…`（**真正命中的行**按显示顺序逐项相等；
   界面自 v0.2.3.4 起不再画命中高亮，结果行与树里的同一行像素一致，这个字段只剩数据态）、
   `status=…`（状态行包含，如 `2 个连接 · 3 个对象`）、`state=results|empty|denied|failed|idle`；
   `--qa-search-click-object`（v0.2.4）点结果里**第一个可打开的对象行**（表 / 视图），走结果行
-  真实的 `row-activated` 信号——与用户单击结果行同一条路径，不是直接调打开回调。日志里会出现
+  真实的 `GtkListView::activate` 信号——与用户单击结果行同一条路径，不是直接调打开回调。日志里会出现
   `[qa] … 点击搜索结果 <路径>` 与 `[tree] 打开表 <路径>（搜索结果点击…）` + `[tabs] 新建表标签`，
   而**没有**「跳转成功」（说明没有切回对象树去逐层定位）；配合 `--qa-expect-search state=results`
-  可以断言点完之后结果页与搜索框仍原样保留。必须与 `--qa-search` / `--qa-tree-search` 同用；
-- `--qa-tree-search <query>`：把关键词填进搜索框并搜索（与用户输入同一条路径，
-  只是跳过键盘；注意 `--qa-expect-tree results=N` 现在数的是**结果页行数**，含连接 /
+  可以断言点完之后结果页与搜索框仍原样保留。必须与 `--qa-tree-search` 同用；
+- `--qa-tree-search <query>`：填入关键词并显式发起远程搜索（注意 `--qa-expect-tree results=N` 现在数的是**结果页行数**，含连接 /
   库 / 分组祖先行）；`--qa-tree-click-result` 点第一条结果，`--qa-tree-load-more`
   点第一个「加载更多…」占位行；`--qa-tree-disconnect <name>` 断开指定连接的浏览会话
   （与右键菜单「断开连接」同一条路径，包含确认框；排在搜索步骤之前）；
@@ -1236,9 +1234,8 @@ XDG_CONFIG_HOME=/tmp/sqarvo-cfg SQARVO_QA_PASSWORD='***' \
 
 ### 多连接注册表与每连接浏览会话（#114）
 
-树根是 `My Connections`：`connections.json` 里的每条连接一个节点，与「当前是否连上」无关；
-未连接的节点点一下就用已保存的凭据建立一条**浏览会话**（对象树 / 搜索 / DDL 都走它，
-不执行用户 SQL）。数据页仍绑定「保存并连接」建立的那条会话（一标签一会话在 #116）。
+`Connections` 下列出已保存档案。双击未连接的档案使用现有凭据建立浏览会话，
+导航懒加载、远程搜索与 DDL 使用该会话。各普通标签使用自己的会话。
 
 ```bash
 # 先种一条 SQLite 连接（免凭据），再让 MariaDB 通过对话框成为数据页连接，
@@ -1282,9 +1279,7 @@ cd frontend/linux
 启动态的形状与连接态一致（#155 之前启动态外壳的 `Rc<Shell>` 被丢弃，面板从不落位、
 `Objects` 也不是固定页；之后启动态侧栏也改为复用同一个对象树）：
 
-- **侧栏是同一个 `tree::TreePanel`**：`My Connections` 与已保存连接节点都与连接态一致，
-  搜索框同样挂在状态栏左边沟（位置与连接态相同），只是所有连接显示为「未连接」；不再是
-  另一套大行连接列表；
+- **侧栏共用 `tree::TreePanel`**。标题和搜索固定在导航顶部，已保存档案初始显示未连接状态。
 - **信息面板在启动态即常驻**（默认 280，240–520 可拖；**窗口级记忆**，启动态与连接态
   读同一个值，点击连接不再从 280 跳成某条连接的 240），不再折叠、也没有「无面板」那一档；
   空态与选中态共用同一套外壳（标题「信息面板」+ 分隔线），内容区留白、不写说明文字；

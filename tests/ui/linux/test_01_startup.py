@@ -11,7 +11,7 @@ pytestmark = pytest.mark.smoke
 def test_startup_readiness(app_bare):
     """应用启动：AT-SPI 可见 + 主窗口出现 + 后端握手完成的状栏摘要。
 
-    注册表组件: startup, status_bar。
+    注册表组件: startup, startup.workspace, status_bar。
     """
     with step("startup_ready"):
         expect(app_bare.app is not None, "应用出现在 AT-SPI 总线", app_bare.app)
@@ -20,6 +20,10 @@ def test_startup_readiness(app_bare):
         lines = A.wait_until(lambda: [l for l in ops.status_text(frame) if "驱动" in l],
                              30, "状态栏驱动摘要（后端握手完成）")
         expect(len(lines) >= 1, "状态栏给出「… 驱动 N …」摘要行", lines)
+        navigation = A.find_one(frame, role_in=("grouping",), name="导航", timeout=10)
+        A.find_one(navigation, role_in=("label",), name="连接")
+        A.find_one(navigation, role_in=("label",),
+                   name="用工具条的「连接」保存一条连接。保存后可在导航中找到它。", timeout=10)
 
 
 def test_main_window_accessibility(app_bare):

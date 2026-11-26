@@ -7,7 +7,6 @@
 """
 import pytest
 
-import adapter as A
 import ops
 from ops import expect, step
 
@@ -23,7 +22,7 @@ def test_sqlite_connection_open(app_connected):
         frame = app_connected.frame()
         row = ops.find_row(frame, "uitest.db", timeout=0)
         expect(row is not None, "对象树存在指向测试库文件的连接行", ops.tree_rows(frame)[:4])
-        texts = [A.nm(x) for x in A.query(row, role_in=("label",), max_depth=8)]
+        texts = ops.tree_row_texts(row)
         expect(any("已连接" in t for t in texts), "连接行徽标为「已连接」", texts)
     with step("status_bar"):
         lines = ops.status_text(frame)

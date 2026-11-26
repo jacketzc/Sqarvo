@@ -261,6 +261,7 @@ struct Entry {
     connection_id: String,
     session_id: String,
     server_version: String,
+    capabilities: Vec<String>,
     latency_millis: Option<u64>,
     detail: String,
     /// 该连接自己的元数据通道（一个连接一条）。
@@ -763,6 +764,7 @@ impl ConnectionRegistry {
             connection_id: String::new(),
             session_id: String::new(),
             server_version: String::new(),
+            capabilities: Vec::new(),
             latency_millis: None,
             detail: l10n::t("object_tree.detail_click_to_connect").to_owned(),
             hub: None,
@@ -1001,6 +1003,15 @@ impl ConnectionRegistry {
             .map(|entry| entry.key.clone())
     }
 
+    /// Capability advertised by the active browsing session.
+    pub fn session_supports(&self, session_id: &str, capability: &str) -> bool {
+        self.entries.borrow().iter().any(|entry| {
+            entry.state.is_connected()
+                && entry.session_id == session_id
+                && entry.capabilities.iter().any(|name| name == capability)
+        })
+    }
+
     /// 某条会话所在连接的驱动 ID（SQL 引号风格按它选）。
     #[must_use]
     pub fn driver_for_session(&self, session_id: &str) -> Option<String> {
@@ -1087,6 +1098,7 @@ impl ConnectionRegistry {
                     session_id,
                     latency_millis,
                     server_version,
+                    capabilities,
                     ..
                 } = session;
                 if !self.entries.borrow().iter().any(|entry| entry.key == key) {
@@ -1121,6 +1133,7 @@ impl ConnectionRegistry {
                     entry.connection_id = connection_id;
                     entry.session_id = session_id.clone();
                     entry.server_version = server_version;
+                    entry.capabilities = capabilities;
                     entry.latency_millis = Some(latency_millis);
                     entry.detail = l10n::tf(
                         "object_tree.detail_browse_session",

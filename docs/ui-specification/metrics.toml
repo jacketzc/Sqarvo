@@ -86,7 +86,13 @@ badge_min_height = 26   # 26 × 1.0 = 26
 secondary_min_height = 22   # 22 × 1.0 = 22
 radius_sm = 6   # 6 × 1.0 = 6
 radius_md = 8   # 8 × 1.0 = 8
-tree_arrow_box = 18   # 18 × 1.0 = 18
+tree_arrow_box = 24
+navigation_header_height = 32
+navigation_header_button = 26
+navigation_row_height = 26
+navigation_search_height = 30
+navigation_indent = 14
+navigation_arrow_icon = 12
 row_number_width = 32   # 32 × 1.0 = 32
 column_width = 200   # 200 × 1.0 = 200
 column_resize_hit = 6   # 列边界拖宽把手的命中热区（DIP）：6 × 1.0 = 6（与 Linux 的 6px 同口径）
@@ -171,7 +177,13 @@ badge_min_height = 33   # 26 × 1.25 = 32.5
 secondary_min_height = 28   # 22 × 1.25 = 27.5
 radius_sm = 8   # 6 × 1.25 = 7.5
 radius_md = 10   # 8 × 1.25 = 10
-tree_arrow_box = 23   # 18 × 1.25 = 22.5
+tree_arrow_box = 30
+navigation_header_height = 40
+navigation_header_button = 33
+navigation_row_height = 33
+navigation_search_height = 38
+navigation_indent = 18
+navigation_arrow_icon = 15
 row_number_width = 40   # 32 × 1.25 = 40
 column_width = 250   # 200 × 1.25 = 250
 column_resize_hit = 8   # 6 × 1.25 = 7.5 → 8
@@ -256,7 +268,13 @@ badge_min_height = 39   # 26 × 1.5 = 39
 secondary_min_height = 33   # 22 × 1.5 = 33
 radius_sm = 9   # 6 × 1.5 = 9
 radius_md = 12   # 8 × 1.5 = 12
-tree_arrow_box = 27   # 18 × 1.5 = 27
+tree_arrow_box = 36
+navigation_header_height = 48
+navigation_header_button = 39
+navigation_row_height = 39
+navigation_search_height = 45
+navigation_indent = 21
+navigation_arrow_icon = 18
 row_number_width = 48   # 32 × 1.5 = 48
 column_width = 300   # 200 × 1.5 = 300
 column_resize_hit = 9   # 6 × 1.5 = 9

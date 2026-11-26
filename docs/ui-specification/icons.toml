@@ -55,6 +55,24 @@ id = "tree.connection"
 linux = "network-server-symbolic"
 
 [[icon]]
+id = "tree.connection.local"
+linux = "drive-harddisk-symbolic"
+note = "SQLite 连接"
+
+[[icon]]
+id = "tree.connection.generic"
+linux = "folder-remote-symbolic"
+note = "连接驱动没有专用图标时的通用图标"
+
+[[icon]]
+id = "tree.collapse_all"
+linux = "pan-up-symbolic"
+
+[[icon]]
+id = "tree.more"
+linux = "view-more-symbolic"
+
+[[icon]]
 id = "tree.group.tables"
 linux = "view-grid-symbolic"
 
@@ -69,22 +87,6 @@ linux = "system-run-symbolic"
 [[icon]]
 id = "tree.group.queries"
 linux = "text-x-generic-symbolic"
-
-[[icon]]
-id = "tree.table_group.fields"
-linux = "view-list-symbolic"
-
-[[icon]]
-id = "tree.table_group.indexes"
-linux = "view-sort-ascending-symbolic"
-
-[[icon]]
-id = "tree.table_group.foreign_keys"
-linux = "insert-link-symbolic"
-
-[[icon]]
-id = "tree.table_group.triggers"
-linux = "system-run-symbolic"
 
 [[icon]]
 id = "tree.note.loading"
@@ -171,10 +173,6 @@ linux = "sqarvo-page-next-symbolic"
 [[icon]]
 id = "pager.last"
 linux = "sqarvo-last-page-symbolic"
-
-[[icon]]
-id = "sort.ascending"
-linux = "view-sort-ascending-symbolic"
 
 [[icon]]
 id = "sort.descending"

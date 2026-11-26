@@ -7,7 +7,7 @@
 
 前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：Linux Active、Windows Rewriting、macOS Planned。同步列仅显示 Active 平台。
 
-共 218 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 233 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。
@@ -1011,6 +1011,16 @@ kind `control` · status `active` · parent `dialogs.about`
 | `inspector.pane_switch.ddl` | 　　「DDL」按钮 | control | active | done |
 | `inspector.pane_switch.info` | 　　「表信息」按钮 | control | active | done |
 | `inspector.object.info` | 　　表信息页（列 · 主键 · 索引 · 触发器 · 已加载行数） | container | active | done |
+| `inspector.object.info.children` | 　　　索引与触发器 | container | active | done |
+| `inspector.object.info.children.trigger_picker` | 　　　　触发器选择 | control | active | done |
+| `inspector.object.info.children.load_more` | 　　　　加载更多索引和触发器 | control | active | done |
+| `inspector.object.info.children.retry` | 　　　　重试读取索引和触发器 | control | active | done |
+| `inspector.object.info.children.view_ddl` | 　　　　查看触发器 DDL | control | active | done |
+| `inspector.object.info.refresh` | 　　　刷新表信息 | control | active | done |
+| `inspector.object.info.trigger_ddl` | 　　　触发器 DDL 正文 | container | active | done |
+| `inspector.object.info.trigger_ddl.copy` | 　　　　复制触发器 DDL | control | active | done |
+| `inspector.object.info.trigger_ddl.back` | 　　　　返回表信息 | control | active | done |
+| `inspector.object.info.trigger_ddl.retry` | 　　　　重试读取触发器 DDL | control | active | done |
 | `inspector.object.info.columns` | 　　　列清单（列名 · 类型 · 可空 · 主键） | container | active | done |
 | `inspector.object.info.columns.row` | 　　　　列行（列名 · 类型 · 可空 · 主键标记） | row | active | done |
 | `inspector.object.info.pk` | 　　　主键节（主键列 · 读不到时的说明行） | control | active | done |
@@ -1152,12 +1162,142 @@ kind `control` · status `active` · parent `inspector.pane_switch`
 kind `container` · status `active` · parent `inspector.object`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_lg`、`gap_sm`
-- 同步：Linux done（test_15_refresh_regressions.py 验证后台标签关闭与 A 分页时预览 B，计数更新不提交元数据请求）
-- 实现备注：分节渲染：列、主键、索引、触发器、行；没有数据的节整节不出现。按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。索引 / 触发器读取失败时那一节换成「读取失败」+「<文案>（<稳定错误码>）」，已读回的列仍然显示。内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py 覆盖显式分页、重试、刷新、触发器查看和对象切换；test_15_refresh_regressions.py 验证行数更新不提交元数据请求。）
+- 实现备注：分节提供列、主键、索引、触发器和行数。索引与触发器保留分页状态和显式刷新入口。按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。索引 / 触发器读取失败时显示错误及重试入口，已读回的本表资料仍然显示。内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 切到表信息页（每次都重新查询列 / 主键 / 索引与触发器） | 按节渲染本次读回的内容：列、主键、索引与触发器、当前对象的已加载行数；索引与触发器读取失败时保留错误码，不回退到上一次对象的数据；只读到第一页时如实写「不完整列表」，不冒充完整 | `src/inspector.rs:1070、src/inspector.rs:1250` |
+| load | 切到表信息页（每次都重新查询列 / 主键 / 索引与触发器） | 查询当前表的列、主键和首批索引与触发器。后续页仅由显式操作读取，SQLite 触发器可在表信息中读取独立 DDL。过期响应不写入其他对象的展示。 | `src/inspector.rs::Inspector::load_info` |
+
+### `inspector.object.info.children` 索引与触发器
+
+kind `container` · status `active` · parent `inspector.object.info`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「索引与触发器」
+- 原生控件：gtk:GtkBox
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | 读取当前表的索引和触发器 | 显示已读取的索引和触发器。分页或重试失败时保留本次已加载的数据，错误带稳定错误码。 | `src/inspector.rs::Inspector::finish_info_children` |
+
+### `inspector.object.info.children.trigger_picker` 触发器选择
+
+kind `control` · status `active` · parent `inspector.object.info.children`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「选择触发器」
+- 原生控件：gtk:GtkDropDown
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 已读取一个或多个触发器 | 选中带完整对象引用的触发器。仅改变选择，不发元数据请求。 | `src/inspector.rs::ChildControls::new` |
+
+### `inspector.object.info.children.load_more` 加载更多索引和触发器
+
+kind `control` · status `active` · parent `inspector.object.info.children`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「加载更多索引和触发器」
+- 原生控件：gtk:GtkButton
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 当前表还有有效分页令牌 | 显式读取一页索引与触发器，追加到当前表的结果。正在读取时禁止重复派发。 | `src/inspector.rs::Inspector::continue_info_children` |
+
+### `inspector.object.info.children.retry` 重试读取索引和触发器
+
+kind `control` · status `active` · parent `inspector.object.info.children`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「重试读取索引和触发器」
+- 原生控件：gtk:GtkButton
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 当前表的索引或触发器读取失败 | 重试失败页。分页状态失效时从第一页重读，成功前保留已显示数据。 | `src/inspector.rs::Inspector::continue_info_children` |
+
+### `inspector.object.info.children.view_ddl` 查看触发器 DDL
+
+kind `control` · status `active` · parent `inspector.object.info.children`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「查看触发器 DDL」
+- 原生控件：gtk:GtkButton
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 当前 SQLite 浏览会话中选中了触发器 | 按选中对象的完整引用请求一次 GetDdl，在表信息中打开触发器正文。 | `src/inspector.rs::Inspector::open_trigger_ddl` |
+
+### `inspector.object.info.refresh` 刷新表信息
+
+kind `control` · status `active` · parent `inspector.object.info`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「刷新表信息」
+- 原生控件：gtk:GtkButton
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 显示当前表的表信息 | 显式重新读取当前表的列、主键及首批索引和触发器。 | `src/inspector.rs::Inspector::force_reload` |
+
+### `inspector.object.info.trigger_ddl` 触发器 DDL 正文
+
+kind `container` · status `active` · parent `inspector.object.info`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「触发器 DDL」
+- 原生控件：gtk:GtkStack + GtkTextView
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | 已明确请求当前 SQLite 触发器的 DDL | 复用 DDL 面板显示数据库原文和所属触发器。切换对象或离开正文使在途结果失效。 | `src/ddl.rs::DdlPanel::show_trigger` |
+
+### `inspector.object.info.trigger_ddl.copy` 复制触发器 DDL
+
+kind `control` · status `active` · parent `inspector.object.info.trigger_ddl`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「复制触发器 DDL」
+- 原生控件：gtk:GtkButton
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 当前触发器已取得 DDL | 复制当前触发器的完整正文到系统剪贴板，不发请求。 | `src/ddl.rs::DdlPanel::build` |
+
+### `inspector.object.info.trigger_ddl.back` 返回表信息
+
+kind `control` · status `active` · parent `inspector.object.info.trigger_ddl`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「返回表信息」
+- 原生控件：gtk:GtkButton
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 显示触发器 DDL | 返回当前表信息和已读页面，不重复读取元数据。 | `src/inspector.rs::Inspector::close_trigger_ddl` |
+
+### `inspector.object.info.trigger_ddl.retry` 重试读取触发器 DDL
+
+kind `control` · status `active` · parent `inspector.object.info.trigger_ddl`
+
+- 样式：槽位 `inspector`
+- 无障碍：可访问名「重试读取触发器 DDL」
+- 原生控件：gtk:GtkButton
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_copy_and_object_isolation）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 当前触发器 DDL 读取失败 | 按原触发器引用重试一次 GetDdl。 | `src/ddl.rs::DdlPanel::show_trigger` |
 
 ### `inspector.object.info.columns` 列清单（列名 · 类型 · 可空 · 主键）
 
@@ -1280,24 +1420,24 @@ kind `control` · status `active` · parent `inspector.object.info`
 
 ## 对象树（`object_tree`）
 
-左侧栏：对象树本体、搜索区、右键菜单与临时提示行。对象树是唯一的数据库对象入口，Objects 页与信息面板都跟着它的选中变化。
+左侧导航包含连接标题、本地筛选及显式远程搜索、资源树、右键菜单与反馈。只有主动浏览会改变固定 Objects 的范围。
 
 | 组件 | 名称 | kind | 状态 | Linux |
 |---|---|---|---|---|
 | `object_tree` | 对象树侧栏 | area | active | done |
 | `object_tree.tree` | 　树本体 | container | active | done |
-| `object_tree.tree.row` | 　　行模板（箭头 · 图标 · 名称 · 行尾文字） | row | active | done |
+| `object_tree.tree.row` | 　　行模板（箭头 · 图标 · 名称 · 状态） | row | active | done |
 | `object_tree.tree.row.expander` | 　　　行首箭头 | control | active | done |
 | `object_tree.tree.row.conn` | 　　　连接行 | row | active | done |
-| `object_tree.tree.row.catalog` | 　　　库 / schema 行 | row | active | done |
-| `object_tree.tree.row.group` | 　　　分组行（Tables / Views / Functions / Queries；表下 Fields / Indexes / Foreign Keys / Triggers） | row | active | done |
+| `object_tree.tree.row.catalog` | 　　　库 / Schema 行 | row | active | done |
+| `object_tree.tree.row.group` | 　　　资源分类行（Tables / Views） | row | active | done |
 | `object_tree.tree.row.object` | 　　　表 / 视图行 | row | active | done |
-| `object_tree.tree.row.field` | 　　　列 / 索引 / 触发器行 | row | active | done |
-| `object_tree.tree.row.placeholder` | 　　　占位行（读取中 / 加载更多 / 读取失败 / 空说明 / 未实现） | row | active | done |
+| `object_tree.tree.row.field` | 　　　列 / 索引 / 触发器行 | row | removed | 已清 |
+| `object_tree.tree.row.placeholder` | 　　　辅助行（读取中 / 加载更多 / 重试 / 空说明） | row | active | done |
 | `object_tree.search` | 　对象树搜索区 | container | active | done |
 | `object_tree.search.box` | 　　搜索输入框 | control | active | done |
 | `object_tree.search.status` | 　　搜索状态行 | control | active | done |
-| `object_tree.search.results` | 　　搜索结果列表 | container | active | done |
+| `object_tree.search.results` | 　　远程搜索结果列表 | container | active | done |
 | `object_tree.ctx_menu` | 　右键菜单 | container | active | done |
 | `object_tree.ctx_menu.connect_saved` | 　　「连接（使用已保存的凭据）」 | item | active | done |
 | `object_tree.ctx_menu.disconnect` | 　　「断开连接」 | item | active | done |
@@ -1310,174 +1450,170 @@ kind `control` · status `active` · parent `inspector.object.info`
 | `object_tree.ctx_menu.open` | 　　「打开」 | item | active | done |
 | `object_tree.ctx_menu.dump_table` | 　　「转储表…」 | item | active | done |
 | `object_tree.hint` | 　侧栏底部临时提示行 | control | active | done |
+| `object_tree.header` | 　连接标题 | container | active | done |
+| `object_tree.header.collapse_all` | 　　全部折叠 | control | active | done |
+| `object_tree.header.more` | 　　导航更多菜单 | control | active | done |
+| `object_tree.header.more.clear_selection` | 　　　清除选择 | item | active | done |
+| `object_tree.search.remote` | 　　搜索已连接的数据库 | control | active | done |
 
 ### `object_tree` 对象树侧栏
 
 kind `area` · status `active`
 
-- 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`sidebar_min`、`sidebar_max`、`row_height_tree`
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection 验证 F5 后旧资源行移出导航，旧菜单被拒绝；test_15_refresh_regressions.py::test_objects_list_refreshes_on_reentry_and_f5 验证 Objects 原作用域重列。）
-- 实现备注：导航侧栏容纳搜索和对象树。搜索框与搜索状态行在导航顶部（见 object_tree.search）。
+- 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`sidebar_min`、`sidebar_max`
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：固定导航容器、真实动作和筛选；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：F5 列表变化拒绝旧菜单。）
+- 实现备注：顶部标题和搜索区固定，资源树独立纵向滚动。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key F5 | 工作区存在，且当前标签不是表数据页（查询标签 / Objects 页 / 启动态） | 整棵树（全部连接）重建：作废已连接连接的层再重读连接层，状态行写「正在重新读取对象树…」；当前标签是表数据页时 F5 刷的是那张表，不重建树 | `src/ui.rs:2495、src/ui.rs:2510、src/tree.rs:1462` |
+| key F5 | 工作区外壳存在，当前页为 Objects 或查询 | 重读已加载的导航层。对象列表沿用原范围；表数据页的 F5 继续刷新该表。 | `src/tree.rs::TreePanel::reload、src/ui.rs` |
 
 ### `object_tree.tree` 树本体
 
 kind `container` · status `active` · parent `object_tree`
 
-- 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`badge_min_height`
-- 无障碍：可访问名「对象树」；Tab 可聚焦；Tab 进入后 ↑ / ↓ 移动选中
-- 原生控件：gtk:GtkListView
-- 同步：Linux done（test_15_refresh_regressions.py::test_navigation_selection_survives_projection_without_requests：折叠并恢复已加载路径后选中同一资源，浏览、DDL、列、主键请求次数保持。test_16_workspace_context.py::test_navigation_target_and_clear_selection：折叠或断开后的明确目标仍优先。）
-- 实现备注：GtkListView + 嵌套 ListStore，每层一个 Level，层级按 source 复用（收起不作废层）。折叠后重新展开复用已读内容、不发请求。层级链固定：`My Connections`（固定标题行，不是可折叠节点）→ 连接（后端握手后由 ListProfiles 异步填充，与是否已连接无关）→ 库 / schema → Tables / Views / Functions / Queries → 对象；表 → Fields / Indexes / Foreign Keys / Triggers；视图下直接列出列，没有分组层。树没有自定义按键控制器：除 ↑ / ↓ / Enter 与 Ctrl+F 外沿用 GTK 默认；↑ / ↓ 是 ListView + SingleSelection 的默认行为，代码不额外接线。
+- 样式：槽位 `sidebar`；尺寸 `navigation_row_height`
+- 无障碍：可访问名「对象树」；Tab 可聚焦，方向键移动或展开，Enter 激活
+- 原生控件：gtk:GtkListView + GtkTreeListModel
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：真实方向键、Enter、筛选与清词恢复当前选择；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：隐藏目标、失效资源与固定页；隔离 GTK reveal_failure_preserves_search_and_newer_explicit_selection、reveal_distinguishes_page_limit_complete_absence_and_incomplete_data。）
+- 实现备注：层级为连接 → 库 → 可选 Schema → 分类 → 对象。GTK 虚拟化列表复用会话内缓存。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key ↑ / ↓ | 树有焦点 | 移动选中和更新 Inspector 预览；只有主动 Browse 才改变 Objects 的范围。过滤、折叠、模型重建保持逻辑选择。明确失效的目标保留到重新选择或清除 | `src/tree.rs:1983` |
-| key Enter | 行有焦点 | 等同于双击（同一回调，走 activate 信号） | `src/tree.rs:2022` |
-| load | 本地后端握手完成 | 异步加载共享连接档案；失败时连接树保持空并在状态栏提示档案加载失败 | `src/ui.rs:669` |
+| key ↑ / ↓ / ← / → | 树有焦点 | 上下键移动逻辑选择；左右键展开、收起或移向父子资源。方向键不改变固定 Objects 范围。 | `src/tree.rs::TreePanel::install_handlers` |
+| key Enter | 资源或可操作的辅助行有焦点 | 库、Schema、分类主动浏览固定 Objects；其他行激活其对应动作。 | `src/tree.rs::TreePanel::activate_row` |
+| load | 显示的模型折叠、过滤或重建 | 保留逻辑选择。失效目标持续拦截动作；明确重新选择或清除后更新目标。 | `src/tree.rs::TreePanel::restore_visible_selection` |
+| load | 显式定位命令给出完整资源身份 | 在捕获档案的现有浏览会话内沿目标路径每层最多追加两页。成功后定位并在必要时清词；失败保留选择、检索词和搜索模式。达到上限、完整路径找不到资源与读取未完成分别提示。后续定位、主动选择或更改搜索使旧定位失效。 | `src/tree.rs::TreePanel::reveal_target` |
 
-### `object_tree.tree.row` 行模板（箭头 · 图标 · 名称 · 行尾文字）
+### `object_tree.tree.row` 行模板（箭头 · 图标 · 名称 · 状态）
 
 kind `row` · status `active` · parent `object_tree.tree`
 
-- 样式：槽位 `sidebar`；尺寸 `row_height_tree`、`tree_arrow_box`、`gap_xs`、`font_status`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
+- 样式：槽位 `sidebar`；尺寸 `navigation_row_height`、`gap_xs`、`radius_sm`、`navigation_indent`、`gap_sm`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`、`sqarvo_brand_on_soft`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「对象树行」
-- 同步：Linux done（§2.2 单击行 + theme.rs 行状态规则）
-- 实现备注：hover 实际是 alpha(@sqarvo_brand_soft, 0.55)；选中底 @sqarvo_brand_mid + 前景 @sqarvo_brand_on_mid。缩进 4 + 14×层数 目前是代码常量，未进 metrics.toml（P1 补齐）。搜索结果行复用本模板，不另立组件（§2.4：结果就是那棵树）。行尾文字用 dim-label caption（font_status），连接行的行尾是连接态徽标。
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：数据库和分类与连接选择事件各自分派；tests/ui/linux/test_10_layout.py::test_layout_preference_survives_first_connection、test_bottom_state_follows_active_workspace：真实单击后 Enter 激活连接及表；tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：连接状态可访问描述。）
+- 实现备注：名称单行尾截断，完整名称和连接状态保留在 Tooltip 与可访问属性。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行存在 | 只选中：进入选中态，驱动信息面板与 Objects 页换内容；不展开、不打开、不连接 | `src/tree.rs:1983` |
-| hover | 行存在 | 底色换成品牌浅档（alpha 55%），不动前景色 | `src/theme.rs:312` |
+| click | 主动单击资源正文 | 选择资源并将键盘焦点交给该行。库、Schema 与分类同时主动浏览；连接和对象保留当前工作区，后续 Enter 激活所选资源。 | `src/tree.rs::TreePanel::install_handlers` |
 
 ### `object_tree.tree.row.expander` 行首箭头
 
 kind `control` · status `active` · parent `object_tree.tree.row`
 
-- 样式：尺寸 `tree_arrow_box`
-- 无障碍：可访问名「展开 / 收起」；Tab 不可聚焦（不占 Tab 位）
-- 同步：Linux done（§2.2 行首箭头；arrow_button 接线与 set_focusable(false)）
-- 实现备注：扁平按钮 + 箭头图标；只在行可展开时出现，不可展开的行留同宽空白。
+- 样式：尺寸 `tree_arrow_box`、`navigation_arrow_icon`
+- 无障碍：可访问名「展开或折叠」；Tab 不可聚焦（不占 Tab 位）
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_tree_navigation：箭头开合层级；tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：箭头保持活动查询。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行可展开 | 单击即展开 / 收起，不需要双击 | `src/tree.rs:1254` |
+| click | 行有可展开的子层 | 单独控制展开和收起；无业务选择变化。未连接行与对象叶子不提供箭头。 | `src/tree.rs::TreePanel::toggle_branch` |
 
 ### `object_tree.tree.row.conn` 连接行
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 无障碍：可访问名「（行内容：连接显示名 + 连接态徽标）」
-- 图标：`tree.connection`
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：界面与 Inspector 使用 Peer 档案名；无别名 SQLite 显示文件名。resolved_connection_names_are_safe_and_unique 覆盖重名及异常端点。）
-- 实现备注：行尾是连接态徽标（已连接 / 未连接 / 连接中… / 断开中…），与搜索结果同一份文案。树、查询连接选择器和窗口共用显示名。优先用别名，其次用主机端口、文件名或内存库友好名。重名用简短目标信息及稳定顺序消歧义。tooltip 首行用同一个显示名，补充驱动、可安全显示的端点及连接状态。
+- 样式：尺寸 `status_dot_diameter`；颜色 `sqarvo_status_fg`
+- 无障碍：可访问名「（行内容：连接显示名；可访问描述：状态）」
+- 图标：`tree.connection`、`tree.connection.local`、`tree.connection.generic`
+- 同步：Linux done（tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：主动断开后双击重新连接；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：Peer 别名及档案所有权。）
+- 实现备注：状态圆点取浏览会话状态。驱动使用系统符号图标，未知驱动使用通用图标。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 连接行 | 已连接 → 展开 / 收起；未连接 → 按保存的凭据连接；凭据缺失 → 明确提示并打开预填对话框；连接中 / 断开中 → 忽略并写日志 | `src/tree.rs:776、src/tree.rs:1701、src/ui.rs:845` |
-| load | 已连接 | 首次展开发一次目录层 ListNodes 列出库，每页 500（NODE_PAGE_SIZE），带自己的分页 token | `src/tree.rs:2913` |
+| click | 连接行 | 选择连接并更新原有预览。 | `src/tree.rs::TreePanel::install_handlers` |
+| double_click | 连接行 | 已连接时展开或收起；未连接时建立指定档案的浏览会话。缺凭据走原对话框，过渡态沿用连接入口守卫。 | `src/tree.rs::TreePanel::activate_row` |
+| load | 首次展开已连接的档案 | 读该连接的目录页，后续分页由用户显式触发。 | `src/tree.rs::TreePanel::level_for` |
 
-### `object_tree.tree.row.catalog` 库 / schema 行
+### `object_tree.tree.row.catalog` 库 / Schema 行
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 无障碍：可访问名「（行内容：库 / schema 名）」
+- 无障碍：可访问名「（行内容：库或 Schema 名）」
 - 图标：`object.catalog`、`object.schema`
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：同名 main 精确走 Peer；test_04_tree.py 验证箭头展开 / 折叠；objects_target_follows_the_selected_node_kind 覆盖库与 Schema Scope。）
-- 实现备注：库与 schema 不合并成一层：驱动给 schema 层就多一层，资源按档案、catalog 和 Schema 精确区分，运行时另校验浏览会话。
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：库单击与 Enter 浏览固定页；tests/ui/linux/test_04_tree.py::test_tree_navigation：独立展开；objects_target_follows_the_selected_node_kind 单测核对 Schema 作用域。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 行可展开 | 展开 / 收起（展开库只出现分组行，分组仍保持收起） | `src/tree.rs:776` |
-| load | 展开库 / schema | 0 次 RPC：只建 Tables / Views / Functions / Queries 四个静态分组行，且不自动展开 | `src/tree.rs:2913` |
-| click | 主动单击库或 Schema 正文 | 更新逻辑选择并在固定 Objects 页浏览此范围。行箭头只处理展开或折叠 | `src/tree.rs::TreePanel::install_handlers、src/ui.rs::objects_target` |
+| click | 主动单击正文 | 选择完整库或 Schema 范围并浏览固定 Objects。 | `src/ui.rs::objects_target` |
+| double_click | 主动双击正文 | 第一击浏览一次，第二击展开或收起。 | `src/tree.rs::TreePanel::activate_row` |
+| load | 展开库或 Schema | 无 Schema 层的库与 Schema 节点创建支持的分组；驱动声明 Schema 层时按需读取该层。 | `src/tree.rs::TreePanel::child_source` |
 
-### `object_tree.tree.row.group` 分组行（Tables / Views / Functions / Queries；表下 Fields / Indexes / Foreign Keys / Triggers）
+### `object_tree.tree.row.group` 资源分类行（Tables / Views）
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
 - 无障碍：可访问名「（行内容：分组名）」
-- 图标：`tree.group.tables`、`tree.group.views`、`tree.group.functions`、`tree.group.queries`、`tree.table_group.fields`、`tree.table_group.indexes`、`tree.table_group.foreign_keys`、`tree.table_group.triggers`
-- 同步：Linux done（test_15_refresh_regressions.py::test_loaded_rows_survive_tab_switch：单击 Tables 正文切到固定页，再返回数据标签保留 Inspector 行数。）
-- 实现备注：未实现的分组照实写说明，不发请求：Functions / Queries 无 kinds，Foreign Keys 是 capability.unsupported。未实现分组展开只写一行说明：「函数列表尚未实现（点开看说明，不发请求）」「已保存的查询尚未实现（点开看说明）」「驱动未提供外键列表（capability.unsupported）：需要后端增加外键能力后再显示，这里不猜测、不拼装」。空分组的文案按组不同（这一组没有表 / 视图 / 函数 / 已保存的查询；这张表没有字段 / 索引 / 触发器）。
+- 图标：`tree.group.tables`、`tree.group.views`
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：分类双击一次 Objects 请求；tests/ui/linux/test_04_tree.py::test_local_refresh_error_can_retry_while_filtered：未实现分类隐藏、可用空组、读取失败与重试。）
+- 实现备注：在树中隐藏未实现的 Functions、Queries 和驱动明确返回能力不支持的分类。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 分组行 | 展开 / 收起 | `src/tree.rs:776` |
-| load | 展开某个分组 | 发一次 ListNodes(filter.kinds=…)，该层有自己的分页 token；Functions / Queries 不请求；Foreign Keys 写 capability.unsupported 说明 | `src/tree.rs:2913、src/tree.rs:371` |
-| load | 服务端返回空 | 说明行按组给文案：「（这一组没有表）」「（这一组没有视图）」「（这一组没有函数）」「（还没有保存的查询）」「（这张表没有字段 / 索引 / 触发器）」 | `src/tree.rs:360、src/tree.rs:441、src/tree.rs:499` |
-| click | 主动单击分组正文 | 选择此分组并浏览所属范围。程序化选中和右键菜单不发起列表请求 | `src/tree.rs::TreePanel::update_navigation、src/ui.rs::objects_target` |
+| click | 主动单击分类正文 | 选择该分类并按精确范围浏览固定 Objects。 | `src/tree.rs::TreePanel::update_navigation` |
+| double_click | 主动双击分类正文 | 一次浏览，同一手势的第二击无额外请求。 | `src/tree.rs::TreePanel::activate_row` |
+| load | 通过独立箭头展开分类 | 逐组使用已有 ListNodes 请求和分页；空列表保留分组，权限或读取失败保留重试入口。 | `src/tree.rs::TreePanel::finish_page` |
 
 ### `object_tree.tree.row.object` 表 / 视图行
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 无障碍：可访问名「（行内容：对象名 + 种类）」
+- 无障碍：可访问名「（行内容：对象名；可访问描述：种类）」
 - 图标：`object.table`、`object.view`
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：右键打开同一表复用标签，两条连接的同名表各建独立标签。object_identity_is_exact_and_independent_of_browse_session 单测覆盖 schema、种类和大小写。）
-- 实现备注：可打开优先于可展开：表虽然有四组子节点，双击仍是打开数据标签。
+- 同步：Linux done（tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：不同档案的同名表、复用、刷新后新身份；table_and_view_remain_leaf_nodes_even_with_metadata_children 单测确认叶节点。）
+- 实现备注：表和视图是叶节点。表信息仍在 Inspector 中显示字段、索引和触发器；数据网格列菜单提供字段详情。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 行可打开 | 打开表数据标签。档案、catalog、Schema、对象种类和对象身份完全一致时复用已有同类型工作区。只选中对象时预览，Objects 范围保留 | `src/tree.rs:776、src/tabs.rs:1637` |
-| load | 展开表节点 | 0 次 RPC：只建 Fields / Indexes / Foreign Keys / Triggers 四个静态分组行，且不自动展开任何一组；展开某一组才发那一次 ListNodes | `src/tree.rs:2733、src/tree.rs:2756` |
+| click | 具体对象 | 更新选择和原有 Inspector 预览，保留当前工作区与 Objects 范围。 | `src/tree.rs::TreePanel::update_navigation` |
+| double_click | 可打开的对象 | 按完整资源身份打开或复用数据工作区。 | `src/tree.rs::TreePanel::activate_row` |
 
 ### `object_tree.tree.row.field` 列 / 索引 / 触发器行
 
-kind `row` · status `active` · parent `object_tree.tree.row`
+kind `row` · status `removed` · parent `object_tree.tree.row` · → `inspector.object.info`
 
 - 无障碍：可访问名「（行内容：列 / 索引 / 触发器名）」
 - 图标：`object.column`、`object.index`、`object.trigger`、`object.type`
-- 同步：Linux done（§2.2 双击列 / 索引 / 触发器）
+- 同步：Linux removed
 - 实现备注：叶子对象：没有子层、没有菜单、不发请求。
 
-| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
-|---|---|---|---|
-| double_click | 叶子对象行 | 无动作（不发请求） | `src/tree.rs:776` |
-
-### `object_tree.tree.row.placeholder` 占位行（读取中 / 加载更多 / 读取失败 / 空说明 / 未实现）
+### `object_tree.tree.row.placeholder` 辅助行（读取中 / 加载更多 / 重试 / 空说明）
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 样式：尺寸 `row_height_tree`、`font_status`
-- 无障碍：可访问名「占位行」
+- 样式：尺寸 `navigation_row_height`、`font_status`
+- 无障碍：可访问名「（行内容：加载状态或可用操作）」
 - 图标：`tree.note.loading`、`tree.note.warning`、`tree.note.info`
-- 同步：Linux done（§2.1 读取中 / 加载更多 / 读取失败；§2.3 占位行不给菜单）
-- 实现备注：占位行不可展开、不携带层；右键直接返回，不给菜单。
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_filter_can_page_without_matches：无匹配手动分页一次；tests/ui/linux/test_04_tree.py::test_local_refresh_error_can_retry_while_filtered：真实读取失败保留旧数据、一次手动重试；隔离 GTK page_failure_keeps_loaded_rows_and_only_unsupported_hides_a_group。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 「加载更多…」行且还有下一页 | 选中即继续拉下一页（分页动作不要求双击） | `src/tree.rs:3017、src/tree.rs:1983` |
-| click | 任意占位行 | 信息面板收到 None（回到空态 / 留白）；不打开任何东西 | `src/tree.rs:1983` |
-| load | 层在飞 / 请求失败 | 占位行写「读取中…」；失败写「读取失败…」+ 状态行给可读文案与稳定错误码，与「空」严格区分 | `src/tree.rs:3032、src/tree.rs:3221` |
-| right_click | 占位行 | 直接返回，不弹菜单 | `src/tree.rs:3266` |
+| click | 当前层有加载更多或重试 | 显式读取相应页。辅助动作保留原逻辑选择；刷新失败保留已读取数据。 | `src/tree.rs::TreePanel::activate_row` |
+| load | 读取中、空数据、读取失败或权限不足 | 按真实结果显示不同状态。只有分页和重试行可以主动激活。 | `src/tree.rs::TreePanel::finish_page` |
+| right_click | 辅助行 | 保持当前逻辑选择和工作区。 | `src/tree.rs::TreePanel::install_handlers` |
 
 ### `object_tree.search` 对象树搜索区
 
 kind `container` · status `active` · parent `object_tree`
 
-- 样式：槽位 `sidebar`；尺寸 `sidebar_width`
-- 同步：Linux done（test_10_layout.py Ctrl+F 在两种外壳下聚焦导航语义容器内的搜索入口。 tests/ui/linux/results/run.9ME2GefI/report.json）
-- 实现备注：搜索框和反馈随导航侧栏显隐。
+- 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`navigation_search_height`
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：在导航语义容器中找到搜索、远程入口和状态。）
+- 实现备注：挂载于导航标题与资源树之间。
 
 ### `object_tree.search.box` 搜索输入框
 
 kind `control` · status `active` · parent `object_tree.search`
 
-- 样式：槽位 `sidebar`；尺寸 `font_ui`、`secondary_min_height`
-- 无障碍：可访问名「搜索连接、库、表」；Tab Ctrl+F 请求显示导航并聚焦；Esc 清空并回到树页
-- 同步：Linux done（§2.4 搜索；Ctrl+F / Enter / Esc 三键）
-- 实现备注：placeholder「搜索连接、库、表...」；匹配语义是 LIKE %关键词%，不做分词。连接名对注册表里全部连接在客户端做大小写不敏感 contains；库 / 表 / 视图只查已打开（已连接、有浏览会话）的连接，逐库发 ListNodes 名称包含，服务端下推 LIKE，前端不拼通配符。
+- 样式：槽位 `sidebar`；尺寸 `font_ui`、`navigation_search_height`
+- 无障碍：可访问名「搜索资源…」；Tab Ctrl+F 请求显示导航并聚焦；Esc 清词
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：大小写不敏感、改词和清词、收起快照恢复，qa.rpc 业务计数不变。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key 任意输入 | 搜索框有输入 | 防抖 250 ms 后搜索；空白串不搜索并回到树页 | `src/tree.rs:2198、src/tree.rs:2233` |
-| key Enter | 搜索框内有文本 | 无条件重新派发一次搜索：取消待触发的定时器、代次 +1，重新清结果并发请求（同一关键词再按也真的再查一遍）；空文本按「停止搜索」处理 | `src/tree.rs:2083、src/tree.rs:2181` |
-| key Ctrl+F | 启动态或连接态工作区外壳存在 | 请求展开导航，空间足够时把焦点交给搜索框 | `src/ui.rs:3884、src/tree.rs:1450` |
-| key Esc | 搜索框有焦点 | 清空输入、回到树页；结果行随列表销毁，结果页里收起过的层级一并忘掉 | `src/tree.rs:2488` |
+| key 输入 / Esc | 输入、修改或清除关键词 | 按名称或别名匹配已加载资源，大小写不敏感。保留祖先与匹配父节点的已加载子树、可用分页和重试。输入和清词零数据库请求；退出恢复普通树展开与当前逻辑选择。 | `src/tree.rs::TreePanel::refresh_local_filter` |
+| key Enter | 搜索框有焦点 | Enter 保留当前搜索模式。远程搜索有独立按钮。 | `src/tree.rs::TreePanel::install_handlers` |
+| key Ctrl+F | 工作区存在 | 请求显示导航并聚焦输入框。 | `src/ui.rs` |
 
 ### `object_tree.search.status` 搜索状态行
 
@@ -1485,27 +1621,29 @@ kind `control` · status `active` · parent `object_tree.search`
 
 - 样式：槽位 `sidebar`；尺寸 `font_status`
 - 无障碍：可访问名「搜索状态」
-- 同步：Linux done（§2.4 状态行与三种失败文案）
-- 实现备注：单行省略，全文进 tooltip。
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：本地无匹配及远程第一页范围；tests/ui/linux/test_04_tree.py::test_filter_can_page_without_matches：无匹配可继续分页。）
+- 实现备注：可见文本单行省略，完整提示保留在 Tooltip。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 搜索完成 | 写「N 个连接 · M 个对象」（M = 命中的库 + 表 / 视图）；有失败追加「；K 条连接失败（…）」；没有已打开连接追加「；没有已打开的连接，只匹配了连接名」；无匹配写「没有名称包含「<关键词>」的连接、库、表或视图。换个关键词试试。」；无权限写「没有权限读取对象列表：<错误>」；其它失败写「搜索失败：<错误>」 | `src/tree.rs:2580、src/tree.rs:2233` |
+| load | 存在筛选关键词或远程结果 | 本地提示仅筛选已加载资源或没有匹配。远程显示加载、结果、空、权限或失败及既有取数限制。 | `src/tree.rs::TreePanel::set_remote_status` |
 
-### `object_tree.search.results` 搜索结果列表
+### `object_tree.search.results` 远程搜索结果列表
 
 kind `container` · status `active` · parent `object_tree.search`
 
 - 样式：槽位 `sidebar`
-- 同步：Linux done（§2.4 结果行点击语义）
-- 实现备注：搜索按捕获的档案和浏览会话校验异步结果。定位成功才更新逻辑选择，定位不会发起 Objects 浏览或 Inspector 预览。结果行复用 object_tree.tree.row：行结构、行高、行尾文字与树逐控件一致。v0.2.3.4 起不再有命中高亮 / 加粗：命中行与树里同一行像素一致。只出现「连接名命中」或「其中有命中」的连接；命中的库 / 分组作为祖先一起出现并默认展开；同一库只一行，多个表命中归到同一个 Tables 下；祖先行箭头可收起 / 再展开，收起状态按路径记、重新搜索仍生效。
+- 无障碍：可访问名「远程搜索结果」
+- 原生控件：gtk:GtkListView
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：具名远程结果列表、库行定位成功后清词；隔离 GTK late_remote_responses_leave_new_local_projection_untouched、retired_session_pages_cannot_publish_results_or_replace_new_cache；单测 remote_search_keeps_same_named_resources_in_distinct_scopes。）
+- 实现备注：按远程代次、每条请求的档案会话及发布时整轮会话快照校验结果。按完整对象引用合并重复结果，保留不同范围的同名资源；列表虚拟化，按捕获身份打开或定位。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 表 / 视图行 | 打开该对象的数据标签（与树双击同一条 open）；侧栏仍停在结果页，搜索框与命中数原样保留 | `src/tree.rs:2107、src/tree.rs:4583` |
-| click | 库行 | 在树里逐层展开祖先并选中（切到树页） | `src/tree.rs:3544、src/tree.rs:2107` |
-| click | 连接行 | 按该连接「点连接」同一条路径（未连接则连接、已连接则展开），并清空搜索框退出筛选 | `src/tree.rs:2107` |
-| click | 分组行 | 只有行内箭头能收起 / 展开；点行本身没有可点目标、不触发打开 | `src/tree.rs:2107` |
+| click | 表或视图结果 | 打开数据工作区，保留结果和关键词。 | `src/tree.rs::TreePanel::install_handlers` |
+| click | 库或 Schema 结果 | 使用捕获资源身份定位；成功后更新逻辑选择和必要的搜索状态。 | `src/tree.rs::TreePanel::reveal_target` |
+| click | 连接结果 | 明确激活该连接。 | `src/tree.rs::TreePanel::install_handlers` |
+| click | 结果分支箭头 | 只控制当前远程结果分支。 | `src/tree.rs::TreePanel::install_remote_factory` |
 
 ### `object_tree.ctx_menu` 右键菜单
 
@@ -1513,12 +1651,11 @@ kind `container` · status `active` · parent `object_tree`
 
 - 样式：槽位 `overlay`
 - 原生控件：gtk:GtkPopoverMenu
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：捕获 B 后改选 A 仍打开 B；B 对象重命名并刷新后原菜单提示目标失效，新名称单独打开。）
-- 实现备注：贴着点击位置的 GtkPopover；点任一条目先收起菜单再执行动作；占位行不给菜单。收起时把 popover 的 unparent 推迟到 idle：GtkModelButton 是先 popdown（同步发 closed）再激活动作，closed 里同步摘控件树会让动作名解析不到 —— 表现就是「菜单收起、点了没反应」（#175 实测对照）。条目按行种类给、顺序固定：连接（已连接）断开连接 → 刷新连接 → 编辑连接… → 删除连接；连接（未连接 / 失败）连接（使用已保存的凭据）→ 编辑连接… → 删除连接；表 打开 → 转储表…；视图只有 打开；库 / schema 刷新库；分组 刷新这一组。没有「查看 DDL」条目：DDL 在信息面板的 [DDL] 页；视图没有「转储表」。
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：分类真实右键保留查询；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：捕获菜单身份、失效后拒绝。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| right_click | 非占位行 | 右键选中此行并捕获菜单目标。点击条目时复核原连接、浏览会话及仍在原模型中的资源路径。失效时关闭菜单并提示。辅助行与无条目的行不出菜单 | `src/tree.rs:3266、src/tree.rs:3388` |
+| right_click | 资源行有可用动作 | 先更新逻辑选择，再用捕获的档案、会话及完整资源路径显示相应菜单，不切换固定 Objects。执行时重新校验目标。 | `src/tree.rs::TreePanel::show_context_menu` |
 
 ### `object_tree.ctx_menu.connect_saved` 「连接（使用已保存的凭据）」
 
@@ -1539,7 +1676,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「断开连接」
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：从具名菜单确认断开 B，A 查询和 B 的独立查询会话均可继续使用。）
+- 同步：Linux done（tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：隔离 X11 真实右击、菜单和确认、未连接后双击复连；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：独立查询会话断开后实际执行 SQL。）
 - 实现备注：只关闭该连接的浏览会话（树 / 搜索 / DDL）；数据页用另一条会话，已加载数据仍可查看；其它连接的浏览会话不受影响。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1553,7 +1690,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「刷新连接」
 - 同步：Linux done（§2.3 刷新连接）
-- 实现备注：就地清空该层 store 再发第一页，不收起子树；一层都没建立过时不发请求。只在右键菜单里，没有快捷键。
+- 实现备注：重读已经加载的层，失败时保留有效旧数据并提供重试。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1569,7 +1706,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 库 / schema 节点 | 重读该库下已展开的分组与直接子对象层；分组全收起时只清缓存，提示行写「这个库的分组都收起着：展开时重新读取」 | `src/tree.rs:3509、src/tree.rs:1949` |
+| click | 库 / schema 节点 | 重读该库或 Schema 已加载的资源层。没有已加载层时给出提示；失败时保留有效旧数据。 | `src/tree.rs:3509、src/tree.rs:1949` |
 
 ### `object_tree.ctx_menu.refresh_group` 「刷新这一组」
 
@@ -1577,8 +1714,8 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「刷新这一组」
-- 同步：Linux done（§2.3 刷新这一组）
-- 实现备注：静态分组行（Groups / TableGroups）没有服务端内容，刷新直接返回。
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_local_refresh_error_can_retry_while_filtered：隔离 X11 真实分类菜单，SQLite 锁失败后保留已加载结果，解锁后手动重试。）
+- 实现备注：读取失败保留旧数据，从相应错误行可重试。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1630,7 +1767,7 @@ kind `item` · status `active` · parent `object_tree.ctx_menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「打开」
-- 同步：Linux done（§2.3 表 / 视图节点）
+- 同步：Linux done（tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：真实表资源菜单打开、复用、两条同名表不串及旧目标拒绝。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1655,13 +1792,72 @@ kind `control` · status `active` · parent `object_tree`
 
 - 样式：槽位 `sidebar`；尺寸 `font_status`、`gap_xs`
 - 无障碍：可访问名「侧栏提示」
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：AT-SPI 读到只选连接时选择库的提示，断开及删除后读到目标不可用提示。）
-- 实现备注：只用于「刷新这一组 / 刷新库 / 刷新连接」的跳过后说明；4 秒后自行收起。
+- 同步：Linux done（tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：AT-SPI 读到选择库及明确目标不可用提示；隔离 GTK reveal_failure_preserves_search_and_newer_explicit_selection、reveal_distinguishes_page_limit_complete_absence_and_incomplete_data。）
+- 实现备注：用于刷新、命令目标与定位的临时反馈；4 秒后自行收起。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 刷新被跳过 | 写一行说明（例如「这个分组还没展开：展开时会重新读取」），4 秒后自行收起 | `src/tree.rs:1949` |
 | load | 工作区命令缺少必要的目标，或明确目标已不可用 | 提示选择所需资源，或重新选择、清除已失效的选择 | `src/tree.rs::TreePanel::show_hint、src/ui.rs::show_objects_for_kind、src/tabs.rs::TabSet::new_query_tab` |
+| load | 有限定位未找到目标 | 区分分页上限、目标路径已读完但无资源、目标列表未读完或不可用；达到分页上限时提示可手动加载更多。 | `src/tree.rs::TreePanel::reveal_object` |
+
+### `object_tree.header` 连接标题
+
+kind `container` · status `active` · parent `object_tree`
+
+- 样式：槽位 `sidebar`；尺寸 `navigation_header_height`
+- 无障碍：可访问名「连接」
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：顶部搜索、全部折叠、更多菜单位于导航语义容器。）
+
+### `object_tree.header.collapse_all` 全部折叠
+
+kind `control` · status `active` · parent `object_tree.header`
+
+- 样式：槽位 `sidebar`；尺寸 `navigation_header_button`
+- 无障碍：可访问名「全部折叠」
+- 图标：`tree.collapse_all`
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：搜索内全部折叠、改词保持折叠，清词恢复普通树。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 导航可用 | 收起当前视图的资源分支，保留逻辑选择与普通树在搜索前的展开状态。 | `src/tree.rs::TreePanel::collapse_all` |
+
+### `object_tree.header.more` 导航更多菜单
+
+kind `control` · status `active` · parent `object_tree.header`
+
+- 样式：槽位 `sidebar`；尺寸 `navigation_header_button`
+- 无障碍：可访问名「更多」
+- 图标：`tree.more`
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：打开具名原生更多菜单后通过键盘激活。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 导航可用 | 打开包含清除选择的原生菜单。 | `src/tree.rs::TreePanel::new` |
+
+### `object_tree.header.more.clear_selection` 清除选择
+
+kind `item` · status `active` · parent `object_tree.header.more`
+
+- 样式：槽位 `sidebar`
+- 无障碍：可访问名「清除选择」
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：从具名原生更多菜单清除隐藏逻辑选择。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 更多菜单打开 | 通过全局清除选择命令清空逻辑选择。固定 Objects 范围保持。 | `src/tree.rs::TreePanel::clear_selection` |
+
+### `object_tree.search.remote` 搜索已连接的数据库
+
+kind `control` · status `active` · parent `object_tree.search`
+
+- 样式：槽位 `sidebar`
+- 无障碍：可访问名「搜索已连接的数据库」
+- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：显式按钮才发 MetadataHub 请求，改词返回本地；隔离 GTK 迟到目录与对象回包丢弃。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 已输入关键词 | 执行显式远程搜索。返回本地、修改或清词使旧请求失效。远程仅查询目录及各库的第一页，不自动翻页或建立连接。 | `src/tree.rs::TreePanel::search_now` |
 
 ## Objects 固定页（`objects_page`）
 
@@ -2372,14 +2568,14 @@ kind `control` · status `active` · parent `startup.loading`
 kind `container` · status `active` · parent `startup`
 
 - 样式：槽位 `startup`；尺寸 `sidebar_width`、`inspector_width`、`status_height`、`tab_strip_height`
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：启动摘要、多个草稿、首次连接保留工作区及标签顺序。）
+- 同步：Linux done（tests/ui/linux/test_01_startup.py::test_startup_readiness：空注册表显示导航标题与保存连接说明（run.Sa2tjWUj）；test_18_unbound_query.py 覆盖启动态固定 Objects 和草稿、首次连接及容量保护（run.GrmzAToC）。）
 - 实现备注：握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。握手完成创建一个 Workspace、TabSet 和 Shell；首次数据库连接更新同一实例。保留布局、标签顺序、活动页和草稿的未绑定状态。握手完成后可从标签行、工具条、菜单和快捷键新建草稿。主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区保证无普通标签时显示这一页。由 TabSet 建立单个固定 Objects 页，首次连接保留这一页。信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时省略）。启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。启动态没有表标签：中央操作行的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 握手成功（Event::Connected） | 外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板按布局状态显隐，未选中对象时内容区留白、状态栏写「未连接」；连上数据库前不存在表标签 | `src/ui.rs::show_startup_workspace` |
 | load | 主工具条是窗口级控件（不随外壳重建） | 握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时六个入口均可用，缺少目标时按各命令规则处理 | `src/ui.rs::show_startup_workspace、src/shell.rs::Toolbar::set_backend_ready` |
-| load | 连接注册表为空（没有已保存的连接） | 侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接；它会作为 My Connections 下的节点出现。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么 | `src/tree.rs:1520、src/tree.rs:3179` |
+| load | 连接注册表为空（没有已保存的连接） | 侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接。保存后可在导航中找到它。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么 | `src/tree.rs:1520、src/tree.rs:3179` |
 | click | 点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接 | 没有可用浏览目标时提示选择连接或数据库，保留当前工作区 | `src/ui.rs::show_objects_for_kind` |
 
 ## 状态栏（`status_bar`）
@@ -3264,4 +3460,5 @@ kind `item` · status `active` · parent `workspace.mcp_management`
 | v0.2.3.4 | `data_page.toolbar.commit` | 「提交」按钮（已移除；提交由状态栏「应用」承担） | removed | 已清 | 提交入口收敛到状态栏行 1「应用（✓）」（status_bar.row1.ops.apply，与 Ctrl+S 同一路径），工具条不再放第二个提交按钮；在途取消也由状态栏「取消」承担。条目保留到三端清理完成。 |
 | v0.2.3.4 | `tabs.query.results.statements` | 语句切换控件（多语句脚本） | removed | 已清 | 整体并入消息页：逐条语句的完整 SQL + 结论行 + 耗时行写在「消息」页，结果集切换改由结果页内的下拉承担，独立控件行随之删除，避免额外一行与横向撑宽风险（维护者范围修订「确认 #2」，Issue #231） |
 | v0.2.4 | `status_bar.gutter` | 左边沟（分栏线左侧整块） | removed | 已清 | 导航搜索已移入导航侧栏，状态栏全宽。 |
+| v0.2.5 | `object_tree.tree.row.field` | 列 / 索引 / 触发器行 | removed | 已清 | 表和视图保留为导航叶节点。字段详情仍从数据表列头打开。索引和触发器的分页、重试和 SQLite 触发器原文 DDL 的查看与复制迁入 Inspector 表信息；原单组刷新由显式刷新表信息承接。 |
 | v0.2.5 | `shell.menu.export_csv` | 表 → 导出 CSV | removed | 已清 | 主菜单暂时隐藏（改动确认单 #1 / #198）：导出入口收敛到表工具条「导出 ▾」与 Ctrl+Shift+E；条目保留，恢复时翻回 active |

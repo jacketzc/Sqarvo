@@ -179,15 +179,6 @@ impl NodeView {
         parts.join(".")
     }
 
-    /// 是否同一个对象（忽略 session_id 与展示名）。
-    #[must_use]
-    pub fn same_object(&self, other: &Self) -> bool {
-        self.reference.catalog == other.reference.catalog
-            && self.reference.schema == other.reference.schema
-            && self.reference.name == other.reference.name
-            && self.kind == other.kind
-    }
-
     /// 该节点能否继续展开（服务端 `has_children` 且种类可能有下一层）。
     #[must_use]
     pub fn expandable(&self) -> bool {

@@ -49,17 +49,18 @@ def _select_row(container, row) -> None:
 
 
 def _select_tree_row(frame, *labels) -> None:
-    def probe():
-        for row in A.query(frame, role_in=("list item",)):
-            names = _status_texts(row)
-            if all(label in names or any(name.endswith("/" + label) for name in names)
-                   or (label == "已连接" and any(name.startswith(label) for name in names))
-                   for label in labels):
-                return row
-        return None
-    row = A.wait_until(probe, 15, f"树行 {labels}")
-    _select_row(row.get_parent(), row)
+    row = ops.find_row(frame, *labels, timeout=15)
+    label = next(label for label in A.query(row, role_in=("label",)) if labels[0] in A.nm(label))
+    A.mouse_click(label)
     A.wait_until(lambda: "selected" in A.states(row), 15, f"树行 {labels} 已选中")
+
+
+def _browse_tables(frame):
+    ops.click_tree_until(
+        lambda: A.find_one(ops.find_row(frame, exact_name="Tables", timeout=15),
+                           role_in=("label",), name="Tables"),
+        lambda: A.query(frame, role_in=("grouping",), name="Objects"),
+        what="分类正文单击进入固定 Objects")
 
 
 def _inspector(frame):
@@ -179,8 +180,7 @@ def test_sql_editor_ddl_refreshes_objects_on_reentry(ui_instance):
     # SQLite 不支持指定请求库。先以连接行为上下文建立 SQL 标签，再恢复 Objects 作用域。
     _select_tree_row(frame, "uitest.db", "已连接")
     ops.open_sql_page(frame)
-    A.mouse_click(A.find_one(ops.find_row(frame, "Tables", timeout=15), role_in=("label",), name="Tables"))
-    _tab_action(frame, "win.tab-1")
+    _browse_tables(frame)
     _wait_list_loaded(inst)
 
     for sql, present, absent in (
@@ -303,7 +303,7 @@ def test_loaded_rows_survive_tab_switch(ui_instance):
 
     with step("switch_to_objects_and_back"):
         frame = inst.frame()
-        A.mouse_click(A.find_one(ops.find_row(frame, "Tables", timeout=15), role_in=("label",), name="Tables"))
+        _browse_tables(frame)
         _wait_list_loaded(inst)
         _tab_action(frame, "win.tab-2")
         A.wait_until(
@@ -450,7 +450,7 @@ def test_query_catalog_tracks_rebind_and_disconnect(ui_instance, disconnect):
         def disconnected_row():
             row = ops.find_row(frame, target)
             return row if row is not None and not any(
-                label in {"已连接", "断开中…"} for label in _status_texts(row)) else None
+                label in {"已连接", "断开中…"} for label in ops.tree_row_texts(row)) else None
         A.wait_until(disconnected_row, 15, "对象树连接行完成断开")
         A.wait_gone(lambda: A.find_dialog(inst.app, "断开连接？"), 15, "断连确认框关闭")
         labels = _status_texts(_inspector(frame))

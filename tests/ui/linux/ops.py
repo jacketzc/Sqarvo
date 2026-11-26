@@ -7,13 +7,16 @@
 from __future__ import annotations
 
 import contextlib
+import time
 
 from adapter import (
     UIError,
     action_names,
+    description,
     click,
     find_dialog,
     find_one,
+    mouse_click,
     query,
     states,
     text_value,
@@ -112,19 +115,28 @@ def dialog_driver_value(dlg):
 
 # ---------- 对象树 ----------
 
+
+def tree_row_texts(row):
+    """GTK resource name and accessible description carry row identity and status."""
+    labels = query(row, role_in=("label",), max_depth=8)
+    return [text for label in labels for text in (nm(label), description(label)) if text]
+
+
 def tree_rows(frame):
     """侧栏对象树当前可见行（每行的全部 label 文本列表）。"""
     rows = []
     for li in query(frame, role_in=("list item",)):
-        texts = [nm(x) for x in query(li, role_in=("label",), max_depth=8) if nm(x)]
+        texts = tree_row_texts(li)
         rows.append(texts)
     return rows
 
 
-def find_row(frame, *must_labels, timeout=0):
+def find_row(frame, *must_labels, timeout=0, exact_name=None):
     def probe():
         for li in query(frame, role_in=("list item",)):
-            texts = [nm(x) for x in query(li, role_in=("label",), max_depth=8)]
+            if exact_name is not None and not query(li, role_in=("label",), name=exact_name):
+                continue
+            texts = tree_row_texts(li)
             if all(any(m in t for t in texts) for m in must_labels):
                 return li
         return None
@@ -133,9 +145,27 @@ def find_row(frame, *must_labels, timeout=0):
     return probe()
 
 
+def click_tree_until(find_label, check, *, button=1, count=1, timeout=10, what):
+    """Wait for a real pointer action on a re-resolved virtual row to take effect."""
+    last_click = float("-inf")
+
+    def probe():
+        nonlocal last_click
+        if result := check():
+            return result
+        now = time.monotonic()
+        if now - last_click >= 0.5:
+            if label := find_label():
+                mouse_click(label, button=button, count=count, horizontal_fraction=0.2)
+                last_click = now
+        return None
+
+    return wait_until(probe, timeout, what)
+
+
 def expand_tree_row(row):
     """点行内展开按钮（与用户点三角箭头同一路径）。返回动作名。"""
-    btn = find_one(row, role_in=("button",))
+    btn = find_one(row, role_in=("button",), name="展开或折叠")
     return click(btn)
 
 
