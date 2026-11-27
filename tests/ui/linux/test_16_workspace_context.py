@@ -34,7 +34,7 @@ def test_tab_names_distinguish_different_workspace_types(ui_instance):
 
 
 def test_long_tab_name_remains_accessible_with_tab_commands(ui_instance):
-    """shell.title, tabs.strip.tab.table, tabs.strip.list (A05.4–5)."""
+    """shell.title, shell.toolbar.target, tabs.strip.tab.table, tabs.strip.list (A05.4–5)."""
     inst = ui_instance("workspace_tab_long_name")
     long_name = "customer_order_reconciliation_" + "warehouse_" * 12 + "west"
     with sqlite3.connect(inst.db) as connection:
@@ -54,6 +54,10 @@ def test_long_tab_name_remains_accessible_with_tab_commands(ui_instance):
     A.find_one(frame, role_in=("label",), name_contains=long_name, timeout=8)
     A.press_keys("Escape")
     A.click(A.find_one(frame, role_in=("button",), name_contains="新建查询标签"))
+    dialog = A.wait_dialog(inst.app, "新建查询")
+    A.find_one(dialog, role_in=("label",), name_contains="目标：uitest.db · main")
+    expect(not ops.query_tab_names(frame), "标题截断时先确认完整目标")
+    A.click(A.find_one(dialog, role_in=("button",), name="继续"))
     ops.active_query_page(frame, "查询 1")
 
 
@@ -135,7 +139,7 @@ def test_navigation_target_and_clear_selection(ui_instance):
         first = ops.open_sql_page(frame)
         query_owner(first, "A")
         title_a = A.nm(frame)
-        peer_row = select_row("Peer", "已连接")
+        select_row("Peer", "已连接")
         panel = A.find_one(frame, role_in=("grouping",), name="信息面板", timeout=10)
         A.find_one(panel, role_in=("label",), name="Peer", timeout=10)
         expect(A.nm(frame) == title_a, "选中 B 时窗口标题仍属于 A", A.nm(frame))
@@ -144,7 +148,7 @@ def test_navigation_target_and_clear_selection(ui_instance):
         expect("sensitive" not in A.states(tables), "只选择连接时分类不可用")
         expect(A.nm(frame) == title_a, "只选择连接时不借用 A 的库", A.nm(frame))
 
-        ops.expand_tree_row(primary)
+        ops.activate_connection_row(primary)
         A.wait_until(lambda: sum("main" in labels for labels in ops.tree_rows(frame)) == 1,
                      10, "折叠 A 后只显示 B 的 main")
         select_row("main", "库")
@@ -153,7 +157,7 @@ def test_navigation_target_and_clear_selection(ui_instance):
         expect("Peer" in A.nm(frame), "Objects 与导航使用同一完整目标", A.nm(frame))
 
         A.window_action(frame, "win.tab-2")
-        ops.expand_tree_row(peer_row)
+        A.click(A.find_one(frame, role_in=("button",), name="全部折叠"))
         A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "B 的 main 被折叠")
         search = A.find_one(frame, role_in=("entry",), name="搜索资源…")
         A.set_text(search, "no_loaded_peer_match")
@@ -161,12 +165,15 @@ def test_navigation_target_and_clear_selection(ui_instance):
         second = ops.open_sql_page(frame)
         query_owner(second, "B")
         expect("Peer" in A.nm(frame), "隐藏并过滤后新标签仍实际绑定 B", A.nm(frame))
+        A.wait_gone(lambda: A.query(frame, role_in=("label",), name="目标：Peer · main"), 8,
+                    "同一个有效数据库在导航折叠和过滤后也不重复提示")
         A.set_text(search, "")
         A.window_action(frame, "win.tab-2")
+        A.find_one(frame, role_in=("label",), name="目标：Peer · main", timeout=8)
 
     with step("table_workspace_reuse_by_profile"):
         def open_orders(label):
-            ops.expand_tree_row(ops.find_row(frame, label, "已连接", timeout=10))
+            ops.activate_connection_row(ops.find_row(frame, label, "已连接", timeout=10))
             ops.expand_tree_row(ops.find_row(frame, "main", "库", timeout=10))
             ops.expand_tree_row(ops.find_row(frame, "Tables", timeout=10))
             tree_menu("ctx.open-object", "orders", "表")
@@ -178,7 +185,7 @@ def test_navigation_target_and_clear_selection(ui_instance):
         tree_menu("ctx.open-object", "orders", "表")
         A.wait_until(lambda: "复用已有表标签" in inst.log_text(), 10, "重复打开复用工作区")
         expect(inst.log_text().count("新建表标签") == 1, "同一资源只建立一个工作区")
-        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接"))
+        ops.activate_connection_row(ops.find_row(frame, "uitest.db", "已连接"))
         A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "A 的库已经隐藏")
         open_orders("Peer")
         expect(inst.log_text().count("新建表标签") == 2, "同名表按档案区分为两个工作区")
@@ -229,9 +236,9 @@ def test_navigation_target_and_clear_selection(ui_instance):
             A.find_one(objects(), role_in=("label",), name="orders", timeout=10)
             expect(inst.log_text().count("[qa.metadata] submit objects.nodes ") == before,
                    "A 的 DDL 不触发 B 的列表刷新")
-        ops.expand_tree_row(ops.find_row(frame, "Peer", "已连接", timeout=10))
+        ops.activate_connection_row(ops.find_row(frame, "Peer", "已连接", timeout=10))
         A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "折叠 B 以定位 A")
-        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
+        ops.activate_connection_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
         select_row("main", "库")
         browse("Tables", "widgets")
         expect(A.text_value(filter_entry()) == "", "同名数据库和分类换连接清词")
@@ -245,9 +252,9 @@ def test_navigation_target_and_clear_selection(ui_instance):
         A.wait_until(lambda: A.nm(frame) == "orders @ uitest.db — Sqarvo", 10,
                      "过滤后右键使用 A 的同名对象")
         expect(inst.log_text().count("新建表标签") == 2, "两个精确身份分别复用已有工作区")
-        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
+        ops.activate_connection_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
         A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "恢复 B 树视图前折叠 A")
-        ops.expand_tree_row(ops.find_row(frame, "Peer", "已连接", timeout=10))
+        ops.activate_connection_row(ops.find_row(frame, "Peer", "已连接", timeout=10))
         main = select_row("main", "库")
         browse("Tables", "peer_only")
         if ops.find_row(frame, exact_name="Tables") is None:

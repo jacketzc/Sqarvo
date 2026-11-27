@@ -31,12 +31,14 @@
 
 已迁入组件注册表 → [`components/shell.toml`](components/shell.toml)（24 个组件：窗口与标题、主工具条、
 四个种类入口、菜单栏、密度档、错误页、后端失效恢复）。原 §1.1–§1.6 各小节都归到上面这个文件，
-当前偏差见 §9。
+操作目标的显隐、完整 Tooltip 与确认条件见 `shell.toolbar.target`，当前平台偏差见 §9。
 
 ## 2. 对象树
 
 组件行为见 [对象树注册表](components/object_tree.toml)，包括逻辑选择、主动浏览、异步定位、
 本地筛选、显式远程搜索、资源状态与目标菜单。
+顶层连接无箭头，二级及以下可展开资源保留独立箭头。展开、折叠和激活规则见
+`object_tree.tree.row.conn` 与 `object_tree.tree.row.expander`。
 
 ## 3. Objects 固定页
 
@@ -58,8 +60,9 @@
 
 ## 6. 信息面板（Inspector）
 
-已迁入组件注册表 → [`components/inspector.toml`](components/inspector.toml)（20 个组件：标题块、
-四种视图、DDL 与表信息两页、状态与提示行）。
+已迁入组件注册表 → [`components/inspector.toml`](components/inspector.toml)（标题块、四种视图、
+DDL 与表信息两页、状态与提示行）。表信息的显式刷新入口见
+`inspector.object.info.more` 与 `inspector.object.info.refresh`。
 
 ## 7. 状态栏
 
@@ -157,10 +160,11 @@ AdwTabView 排序 API 实现同窗口重排。越界、Escape 或手势取消恢
 重新移入时须重新起拖。原生标签移动动画期间，可访问性子节点枚举采用原生绘制排序，标签列表、
 位置键及关闭目标均使用 AdwTabView 的页面模型。隔离 X11 已用真实 `Alt+数字` 验证重排后的位次。
 
-**Linux 原生标签布局**（[标签条](components/tabs.toml)）。普通标签的内容测量使用三档
-metrics，libadwaita 仍在可用空间内统一分配普通标签宽度，系统主题可抬高标签栏的自然最小高度。
-加号保持在原生滚动视口外的末端动作槽。非溢出时槽与最后普通标签之间可能留白，紧随内容的呈现
-仍待处理。试过在外层定位按钮，在原生重排动画期间会覆盖标签并影响指针命中，因此保留末端动作槽。
+**Linux 原生标签布局**（[标签条](components/tabs.toml)）。libadwaita 1.9.1 的
+`expand-tabs=false` 限制整排扩张，不过原生布局仍统一分配普通标签宽度。名称和控件用于计算
+每项的内容宽度请求，实际分配可偏离单项请求及三档宽度目标。普通标签之间沿用原生固定间距，
+公开 API 没有逐档间距设置。标签和搜索框的实际高度仍可能受系统主题的自然最小尺寸影响。
+加号使用原生末端动作槽，非溢出时允许加号与最后普通标签之间留白。
 
 已知边界（不是偏差，列在这里方便检索；「正文」列的 § 是已退役章节的编号，对应组件见 §1–§7 指针）：
 

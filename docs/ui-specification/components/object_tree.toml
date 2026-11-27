@@ -21,6 +21,7 @@ kind = "area"
 status = "active"
 style.slot = "sidebar"
 style.metrics = ["sidebar_width", "sidebar_min", "sidebar_max"]
+style.tokens = ["window_bg_color"]
 impl_notes = ["顶部标题和搜索区固定，资源树独立纵向滚动。"]
 
 [[component.interaction]]
@@ -32,7 +33,7 @@ source = "src/tree.rs::TreePanel::reload、src/ui.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0641fdca1886"
+spec_hash = "a0ef968a61cb"
 evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：固定导航容器、真实动作和筛选；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：F5 列表变化拒绝旧菜单。"
 
 [[component]]
@@ -44,6 +45,7 @@ status = "active"
 native_control = "gtk:GtkListView + GtkTreeListModel"
 style.slot = "sidebar"
 style.metrics = ["navigation_row_height"]
+style.tokens = ["window_bg_color"]
 a11y.name = "对象树"
 a11y.tab = "可聚焦，方向键移动或展开，Enter 激活"
 impl_notes = ["层级为连接 → 库 → 可选 Schema → 分类 → 对象。GTK 虚拟化列表复用会话内缓存。"]
@@ -52,7 +54,7 @@ impl_notes = ["层级为连接 → 库 → 可选 Schema → 分类 → 对象�
 trigger = "key"
 keys = ["↑", "↓", "←", "→"]
 precondition = "树有焦点"
-result = "上下键移动逻辑选择；左右键展开、收起或移向父子资源。方向键不改变固定 Objects 范围。"
+result = "上下键移动逻辑选择；左右键展开、收起或移向父子资源。顶层连接即使没有箭头，已连接时仍可用左右键开合。方向键不改变固定 Objects 范围。"
 source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
@@ -76,7 +78,7 @@ source = "src/tree.rs::TreePanel::reveal_target"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "360900d24feb"
+spec_hash = "21454eadc5e2"
 evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：真实方向键、Enter、筛选与清词恢复当前选择；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：隐藏目标、失效资源与固定页；隔离 GTK reveal_failure_preserves_search_and_newer_explicit_selection、reveal_distinguishes_page_limit_complete_absence_and_incomplete_data。"
 
 [[component]]
@@ -87,7 +89,7 @@ kind = "row"
 status = "active"
 a11y.name = "对象树行"
 style.slot = "sidebar"
-style.metrics = ["navigation_row_height", "gap_xs", "radius_sm", "navigation_indent", "gap_sm"]
+style.metrics = ["navigation_row_height", "gap_xs", "radius_sm", "navigation_indent", "gap_sm", "icon_box"]
 style.tokens = ["sqarvo_brand_soft", "sqarvo_brand_mid", "sqarvo_brand_on_mid", "sqarvo_brand_on_soft"]
 style.states = { hover = "sqarvo_brand_soft", selected = "sqarvo_brand_mid" }
 impl_notes = ["名称单行尾截断，完整名称和连接状态保留在 Tooltip 与可访问属性。"]
@@ -100,7 +102,7 @@ source = "src/tree.rs::TreePanel::install_handlers"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "82907ab4cee2"
+spec_hash = "2f258d6309fd"
 evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：数据库和分类与连接选择事件各自分派；tests/ui/linux/test_10_layout.py::test_layout_preference_survives_first_connection、test_bottom_state_follows_active_workspace：真实单击后 Enter 激活连接及表；tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：连接状态可访问描述。"
 
 [[component]]
@@ -115,14 +117,14 @@ style.metrics = ["tree_arrow_box", "navigation_arrow_icon"]
 
 [[component.interaction]]
 trigger = "click"
-precondition = "行有可展开的子层"
-result = "单独控制展开和收起；无业务选择变化。未连接行与对象叶子不提供箭头。"
+precondition = "数据库或更深层级的行可展开"
+result = "仅控制该行的展开与收起，保留逻辑选择和当前工作区。二级及以下叶子沿用同层图标与文字基线。顶层连接不提供箭头或预留槽位。"
 source = "src/tree.rs::TreePanel::toggle_branch"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "60dfb62d6eac"
-evidence = "tests/ui/linux/test_04_tree.py::test_tree_navigation：箭头开合层级；tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：箭头保持活动查询。"
+spec_hash = "e7be31541db5"
+evidence = "test_04_tree.py::test_tree_navigation 验证三档密度下顶层无独立箭头操作、库箭头不浏览 Objects；test_navigation_pointer_and_filter 验证子层箭头及筛选。"
 
 [[component]]
 id = "object_tree.tree.row.conn"
@@ -131,22 +133,29 @@ display_name = "连接行"
 kind = "row"
 status = "active"
 style.icon = ["tree.connection", "tree.connection.local", "tree.connection.generic"]
-a11y.name = "（行内容：连接显示名；可访问描述：状态）"
-style.metrics = ["status_dot_diameter"]
+a11y.name = "（行内容：连接显示名；可访问描述：连接状态、已连接时的展开或折叠状态）"
+style.metrics = ["status_dot_diameter", "icon_box", "gap_xs", "gap_sm"]
 style.tokens = ["sqarvo_status_fg"]
-impl_notes = ["状态圆点取浏览会话状态。驱动使用系统符号图标，未知驱动使用通用图标。"]
+impl_notes = ["连接行省略整个箭头槽，图标和名称与导航搜索框共用基线。状态圆点只反映浏览会话状态。驱动使用系统符号图标，未知驱动使用通用图标。"]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "连接行"
-result = "选择连接并更新原有预览。"
+result = "仅选择连接并更新原有预览。"
 source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
 trigger = "double_click"
 precondition = "连接行"
-result = "已连接时展开或收起；未连接时建立指定档案的浏览会话。缺凭据走原对话框，过渡态沿用连接入口守卫。"
+result = "已连接时切换展开或折叠；未连接时建立指定档案的浏览会话，连接成功后展开。缺凭据走原对话框，过渡态沿用连接入口守卫。"
 source = "src/tree.rs::TreePanel::activate_row"
+
+[[component.interaction]]
+trigger = "key"
+keys = ["←", "→", "Enter"]
+precondition = "连接行获得键盘焦点"
+result = "已连接时左键折叠、右键展开，方向键不建立连接。Enter 执行连接行的标准激活动作。"
+source = "src/tree.rs::TreePanel::install_handlers、TreePanel::activate_row"
 
 [[component.interaction]]
 trigger = "load"
@@ -156,8 +165,8 @@ source = "src/tree.rs::TreePanel::level_for"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "041a700672cc"
-evidence = "tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：主动断开后双击重新连接；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：Peer 别名及档案所有权。"
+spec_hash = "ef19ddac2d83"
+evidence = "test_04_tree.py::test_tree_navigation 验证三档密度的离线单击、双击指定档案、缓存开合、方向键、Enter、全部折叠及实时可访问描述；test_05_disconnect.py 复验主动断开和重新连接。"
 
 [[component]]
 id = "object_tree.tree.row.catalog"
@@ -307,13 +316,14 @@ display_name = "对象树搜索区"
 kind = "container"
 status = "active"
 style.slot = "sidebar"
-style.metrics = ["sidebar_width", "navigation_search_height"]
-impl_notes = ["挂载于导航标题与资源树之间。"]
+style.metrics = ["sidebar_width", "objects_filter_height", "gap_sm"]
+style.tokens = ["window_bg_color"]
+impl_notes = ["导航标题下保留固定搜索框，搜索区下沿以 gap_sm 与资源列表留出间距。搜索反馈按需显示；远程操作位于标题的更多菜单。"]
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0ad392a5f26e"
-evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：在导航语义容器中找到搜索、远程入口和状态。"
+spec_hash = "f66eea10ac60"
+evidence = "test_04_tree.py::test_navigation_pointer_and_filter：在导航容器找到搜索与状态，远程操作从更多菜单访问。"
 
 [[component]]
 id = "object_tree.search.box"
@@ -321,8 +331,10 @@ parent = "object_tree.search"
 display_name = "搜索输入框"
 kind = "control"
 status = "active"
-style.metrics = ["font_ui", "navigation_search_height"]
+style.metrics = ["font_ui", "objects_filter_height", "radius_sm", "gap_xs", "gap_sm", "icon_box"]
+style.tokens = ["window_bg_color", "sqarvo_navigation_fill"]
 style.slot = "sidebar"
+native_control = "gtk:GtkSearchEntry"
 a11y.name = "搜索资源…"
 a11y.tab = "Ctrl+F 请求显示导航并聚焦；Esc 清词"
 
@@ -337,7 +349,7 @@ source = "src/tree.rs::TreePanel::refresh_local_filter"
 trigger = "key"
 keys = ["Enter"]
 precondition = "搜索框有焦点"
-result = "Enter 保留当前搜索模式。远程搜索有独立按钮。"
+result = "Enter 保留当前搜索模式。通过导航标题的更多菜单显式发起远程搜索。"
 source = "src/tree.rs::TreePanel::install_handlers"
 
 [[component.interaction]]
@@ -349,8 +361,8 @@ source = "src/ui.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c52305deedf6"
-evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：大小写不敏感、改词和清词、收起快照恢复，qa.rpc 业务计数不变。"
+spec_hash = "6dd28a17f717"
+evidence = "test_04_tree.py::test_navigation_pointer_and_filter 与 test_10_layout.py::test_focus_and_navigation：Ctrl+F 聚焦，Enter 保持本地，输入、改词和清词业务计数不变。"
 
 [[component]]
 id = "object_tree.search.status"
@@ -381,6 +393,7 @@ display_name = "远程搜索结果列表"
 kind = "container"
 status = "active"
 style.slot = "sidebar"
+style.tokens = ["window_bg_color"]
 native_control = "gtk:GtkListView"
 a11y.name = "远程搜索结果"
 impl_notes = ["按远程代次、每条请求的档案会话及发布时整轮会话快照校验结果。按完整对象引用合并重复结果，保留不同范围的同名资源；列表虚拟化，按捕获身份打开或定位。"]
@@ -411,7 +424,7 @@ source = "src/tree.rs::TreePanel::install_remote_factory"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "75a0830d74a2"
+spec_hash = "186b914774bb"
 evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：具名远程结果列表、库行定位成功后清词；隔离 GTK late_remote_responses_leave_new_local_projection_untouched、retired_session_pages_cannot_publish_results_or_replace_new_cache；单测 remote_search_keeps_same_named_resources_in_distinct_scopes。"
 
 [[component]]
@@ -704,10 +717,11 @@ status = "active"
 style.slot = "sidebar"
 a11y.name = "连接"
 style.metrics = ["navigation_header_height"]
+style.tokens = ["window_bg_color"]
 
 [component.sync.linux]
 state = "done"
-spec_hash = "302b9c7d0d93"
+spec_hash = "1c3fd33542ba"
 evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：顶部搜索、全部折叠、更多菜单位于导航语义容器。"
 
 [[component]]
@@ -746,13 +760,13 @@ style.metrics = ["navigation_header_button"]
 [[component.interaction]]
 trigger = "click"
 precondition = "导航可用"
-result = "打开包含清除选择的原生菜单。"
+result = "打开包含清除选择及远程搜索操作的原生菜单。远程模式期间原位提供返回本地筛选。"
 source = "src/tree.rs::TreePanel::new"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "52ad5823c4fc"
-evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：打开具名原生更多菜单后通过键盘激活。"
+spec_hash = "75764cb3d8e4"
+evidence = "test_04_tree.py::test_navigation_pointer_and_filter：从具名更多菜单显式搜索、返回本地和用键盘清除选择。"
 
 [[component]]
 id = "object_tree.header.more.clear_selection"
@@ -778,18 +792,19 @@ evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter�
 id = "object_tree.search.remote"
 parent = "object_tree.search"
 display_name = "搜索已连接的数据库"
-kind = "control"
+kind = "item"
 status = "active"
 style.slot = "sidebar"
-a11y.name = "搜索已连接的数据库"
+a11y.name = "搜索已连接的数据库 / 返回本地筛选"
+a11y.tab = "从 Connections 的更多菜单进入"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "已输入关键词"
-result = "执行显式远程搜索。返回本地、修改或清词使旧请求失效。远程仅查询目录及各库的第一页，不自动翻页或建立连接。"
+precondition = "更多菜单打开且有非空白关键词；空白时禁用并提示输入关键词"
+result = "本地模式下执行显式远程搜索。Tooltip 与状态说明目录和各库仅取第一页。远程模式下返回本地并保留关键词。返回本地、改词或清词会使旧请求失效。"
 source = "src/tree.rs::TreePanel::search_now"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "08049ead732b"
-evidence = "tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：显式按钮才发 MetadataHub 请求，改词返回本地；隔离 GTK 迟到目录与对象回包丢弃。"
+spec_hash = "2de772b8ab1b"
+evidence = "test_04_tree.py::test_navigation_pointer_and_filter：空关键词禁用，显式菜单操作才派发 MetadataHub 请求，返回本地保留关键词。隔离 GTK 的 late_remote_responses_leave_new_local_projection_untouched 验证迟到回包。"

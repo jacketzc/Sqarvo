@@ -9,6 +9,10 @@ use gtk::{gdk, glib, graphene};
 
 use super::{OBJECTS_TAB_ID, TabSet};
 
+// Pointer intent is measured in logical pixels and is independent of tab width.
+const DRAG_START: f64 = 11.0;
+const REVERSE_HYSTERESIS: f64 = 8.0;
+
 #[derive(Default)]
 pub(super) struct StripInput {
     press: RefCell<Option<Press>>,
@@ -18,10 +22,21 @@ pub(super) struct StripInput {
 
 struct Press {
     tab_id: Option<String>,
+    widget: Option<gtk::Widget>,
     start: (f64, f64),
-    moved: bool,
     offset: (f64, f64),
     original_order: Vec<String>,
+    click_cancelled: bool,
+    drag: Option<Drag>,
+}
+
+struct Drag {
+    scroller: gtk::ScrolledWindow,
+    left: f64,
+    right: f64,
+    last_dx: f64,
+    edge_scroll: f64,
+    last_exchange: Option<(f64, bool)>,
 }
 
 struct TabHit {
@@ -47,18 +62,22 @@ impl StripInput {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
             }
-            let tab_id = hit
+            let widget = hit.map(|hit| hit.widget);
+            let tab_id = widget
                 .as_ref()
-                .and_then(|hit| tabs.tab_id_for_strip_widget(&hit.widget));
+                .and_then(|widget| tabs.tab_id_for_strip_widget(widget));
             // Claim the down event itself: AdwTabBar normally selects on press and
             // starts desktop DND from the same sequence when the pointer leaves.
             if gesture.set_state(gtk::EventSequenceState::Claimed) {
+                tabs.begin_strip_press(tab_id.as_deref(), widget.as_ref());
                 tabs.strip_input.press.replace(Some(Press {
                     tab_id,
+                    widget,
                     start: (x, y),
-                    moved: false,
                     offset: (0.0, 0.0),
                     original_order: tabs.visual_ids(),
+                    click_cancelled: false,
+                    drag: None,
                 }));
             }
         });
@@ -66,7 +85,7 @@ impl StripInput {
         let owner = Rc::downgrade(tabs);
         gesture.connect_drag_update(move |_, dx, dy| {
             if let Some(tabs) = owner.upgrade() {
-                tabs.update_strip_drag(dx, dy);
+                tabs.update_strip_drag(dx, dy, 0.0);
             }
         });
         let owner = Rc::downgrade(tabs);
@@ -134,6 +153,33 @@ impl StripInput {
 }
 
 impl TabSet {
+    fn begin_strip_press(&self, id: Option<&str>, widget: Option<&gtk::Widget>) {
+        if let (Some(id), Some(widget)) = (id, widget) {
+            widget.add_css_class("sqarvo-tab-pressed");
+            if crate::qa::enabled() {
+                eprintln!("[qa.tabs] pressed {id}");
+            }
+        }
+    }
+
+    fn take_strip_press(&self) -> Option<Press> {
+        let press = self.strip_input.press.take()?;
+        if let Some(widget) = &press.widget {
+            for class in [
+                "sqarvo-tab-pressed",
+                "sqarvo-tab-dragging",
+                "sqarvo-tab-insert-left",
+                "sqarvo-tab-insert-right",
+            ] {
+                widget.remove_css_class(class);
+            }
+        }
+        if press.drag.is_some() {
+            self.bar.set_cursor(None);
+        }
+        Some(press)
+    }
+
     fn visual_ids(&self) -> Vec<String> {
         self.visual_tabs()
             .into_iter()
@@ -287,57 +333,143 @@ impl TabSet {
             })
     }
 
-    fn update_strip_drag(&self, dx: f64, dy: f64) {
+    fn update_strip_drag(&self, dx: f64, dy: f64, edge_scroll: f64) {
         let mut current = self.strip_input.press.borrow_mut();
         let Some(press) = current.as_mut() else {
             return;
         };
         let (x, y) = (press.start.0 + dx, press.start.1 + dy);
         press.offset = (dx, dy);
+        press.click_cancelled |= dx.abs() >= DRAG_START || dy.abs() >= DRAG_START;
         if !self.inside_drag_window(x, y) {
             drop(current);
             self.cancel_strip_drag();
             return;
         }
-        press.moved |= self.bar.drag_check_threshold(
-            press.start.0 as i32,
-            press.start.1 as i32,
-            x as i32,
-            y as i32,
-        );
-        if !press.moved {
-            return;
-        }
         let Some(id) = press.tab_id.as_deref().filter(|id| *id != OBJECTS_TAB_ID) else {
             return;
         };
-        let Some(tab) = self.by_id(id) else {
+        let (Some(tab), Some(widget)) = (self.by_id(id), press.widget.as_ref()) else {
+            return;
+        };
+        if press.drag.is_none()
+            && dx.abs() >= DRAG_START
+            && dx.abs() >= dy.abs()
+            && let (Some(bounds), Some(scroller)) =
+                (widget.compute_bounds(&self.bar), scroller_for(widget))
+        {
+            press.drag = Some(Drag {
+                scroller,
+                left: f64::from(bounds.x()),
+                right: f64::from(bounds.x() + bounds.width()),
+                last_dx: 0.0,
+                edge_scroll: 0.0,
+                last_exchange: None,
+            });
+            widget.remove_css_class("sqarvo-tab-pressed");
+            widget.add_css_class("sqarvo-tab-dragging");
+            self.bar.set_cursor_from_name(Some("grabbing"));
+            if crate::qa::enabled() {
+                eprintln!("[qa.tabs] dragging {id}");
+            }
+        }
+        let Some(drag) = press.drag.as_mut() else {
             return;
         };
         self.start_strip_edge_scroll();
-        let Some(hit) = hit_at(&self.bar, x, y).1 else {
+        let Some(viewport) = drag.scroller.compute_bounds(&self.bar) else {
             return;
         };
-        let Some(target) = self
-            .tab_id_for_strip_widget(&hit.widget)
-            .filter(|id| id != &tab.id && id != OBJECTS_TAB_ID)
-            .and_then(|id| self.by_id(&id))
-        else {
-            return;
-        };
-        let from = self.view.page_position(&tab.page);
-        let to = self.view.page_position(&target.page);
-        if from == to {
+        // Only input or deliberate edge scrolling can request an exchange.
+        // AdwTabBar can also move the adjustment itself during layout/animation.
+        let movement = dx - std::mem::replace(&mut drag.last_dx, dx) + edge_scroll;
+        drag.edge_scroll += edge_scroll;
+        let travel = dx + drag.edge_scroll;
+        if movement == 0.0 || !viewport.contains_point(&graphene::Point::new(x as f32, y as f32)) {
             return;
         }
-        let Some(bounds) = hit.widget.compute_bounds(&self.bar) else {
+        let rightward = movement > 0.0;
+        if drag.last_exchange.is_some_and(|(at, right)| {
+            right != rightward
+                && if rightward {
+                    travel < at + REVERSE_HYSTERESIS
+                } else {
+                    travel > at - REVERSE_HYSTERESIS
+                }
+        }) {
             return;
+        }
+
+        // The projected edge follows the original grab point, including while
+        // edge-scrolling. Native allocations animate after reorder_page, so
+        // never use the dragged widget's animated position as the next origin.
+        let edge = if rightward { drag.right } else { drag.left } + dx;
+        let from = self.view.page_position(&tab.page);
+        let step = if rightward ^ (self.bar.direction() == gtk::TextDirection::Rtl) {
+            1
+        } else {
+            -1
         };
-        let after_midpoint = x >= f64::from(bounds.x() + bounds.width() / 2.0);
-        let forward = (to > from) ^ (self.bar.direction() == gtk::TextDirection::Rtl);
-        if after_midpoint == forward {
+        let pointed_at = hit_at(&self.bar, x, y)
+            .1
+            .and_then(|hit| self.tab_id_for_strip_widget(&hit.widget))
+            .and_then(|id| self.by_id(&id))
+            .map(|tab| self.view.page_position(&tab.page));
+        let mut destination = from;
+        let mut position = from + step;
+        let metrics = crate::layout::metrics();
+        while let Some(neighbor) = u32::try_from(position)
+            .ok()
+            .and_then(|position| self.page_at(position))
+            .filter(|page| !page.is_pinned())
+        {
+            let Some(bounds) = self
+                .strip_widget_for(&neighbor)
+                .and_then(|widget| widget.compute_bounds(&self.bar))
+            else {
+                break;
+            };
+            let left = f64::from(bounds.x());
+            let right = f64::from(bounds.x() + bounds.width());
+            if right <= f64::from(viewport.x())
+                || left >= f64::from(viewport.x() + viewport.width())
+            {
+                // The first tabs in the movement direction may have scrolled
+                // away between pointer events. Cross them only en route to a visible slot.
+                position += step;
+                continue;
+            }
+            // Require penetration into the neighbor before changing model order.
+            // The cap keeps even a very wide label from requiring a half-tab drag.
+            let penetration = (f64::from(bounds.width()) * 0.2)
+                .max(f64::from(metrics.min_target))
+                .min(f64::from(metrics.tab_height))
+                .min((right - left) / 3.0);
+            let crossed = if rightward {
+                edge >= left + penetration
+            } else {
+                edge <= right - penetration
+            };
+            if !crossed {
+                break;
+            }
+            destination = position;
+            if pointed_at == Some(position) {
+                break;
+            }
+            position += step;
+        }
+        if destination != from {
+            drag.last_exchange = Some((travel, rightward));
+            widget.remove_css_class("sqarvo-tab-insert-left");
+            widget.remove_css_class("sqarvo-tab-insert-right");
+            widget.add_css_class(if rightward {
+                "sqarvo-tab-insert-right"
+            } else {
+                "sqarvo-tab-insert-left"
+            });
             drop(current);
-            self.view.reorder_page(&tab.page, to);
+            self.view.reorder_page(&tab.page, destination);
         }
     }
 
@@ -350,8 +482,8 @@ impl TabSet {
             let Some(tabs) = owner.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if let Some((dx, dy)) = tabs.scroll_strip_edge() {
-                tabs.update_strip_drag(dx, dy);
+            if let Some(((dx, dy), scroll)) = tabs.scroll_strip_edge() {
+                tabs.update_strip_drag(dx, dy, scroll);
                 glib::ControlFlow::Continue
             } else {
                 tabs.strip_input.edge_scrolling.set(false);
@@ -360,11 +492,10 @@ impl TabSet {
         });
     }
 
-    fn scroll_strip_edge(&self) -> Option<(f64, f64)> {
+    fn scroll_strip_edge(&self) -> Option<((f64, f64), f64)> {
         let current = self.strip_input.press.borrow();
-        let press = current.as_ref().filter(|press| press.moved)?;
-        let tab = self.by_id(press.tab_id.as_deref()?)?;
-        let scroller = scroller_for(&self.strip_widget_for(&tab.page)?)?;
+        let press = current.as_ref()?;
+        let scroller = &press.drag.as_ref()?.scroller;
         let bounds = scroller.compute_bounds(&self.bar)?;
         let (x, y) = (
             press.start.0 + press.offset.0,
@@ -387,7 +518,8 @@ impl TabSet {
         let adjustment = scroller.hadjustment();
         let before = adjustment.value();
         adjustment.set_value(before + delta);
-        (adjustment.value() != before).then_some(press.offset)
+        let applied = adjustment.value() - before;
+        (applied != 0.0).then_some((press.offset, applied))
     }
 
     fn end_strip_drag(&self, dx: f64, dy: f64) {
@@ -401,18 +533,11 @@ impl TabSet {
             self.cancel_strip_drag();
             return;
         }
-        let Some(press) = self.strip_input.press.take() else {
+        let Some(press) = self.take_strip_press() else {
             return;
         };
         let (x, y) = (press.start.0 + dx, press.start.1 + dy);
-        if press.moved
-            || self.bar.drag_check_threshold(
-                press.start.0 as i32,
-                press.start.1 as i32,
-                x as i32,
-                y as i32,
-            )
-        {
+        if press.click_cancelled || dx.abs() >= DRAG_START || dy.abs() >= DRAG_START {
             return;
         }
         let Some(hit) = hit_at(&self.bar, x, y).1 else {
@@ -431,12 +556,24 @@ impl TabSet {
         }
     }
 
+    pub(super) fn cancel_strip_drag_for(&self, id: &str) {
+        let owns_press = self
+            .strip_input
+            .press
+            .borrow()
+            .as_ref()
+            .is_some_and(|press| press.tab_id.as_deref() == Some(id));
+        if owns_press {
+            self.cancel_strip_drag();
+        }
+    }
+
     fn cancel_strip_drag(&self) -> bool {
-        let Some(press) = self.strip_input.press.take() else {
+        let Some(press) = self.take_strip_press() else {
             return false;
         };
-        if !press.moved {
-            return true;
+        if press.drag.is_none() {
+            return press.tab_id.is_some();
         }
         let current = self.visual_tabs();
         let existing: HashSet<_> = current.iter().map(|tab| tab.id.as_str()).collect();
@@ -449,14 +586,33 @@ impl TabSet {
             .iter()
             .filter(|id| existing.contains(id.as_str()))
             .filter_map(|id| self.by_id(id));
-        for (position, tab) in current.iter().enumerate() {
-            let wanted = if originally_present.contains(tab.id.as_str()) {
-                restored.next()
-            } else {
-                Some(Rc::clone(tab))
-            };
-            if let (Some(tab), Ok(position)) = (wanted, i32::try_from(position))
-                && !tab.page.is_pinned()
+        let desired: Vec<_> = current
+            .iter()
+            .filter_map(|tab| {
+                if originally_present.contains(tab.id.as_str()) {
+                    restored.next()
+                } else {
+                    Some(Rc::clone(tab))
+                }
+            })
+            .collect();
+        // When only the dragged tab moved, undo it directly so libadwaita
+        // animates that same tab back instead of animating every displaced tab.
+        if let Some(id) = press.tab_id.as_deref()
+            && let Some(position) = desired.iter().position(|tab| tab.id == id)
+            && current
+                .iter()
+                .filter(|tab| tab.id != id)
+                .map(|tab| &tab.id)
+                .eq(desired.iter().filter(|tab| tab.id != id).map(|tab| &tab.id))
+            && let Ok(index) = i32::try_from(position)
+        {
+            self.view.reorder_page(&desired[position].page, index);
+            return true;
+        }
+        for (position, tab) in desired.iter().enumerate() {
+            if !tab.page.is_pinned()
+                && let Ok(position) = i32::try_from(position)
             {
                 self.view.reorder_page(&tab.page, position);
             }

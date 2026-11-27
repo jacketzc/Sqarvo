@@ -88,7 +88,7 @@ icon_button_width = 28   # 28 × 1.0 = 28
 icon_button_height = 24   # 24 × 1.0 = 24
 status_dot_diameter = 7   # 7 × 1.0 = 7
 toolbar_padding_h = 12   # 12 × 1.0 = 12
-objects_min_width = 40
+objects_min_width = 36
 pager_font = 12   # 12 × 1.0 = 12
 badge_min_height = 26   # 26 × 1.0 = 26
 secondary_min_height = 22   # 22 × 1.0 = 22
@@ -98,8 +98,7 @@ tree_arrow_box = 24
 navigation_header_height = 32
 navigation_header_button = 26
 navigation_row_height = 26
-navigation_search_height = 30
-objects_filter_height = 30
+objects_filter_height = 30  # 导航与 Objects 共用搜索框高度
 objects_filter_width = 220
 objects_filter_min_width = 120
 objects_filter_max_width = 320
@@ -191,7 +190,7 @@ icon_button_width = 35   # 28 × 1.25 = 35
 icon_button_height = 30   # 24 × 1.25 = 30
 status_dot_diameter = 9   # 7 × 1.25 = 8.75
 toolbar_padding_h = 15   # 12 × 1.25 = 15
-objects_min_width = 50
+objects_min_width = 45
 pager_font = 15   # 12 × 1.25 = 15
 badge_min_height = 33   # 26 × 1.25 = 32.5
 secondary_min_height = 28   # 22 × 1.25 = 27.5
@@ -201,7 +200,6 @@ tree_arrow_box = 30
 navigation_header_height = 40
 navigation_header_button = 33
 navigation_row_height = 33
-navigation_search_height = 38
 objects_filter_height = 38
 objects_filter_width = 275
 objects_filter_min_width = 150
@@ -294,7 +292,7 @@ icon_button_width = 42   # 28 × 1.5 = 42
 icon_button_height = 36   # 24 × 1.5 = 36
 status_dot_diameter = 11   # 7 × 1.5 = 10.5
 toolbar_padding_h = 18   # 12 × 1.5 = 18
-objects_min_width = 60
+objects_min_width = 54
 pager_font = 18   # 12 × 1.5 = 18
 badge_min_height = 39   # 26 × 1.5 = 39
 secondary_min_height = 33   # 22 × 1.5 = 33
@@ -304,7 +302,6 @@ tree_arrow_box = 36
 navigation_header_height = 48
 navigation_header_button = 39
 navigation_row_height = 39
-navigation_search_height = 45
 objects_filter_height = 45
 objects_filter_width = 330
 objects_filter_min_width = 180

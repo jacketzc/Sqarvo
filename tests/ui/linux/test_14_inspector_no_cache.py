@@ -113,7 +113,7 @@ def _clipboard_text():
 
 
 def test_table_info_pages_retry_and_refresh(ui_instance):
-    """inspector.object.info, inspector.object.info.refresh, inspector.object.info.children,
+    """inspector.object.info, inspector.object.info.more, inspector.object.info.refresh, inspector.object.info.children,
     inspector.object.info.children.load_more, inspector.object.info.children.retry."""
     inst = ui_instance("inspector_child_pages")
     with sqlite3.connect(inst.db) as db:
@@ -129,6 +129,11 @@ def test_table_info_pages_retry_and_refresh(ui_instance):
 
     def button(name):
         return A.find_one(panel, role_in=("button",), name=name, timeout=15)
+
+    def refresh_command():
+        A.click(A.find_one(panel, role_in=("toggle button",), name="表信息更多操作", timeout=10))
+        menu = A.find_one(panel, role_in=("menu",), name="表信息更多操作", timeout=10)
+        return A.find_one(menu, role_in=("menu item",), name="刷新表信息", timeout=10)
 
     def has_name(name):
         return any(name in label for label in _labels(frame))
@@ -159,7 +164,10 @@ def test_table_info_pages_retry_and_refresh(ui_instance):
             db.execute("CREATE TRIGGER trg_s4_refreshed AFTER INSERT ON widgets BEGIN SELECT 2; END")
             db.execute("ALTER TABLE widgets ADD COLUMN refreshed_s4 TEXT")
         before = _counts(inst)
-        A.click(button("刷新表信息"))
+        expect(not A.query(panel, role_in=("button",), name="刷新表信息"),
+               "表信息区域没有常驻刷新按钮")
+        rpc_before = len(inst.log_text())
+        A.click(refresh_command())
         A.wait_until(lambda: has_name("refreshed_s4 · TEXT") and has_name("idx_s4_0500")
                      and not has_name("idx_s4_0000"), 15, "按当前表的新定义刷新列和索引")
         after = _counts(inst)
@@ -167,12 +175,16 @@ def test_table_info_pages_retry_and_refresh(ui_instance):
                          "primary_key": before["primary_key"] + 1,
                          "inspector.nodes": before["inspector.nodes"] + 1},
                "显式刷新只读取表信息", (before, after))
+        calls = [line.removeprefix("[qa.rpc] dispatch ") for line in
+                 inst.log_text()[rpc_before:].splitlines() if line.startswith("[qa.rpc] dispatch ")]
+        expect(sorted(calls) == ["GetColumns", "GetPrimaryKey", "ListNodes"],
+               "显式刷新只发送当前表信息的三个业务请求", calls)
         A.click(button("加载更多索引和触发器"))
         A.find_one(panel, role_in=("label",), name="trg_s4_refreshed", timeout=15)
         expect(not has_name("trg_s4_tail"), "刷新后的分页只显示当前触发器")
 
     with step("late_page_cannot_replace_another_table"):
-        A.click(button("刷新表信息"))
+        A.click(refresh_command())
         more = button("加载更多索引和触发器")
         before = _counts(inst)["inspector.nodes"]
         with sqlite3.connect(inst.db) as lock:
@@ -184,6 +196,14 @@ def test_table_info_pages_retry_and_refresh(ui_instance):
         A.wait_until(lambda: "无触发器" in _labels(frame), 15, "新表的元数据已返回")
         expect(not has_name("idx_s4_0500") and not has_name("trg_s4_refreshed"),
                "旧分页的数据没有写入新表")
+
+    with step("changing_the_target_dismisses_refresh_menu"):
+        refresh_command()
+        before = _counts(inst)
+        A.window_action(frame, "win.clear-selection")
+        A.wait_gone(lambda: A.query(panel, role_in=("menu item",), name="刷新表信息"), 8,
+                    "清除预览目标后关闭旧刷新菜单")
+        expect(_counts(inst) == before, "失效的菜单不发送元数据请求")
 
 
 def test_trigger_ddl_view_copy_and_object_isolation(ui_instance):

@@ -857,6 +857,24 @@ en = "Expand or collapse"
 status = "done"
 
 [[entry]]
+key = "object_tree.branch_expanded"
+zh = "已展开"
+en = "Expanded"
+status = "done"
+
+[[entry]]
+key = "object_tree.branch_collapsed"
+zh = "已折叠"
+en = "Collapsed"
+status = "done"
+
+[[entry]]
+key = "object_tree.connection_branch_description"
+zh = "{status}，{expansion}"
+en = "{status}, {expansion}"
+status = "done"
+
+[[entry]]
 key = "object_tree.search_remote"
 zh = "搜索已连接的数据库"
 en = "Search connected databases"
@@ -866,6 +884,18 @@ status = "done"
 key = "object_tree.search_back_local"
 zh = "返回本地筛选"
 en = "Return to local filter"
+status = "done"
+
+[[entry]]
+key = "object_tree.search_remote_needs_query"
+zh = "输入资源关键词后可搜索已连接的数据库。"
+en = "Enter a resource search term to search connected databases."
+status = "done"
+
+[[entry]]
+key = "object_tree.search_back_local_hint"
+zh = "保留关键词，仅筛选已加载的资源。"
+en = "Keep the search term and filter loaded resources."
 status = "done"
 
 [[entry]]

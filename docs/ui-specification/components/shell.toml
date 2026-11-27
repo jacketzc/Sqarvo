@@ -375,10 +375,11 @@ display_name = "「连接」"
 kind = "control"
 status = "active"
 style.icon = ["tree.connection"]
-style.metrics = ["min_target", "font_ui"]
+style.metrics = ["min_target", "font_ui", "icon_box", "gap_sm", "gap_xxs"]
 a11y.name = "连接"
 impl_notes = [
   "左侧强调动作，使用图标和文字。空间不足时保留图标、可访问名称和 tooltip。",
+  "与新建查询共用居中的图文布局，文字用 gap_xxs 补偿与符号图标的视觉中线。",
   "后端握手前禁用并说明原因；就绪后打开既有连接对话框。入口含义与数据库在线状态无关。",
 ]
 
@@ -390,7 +391,7 @@ source = "src/shell.rs:721、src/ui.rs:1096、src/ui.rs:1103"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0a24bc033858"
+spec_hash = "8e3f515fec5f"
 evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：原生连接对话框打开和取消；test_18_unbound_query.py::test_reconnect_from_objects_only_startup：后端丢失时入口禁用。"
 
 [[component]]
@@ -400,10 +401,11 @@ display_name = "「新建查询」"
 kind = "control"
 status = "active"
 style.icon = ["action.new_query"]
-style.metrics = ["min_target", "font_ui"]
+style.metrics = ["min_target", "font_ui", "icon_box", "gap_sm", "gap_xxs"]
 a11y.name = "新建查询"
 impl_notes = [
   "中性动作，使用图标和文字。空间不足时保留图标与可访问名称。",
+  "与连接共用居中的图文布局，底色沿用原生普通按钮。",
   "后端握手后可用，无目标时可创建未绑定查询。tooltip 包含实际动作目标，与标签栏加号相同。",
   "工具条、加号、菜单与 Ctrl+T 共用 win.new-tab。仅连接不借用其他标签的数据库，失效目标不给回退。目标摘要被截断时先显示可读的目标确认。",
 ]
@@ -416,7 +418,7 @@ source = "src/ui.rs::request_toolbar_command、src/tabs.rs::TabSet::new_query_ta
 
 [component.sync.linux]
 state = "done"
-spec_hash = "9c8faad44e62"
+spec_hash = "c3bd8b79f8c4"
 evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：双连接、仅选连接、失效与清除选择；tests/ui/linux/results/run.cmSUm8oW/report.json：截断目标时加号与 Ctrl+T 共用确认。 tests/ui/linux/results/run.kEQx6EUw/report.json：加号和工具条目标文本一致，确认时目标变化拒绝创建；toolbar_target_rejects_lost_and_replaced_sessions 覆盖失效、重连和档案修订。"
 
 [[component]]
@@ -519,15 +521,19 @@ native_control = "gtk:GtkLabel"
 style.metrics = ["font_ui"]
 a11y.name = "目标"
 impl_notes = [
-  "导航目标与活动工作区的连接、库或 Schema 不一致，导航选择不可见，或明确目标失效时显示实际目标。连接级选择省略数据库值，tooltip 注明仅选连接。",
-  "安全全名、附加标识和失效原因可由 tooltip 和可访问描述读取。省略同一可见操作目标的常驻提示。",
-  "摘要无法完整显示时，打开业务命令前显示完整目标。继续时复核工作区、捕获目标、档案版本和会话身份。原目标失效或变化时提示并结束本次操作。普通操作直接执行。",
+  "连接级选择省略数据库值，Tooltip 注明仅选连接。安全全名、附加标识和失效原因可由 Tooltip 和可访问描述读取。",
 ]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "工作区或逻辑导航目标变化"
+result = "两者为有效且同档案、同库和 Schema 的实际命令作用域时隐藏常驻摘要，折叠、筛选及侧栏隐藏均遵循该规则。选择不一致、仅选连接、活动工作区无库归属或明确目标失效时保留相应提示。目标的完整信息仍可从命令 Tooltip 读取；展示空间不足时先确认，继续前复核目标、工作区、档案版本和会话身份。"
+source = "src/ui.rs::target_copy、same_toolbar_scope、request_toolbar_command"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "6d03c733393b"
-evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：隐藏导航后提示、同范围且可见时隐藏、截断先确认；tests/ui/linux/results/run.TJeqNMo1/report.json：两连接、仅连接、失效和清除。 tests/ui/linux/results/run.kEQx6EUw/report.json：确认期间清除选择，继续时提示原目标失效，查询数和 Connect 数不变。"
+spec_hash = "cc3bbab6acec"
+evidence = "test_20_header_toolbar.py 验证同范围在导航隐藏后保持隐藏、完整 Tooltip、截断确认和旧目标拦截；test_16_workspace_context.py 验证折叠和过滤、不同档案、仅连接和失效；toolbar_scope_uses_exact_profile_catalog_and_schema 覆盖不同库及 Schema。"
 
 [[component]]
 id = "shell.toolbar.more"
@@ -892,7 +898,9 @@ kind = "container"
 status = "active"
 native_control = "gtk:GtkPaned"
 style.metrics = ["workspace_target_width", "workspace_target_height", "panel_handle", "panel_recovery", "sidebar_width", "sidebar_min", "sidebar_max", "inspector_width", "inspector_min", "inspector_max"]
+style.tokens = ["window_bg_color", "sqarvo_separator"]
 impl_notes = [
+  "左中把手以窗口底色衔接标签栏，由分隔 token 绘制居中线。",
   "首选宽度和主动显示偏好持久化。实际分配和运行期专注、优先请求及折叠历史不落盘。",
   "优先留出中央目标宽度。先缩右再隐藏右，再缩左再隐藏左。仅可见侧栏占用把手，自动恢复须满足恢复余量。",
   "主动展开自动折叠栏时给予临时优先，必要时隐藏另一侧；重新容纳两侧时恢复正常优先级。",
@@ -913,7 +921,7 @@ source = "src/shell.rs Shell::install_handle_gestures"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "28c3401cde9b"
+spec_hash = "0ecc153aeceb"
 evidence = "test_10_layout.py 自动折叠恢复、两侧拖拽及双击、偏好持久化，活动事务与未保存编辑下 gRPC 派发计数零增加；layout 单测覆盖精确阈值。test_15_refresh_regressions.py 复验同一导航选择、Objects 范围、标题和业务 RPC 计数，证据 tests/ui/linux/results/run.zZWok5oY/report.json。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例覆盖隐藏侧栏后的焦点转移、主动隐藏后扩宽、事务与 Objects 的业务 RPC 计数。 tests/ui/linux/results/run.FlRhTuGR/report.json"
 
 [[component]]
@@ -924,18 +932,18 @@ kind = "control"
 status = "active"
 native_control = "gtk:GtkToggleButton"
 style.metrics = ["min_target", "toolbar_layout_icon", "gap_xxs", "gap_lg"]
-style.tokens = ["sqarvo_brand_soft"]
 style.icon = ["layout.navigation", "layout.focus", "layout.inspector"]
 a11y.name = "导航 / 专注模式 / 信息面板"
 impl_notes = [
   "主工具栏最右侧的三个图标按钮依次为导航、专注模式、信息面板；工作区外壳建立后可用，与数据库连接无关。",
+  "选中态沿用原生平面切换按钮的中性底色，与新建查询同系。",
   "按下状态来自实际可见侧栏或专注状态。空间不足、专注覆盖与可主动显示状态各有工具提示。专注期间点击任一侧栏按钮退出专注并请求显示该栏。",
   "按钮调用 shell.layout 的既有布局命令及临时优先求解。",
 ]
 
 [component.sync.linux]
 state = "done"
-spec_hash = "27d7ee7cb357"
+spec_hash = "b0d056153bc6"
 evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：三档密度、无数据库连接仍可用、临时优先、专注和布局零 RPC；tests/ui/linux/results/run.cmSUm8oW/report.json：Compact 的三枚布局按钮。 tests/ui/linux/results/run.kEQx6EUw/report.json：两种语言、三档密度均可访问五个关键入口。"
 
 [[component]]

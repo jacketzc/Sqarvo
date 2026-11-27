@@ -350,8 +350,11 @@ def mouse_drag(source, *, horizontal_fraction=0.25):
         _mouse_button(xtest, display, 1, True)
         x11.XSync(display, False)
 
-        def move_to(acc=None, horizontal_fraction=0.5, vertical_fraction=0.5, *, surface_point=None):
-            if surface_point is not None:
+        def move_to(acc=None, horizontal_fraction=0.5, vertical_fraction=0.5, *,
+                    surface_point=None, offset=None):
+            if offset is not None:
+                target = (origin[0] + offset[0], origin[1] + offset[1])
+            elif surface_point is not None:
                 target = (client_origin[0] + surface_point[0], client_origin[1] + surface_point[1])
             else:
                 target = origin if acc is None else _pointer_target(

@@ -690,8 +690,7 @@ impl NodeObject {
 /// 否则旧行的处理器还会改新行的箭头。
 struct RowHandlers {
     row: gtk::TreeListRow,
-    button: gtk::Button,
-    clicked: glib::SignalHandlerId,
+    click: Option<(gtk::Button, glib::SignalHandlerId)>,
     expanded_changed: glib::SignalHandlerId,
 }
 
@@ -701,8 +700,25 @@ fn disconnect_row_handlers(item: &gtk::ListItem) {
     let handlers = unsafe { item.steal_data::<RowHandlers>(ROW_HANDLERS_KEY) };
     if let Some(handlers) = handlers {
         handlers.row.disconnect(handlers.expanded_changed);
-        handlers.button.disconnect(handlers.clicked);
+        if let Some((button, clicked)) = handlers.click {
+            button.disconnect(clicked);
+        }
     }
+}
+
+fn describe_connection_branch(item: &gtk::ListItem, status: &str, expanded: bool) {
+    let expansion = l10n::t(if expanded {
+        "object_tree.branch_expanded"
+    } else {
+        "object_tree.branch_collapsed"
+    });
+    item.set_accessible_description(&l10n::tf(
+        "object_tree.connection_branch_description",
+        &[
+            ("status", status.to_owned()),
+            ("expansion", expansion.to_owned()),
+        ],
+    ));
 }
 
 /// 一层子节点的来源：决定「展开这一层要发什么请求」。
@@ -922,9 +938,30 @@ impl TreePanel {
             Some(l10n::t("object_tree.clear_selection")),
             Some("win.clear-selection"),
         );
+        let remote_item = gio::MenuItem::new(None, None);
+        remote_item.set_attribute_value("custom", Some(&"remote-search".to_variant()));
+        menu.append_item(&remote_item);
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popover.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "object_tree.more",
+        ))]);
+        let remote_button = gtk::Button::builder()
+            .label(l10n::t("object_tree.search_remote"))
+            .tooltip_text(l10n::t("object_tree.search_remote_needs_query"))
+            .accessible_role(gtk::AccessibleRole::MenuItem)
+            .sensitive(false)
+            .build();
+        remote_button.add_css_class("flat");
+        popover.add_child(&remote_button, "remote-search");
+        let weak_popover = popover.downgrade();
+        remote_button.connect_clicked(move |_| {
+            if let Some(popover) = weak_popover.upgrade() {
+                popover.popdown();
+            }
+        });
         let more = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
-            .menu_model(&menu)
+            .popover(&popover)
             .tooltip_text(l10n::t("object_tree.more"))
             .build();
         more.add_css_class("flat");
@@ -937,17 +974,10 @@ impl TreePanel {
         header.append(&title);
         header.append(&collapse_button);
         header.append(&more);
-        let remote_button = gtk::Button::with_label(l10n::t("object_tree.search_remote"));
-        remote_button.add_css_class("flat");
-        if let Some(label) = remote_button.child().and_downcast::<gtk::Label>() {
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        }
-        remote_button.set_tooltip_text(Some(l10n::t("object_tree.search_remote_scope")));
-        remote_button.set_sensitive(false);
         let search_controls = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        search_controls.add_css_class("navigation-search-controls");
         search_controls.append(&header);
         search_controls.append(&search_entry);
-        search_controls.append(&remote_button);
         let remote_scope = gtk::Label::new(Some(l10n::t("object_tree.search_remote_scope_short")));
         remote_scope.set_xalign(0.0);
         remote_scope.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -989,6 +1019,7 @@ impl TreePanel {
             .vexpand(true)
             .child(&search_list)
             .build();
+        search_scroll.add_css_class("sqarvo-navigation-scroll");
         search_page.append(&search_scroll);
 
         let state_page = adw::StatusPage::new();
@@ -1013,8 +1044,8 @@ impl TreePanel {
         selection.set_can_unselect(true);
 
         let factory = gtk::SignalListItemFactory::new();
-        // 行结构（固定顺序，bind 靠它取控件）：
-        //   [展开箭头按钮] [种类图标] [名字] [行尾文字]
+        // Recycled rows share a template. The arrow slot participates in layout
+        // only below the connection level.
         //
         // 为什么不用 `GtkTreeExpander`：它在 bind 时会查询 `GtkTreeListRow` 的子模型
         // 来决定「有没有箭头」，于是 `GtkTreeListModel` 会为**每个可见行**都调用一次
@@ -1059,8 +1090,9 @@ impl TreePanel {
             let status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             status.add_css_class("navigation-connection-state");
             status.set_valign(gtk::Align::Center);
-            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
+            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row_box.add_css_class("sqarvo-tree-row");
+            row_box.add_css_class("navigation-resource-row");
             let arrow_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             arrow_slot.add_css_class("navigation-arrow-slot");
             arrow_slot.append(&arrow_button);
@@ -1133,6 +1165,12 @@ impl TreePanel {
                 }
                 set_row_depth(&row_box, list_row.depth());
                 icon.add_css_class("navigation-node-icon");
+                let connection = matches!(&row, Row::Connection(_));
+                if connection {
+                    row_box.add_css_class("navigation-connection-row");
+                } else {
+                    row_box.remove_css_class("navigation-connection-row");
+                }
 
                 name.set_text(row.display_name());
                 let description = match &row {
@@ -1156,7 +1194,13 @@ impl TreePanel {
                     _ => "",
                 };
                 if let Some(status) = status {
-                    status.set_visible(matches!(&row, Row::Connection(_)));
+                    status.set_visible(connection);
+                }
+                let connected = connection && row.expandable();
+                if connected {
+                    describe_connection_branch(item, description, list_row.is_expanded());
+                } else {
+                    item.set_accessible_description(description);
                 }
                 name.update_property(&[gtk::accessible::Property::Description(description)]);
                 row_box.update_property(&[gtk::accessible::Property::Description(description)]);
@@ -1180,45 +1224,44 @@ impl TreePanel {
                 }
                 row_box.set_tooltip_text(Some(&row.tooltip()));
 
-                // 箭头只在「可能有子节点」时出现；点箭头展开/收起。
-                let expandable = row.expandable();
-                arrow_slot.set_visible(!row.is_note());
-                arrow_button.set_visible(expandable);
+                disconnect_row_handlers(item);
+                // GtkBox excludes the entire hidden slot, including its spacing.
+                // Below the connection level, leaves still align with branches.
+                let has_slot = list_row.depth() > 0 && !row.is_note();
+                let has_arrow = has_slot && row.expandable();
+                arrow_slot.set_visible(has_slot);
+                arrow_button.set_visible(has_arrow);
                 arrow.set_icon_name(Some(if list_row.is_expanded() {
                     ARROW_EXPANDED
                 } else {
                     ARROW_COLLAPSED
                 }));
-                disconnect_row_handlers(item);
-                if expandable {
-                    let handler_row = list_row.clone();
-                    let slot_for_click = Rc::clone(&slot);
-                    let clicked = arrow_button.connect_clicked(move |_| {
-                        if let Some(panel) = slot_for_click
-                            .borrow()
-                            .as_ref()
-                            .and_then(std::rc::Weak::upgrade)
-                        {
-                            panel.toggle_branch(&handler_row);
-                        }
+                if has_arrow || connected {
+                    let click = has_arrow.then(|| {
+                        let handler_row = list_row.clone();
+                        let slot = Rc::clone(&slot);
+                        let clicked = arrow_button.connect_clicked(move |_| {
+                            if let Some(panel) = slot.borrow().as_ref().and_then(std::rc::Weak::upgrade) {
+                                panel.toggle_branch(&handler_row);
+                            }
+                        });
+                        (arrow_button, clicked)
                     });
-                    let notify_arrow = arrow.clone();
+                    let item_ref = item.downgrade();
+                    let status = connected.then(|| description.to_owned());
                     let expanded_changed = list_row.connect_expanded_notify(move |row| {
                         let expanded = row.is_expanded();
-                        notify_arrow.set_icon_name(Some(if expanded {
-                            ARROW_EXPANDED
+                        if let Some(status) = status.as_deref() {
+                            if let Some(item) = item_ref.upgrade() {
+                                describe_connection_branch(&item, status, expanded);
+                            }
                         } else {
-                            ARROW_COLLAPSED
-                        }));
-                        // 这里**不**记录「用户收起」：行在重建 / 回收时也会发 `expanded=false`，
-                        // 把那种通知当成用户意图会让下一次刷新不再展开已连接的连接（#144）。
-                        // 收起意图只由用户手势记录：本文的箭头按钮与点连接行
-                        // （`connect_saved` → `TreePanel::toggle_connection`）。
+                            arrow.set_icon_name(Some(if expanded { ARROW_EXPANDED } else { ARROW_COLLAPSED }));
+                        }
                     });
                     let handlers = RowHandlers {
                         row: list_row.clone(),
-                        button: arrow_button.clone(),
-                        clicked,
+                        click,
                         expanded_changed,
                     };
                     // SAFETY: 处理器 ID 与行的生命周期绑在同一个 ListItem 上，
@@ -1254,6 +1297,7 @@ impl TreePanel {
             .vexpand(true)
             .child(&list_view)
             .build();
+        tree_scroll.add_css_class("sqarvo-navigation-scroll");
 
         let status = gtk::Label::new(Some(l10n::t("object_tree.status_not_read")));
         status.set_xalign(0.0);
@@ -1289,8 +1333,7 @@ impl TreePanel {
         // 侧栏最小宽度归外壳（GtkPaned）管：树自身只声明 §1 的可拖拽下限 180，
         // 不能再钉 260——那会让 237 的默认宽度和 180 的下限都到不了。
         root.set_size_request(crate::layout::metrics().sidebar_min, -1);
-        // 树本体从工具条下方**直接开始**：搜索框已搬到窗口左下角（状态栏左边沟），
-        // 原来「搜索框 + 分割线」占的那一条不在树里了，也不再留分割线。
+        // Shell mounts the fixed heading and search controls above this stack.
         root.append(&stack);
         // Feedback must not move the rows underneath an in-progress pointer gesture.
         root.append(&selection_hint);
@@ -1631,7 +1674,7 @@ impl TreePanel {
 
     /// 展开某个连接节点（如果它还在、且还没展开）。
     ///
-    /// 与用户点箭头 / 点连接行走的是同一个 `set_expanded`：不预取未展开的分组，
+    /// 与用户激活连接行走的是同一个 `set_expanded`：不预取未展开的分组，
     /// 也不改 `collapsed` 记忆（那是用户主动收起的状态，只在用户点的时候才记）。
     pub fn expand_connection(self: &Rc<Self>, key: &str) {
         if let Some(row) = self.connection_row(key)
@@ -2380,9 +2423,9 @@ impl TreePanel {
         });
         self.search_entry.connect_changed({
             let weak = Rc::downgrade(self);
-            move |entry| {
+            move |_| {
                 if let Some(panel) = weak.upgrade() {
-                    panel.on_query_changed(&entry.text());
+                    panel.on_query_changed();
                 }
             }
         });
@@ -2392,7 +2435,7 @@ impl TreePanel {
                 if let Some(panel) = weak.upgrade() {
                     let query = panel.search_entry.text();
                     if panel.remote_mode.get() {
-                        panel.on_query_changed(&query);
+                        panel.on_query_changed();
                     } else {
                         panel.search_now(&query, "远程搜索");
                     }
@@ -2630,7 +2673,7 @@ impl TreePanel {
         self.remote_button
             .set_label(l10n::t("object_tree.search_back_local"));
         self.remote_button
-            .set_tooltip_text(Some(l10n::t("object_tree.search_remote_scope")));
+            .set_tooltip_text(Some(l10n::t("object_tree.search_back_local_hint")));
         eprintln!(
             "[tree] t=+{}ms {trigger}：立即搜索「{query}」（第 {} 次派发）",
             crate::qa::elapsed_ms(),
@@ -2640,10 +2683,9 @@ impl TreePanel {
         self.update_selection_hint();
     }
 
-    fn on_query_changed(self: &Rc<Self>, text: &str) {
+    fn on_query_changed(self: &Rc<Self>) {
         self.cancel_reveal();
         self.clear_remote_search();
-        self.remote_button.set_sensitive(should_search(text));
         self.schedule_local_filter();
     }
 
@@ -3084,8 +3126,14 @@ impl TreePanel {
         self.remote_scope.set_visible(false);
         self.remote_button
             .set_label(l10n::t("object_tree.search_remote"));
+        let enabled = should_search(&self.search_entry.text());
+        self.remote_button.set_sensitive(enabled);
         self.remote_button
-            .set_tooltip_text(Some(l10n::t("object_tree.search_remote_scope")));
+            .set_tooltip_text(Some(l10n::t(if enabled {
+                "object_tree.search_remote_scope"
+            } else {
+                "object_tree.search_remote_needs_query"
+            })));
         self.search_rows.borrow_mut().clear();
         self.search_runs.borrow_mut().clear();
         self.search_collapsed.borrow_mut().clear();
@@ -5250,12 +5298,15 @@ fn stylesheet() -> String {
         {indentation}
         .navigation-arrow-icon {{ -gtk-icon-size: {arrow_icon}px; }}
         .navigation-node-icon {{ -gtk-icon-size: {node_icon}px; }}
+        .navigation-resource-row {{ border-spacing: {content_gap}px; }}
+        .navigation-search-controls {{ margin: 0 {content_gap}px; }}
+        .navigation-connection-row:dir(ltr) {{ padding-left: {content_gap}px; }}
+        .navigation-connection-row:dir(rtl) {{ padding-right: {content_gap}px; }}
         .navigation-note-action {{ padding: 0; min-height: {row_height}px; }}
         .navigation-arrow-slot {{ min-width: {tree_arrow_box}px; }}
         button.tree-arrow {{ min-width: {tree_arrow_box}px; min-height: {tree_arrow_box}px; padding: 0; margin: 0; }}
         .navigation-heading {{ min-height: {header}px; }}
         .navigation-header-button, .navigation-header-button > button {{ min-width: {header_button}px; min-height: {header_button}px; padding: 0; }}
-        searchentry.navigation-search {{ min-height: {search_height}px; }}
         listview.sqarvo-tree > row {{ min-height: {row_height}px; border-radius: {radius}px; margin: 0 {inset}px; padding: 0; }}
         .navigation-connection-state {{ min-width: {dot}px; min-height: {dot}px; border-radius: {dot}px; margin-right: {inset}px; background-color: @sqarvo_status_fg; }}
         .navigation-connection-state.online {{ background-color: @success_color; }}
@@ -5266,10 +5317,10 @@ fn stylesheet() -> String {
         window_class = crate::theme::WINDOW_CLASS,
         arrow_icon = m.navigation_arrow_icon,
         node_icon = m.icon_box,
+        content_gap = m.gap_sm,
         tree_arrow_box = m.tree_arrow_box,
         header = m.navigation_header_height,
         header_button = m.navigation_header_button,
-        search_height = m.navigation_search_height,
         row_height = m.navigation_row_height,
         radius = m.radius_sm,
         inset = gap(Gap::Xs),

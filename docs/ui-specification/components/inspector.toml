@@ -347,7 +347,7 @@ status = "active"
 style.slot = "inspector"
 style.metrics = ["font_panel", "gap_lg", "gap_sm"]
 impl_notes = [
-  "分节提供列、主键、索引、触发器和行数。索引与触发器保留分页状态和显式刷新入口。",
+  "分节提供列、主键、索引、触发器和行数。索引与触发器保留分页状态，显式刷新从表信息 More 菜单进入。",
   "按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。",
   "正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。",
   "索引 / 触发器读取失败时显示错误及重试入口，已读回的本表资料仍然显示。",
@@ -474,21 +474,45 @@ evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_trigger_ddl_view_
 id = "inspector.object.info.refresh"
 parent = "inspector.object.info"
 display_name = "刷新表信息"
-kind = "control"
+kind = "item"
 status = "active"
-native_control = "gtk:GtkButton"
+native_control = "gtk:GtkPopoverMenu"
 a11y.name = "刷新表信息"
 style.slot = "inspector"
 
 [[component.interaction]]
 trigger = "click"
-precondition = "显示当前表的表信息"
-result = "显式重新读取当前表的列、主键及首批索引和触发器。"
+precondition = "从表信息 More 菜单触发，打开菜单时捕获的对象、浏览会话及加载周期仍然有效"
+result = "只重新读取该表的列、主键及首批索引和触发器。对象或会话失效、切换子页或目标变化时拒绝旧命令。"
 source = "src/inspector.rs::Inspector::force_reload"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8b075c3bad9b"
+spec_hash = "60782130e0f4"
+evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh"
+
+[[component]]
+id = "inspector.object.info.more"
+parent = "inspector.object.info"
+display_name = "表信息更多操作"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkMenuButton + GtkPopoverMenu"
+a11y.name = "表信息更多操作"
+a11y.tab = "表信息按钮之后，表信息正文之前"
+style.slot = "inspector"
+style.metrics = ["min_target", "radius_sm"]
+style.icon = ["tree.more"]
+
+[[component.interaction]]
+trigger = "click"
+precondition = "当前子页是表信息"
+result = "打开当前对象的菜单并捕获加载周期，提供刷新表信息命令。切换目标时关闭旧菜单。"
+source = "src/inspector.rs::Inspector::install_info_refresh"
+
+[component.sync.linux]
+state = "done"
+spec_hash = "0bbc442526cf"
 evidence = "tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh"
 
 [[component]]

@@ -99,6 +99,7 @@ impl Shell {
         sidebar_pane.set_resize_start_child(false);
         sidebar_pane.set_shrink_end_child(false);
         sidebar_pane.add_css_class("sqarvo-layout-split");
+        sidebar_pane.add_css_class("sqarvo-navigation-split");
         sidebar_pane.set_vexpand(true);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
@@ -410,12 +411,11 @@ impl Shell {
         let entry = entry.as_ref().clone();
         entry.set_hexpand(true);
         entry.set_valign(gtk::Align::Center);
-        entry.set_margin_start(gap(Gap::Md));
-        entry.set_margin_end(gap(Gap::Md));
         entry.set_margin_top(gap(Gap::None));
         entry.set_margin_bottom(gap(Gap::None));
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
+        column.add_css_class("sqarvo-navigation-search-area");
         column.set_valign(gtk::Align::Center);
         column.set_hexpand(true);
         column.append(&entry);
@@ -539,8 +539,14 @@ impl Toolbar {
         .map(|(key, icon)| {
             let name = l10n::t(key);
             let content = gtk::Box::new(horizontal, gap(Gap::Sm));
+            content.add_css_class("sqarvo-toolbar-action-content");
+            content.set_halign(gtk::Align::Center);
+            content.set_valign(gtk::Align::Center);
+            let image = gtk::Image::from_icon_name(icon);
+            image.set_valign(gtk::Align::Center);
             let label = gtk::Label::new(Some(name));
-            content.append(&gtk::Image::from_icon_name(icon));
+            label.set_valign(gtk::Align::Center);
+            content.append(&image);
             content.append(&label);
             let button = gtk::Button::new();
             button.set_child(Some(&content));

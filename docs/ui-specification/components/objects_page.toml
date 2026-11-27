@@ -45,7 +45,8 @@ kind = "control"
 status = "active"
 style.icon = ["tab.objects"]
 style.slot = "workspace.tabstrip"
-style.metrics = ["objects_min_width", "tab_strip_height"]
+style.metrics = ["objects_min_width", "tab_strip_height", "tab_height", "tab_radius"]
+style.states = { hover = "window_fg_color", selected = "window_fg_color", active = "sqarvo_overlay" }
 a11y.name = "Objects"
 a11y.tab = "可聚焦；固定在标签条首位"
 impl_notes = [
@@ -85,7 +86,7 @@ source = "src/tabs.rs:1393、src/tabs.rs:2684"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8c121f6ab79e"
+spec_hash = "9e549d552180"
 evidence = "test_19_workspace_tabs.py 验证固定 Objects 不可拖拽，支持键盘位次和溢出列表，显式 Browse 参与 MRU。test_15_refresh_regressions.py 验证普通重入保留列表和检索，F5 和已知失效才刷新。test_18_unbound_query.py 覆盖未绑定草稿和会话额度。"
 
 [[component]]

@@ -359,6 +359,7 @@ pub struct Inspector {
     switch_bar: gtk::Box,
     ddl_toggle: gtk::ToggleButton,
     info_toggle: gtk::ToggleButton,
+    info_more: gtk::MenuButton,
     stack: gtk::Stack,
     // 连接 / 库 / 列：三个「字段行」容器。
     connection_rows: gtk::Box,
@@ -612,6 +613,18 @@ impl Inspector {
         switch_bar.set_margin_bottom(gap(Gap::Sm));
         switch_bar.append(&ddl_toggle);
         switch_bar.append(&info_toggle);
+        let more_name = l10n::t("inspector.table_info_more");
+        let info_more = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text(more_name)
+            .hexpand(true)
+            .halign(gtk::Align::End)
+            .visible(false)
+            .build();
+        info_more.add_css_class("flat");
+        info_more.add_css_class("sqarvo-inspector-more");
+        info_more.update_property(&[gtk::accessible::Property::Label(more_name)]);
+        switch_bar.append(&info_more);
         switch_bar.set_visible(false);
 
         // ---- 连接 / 库 / 列：字段行容器 -------------------------------------
@@ -633,9 +646,7 @@ impl Inspector {
         info_box.set_margin_bottom(gap(Gap::Lg));
         info_box.set_margin_start(PANEL_CONTENT_LEFT);
         info_box.set_margin_end(gap(Gap::Lg));
-        let refresh_info = gtk::Button::with_label(l10n::t("inspector.refresh_table_info"));
         info_box.append(&info_status);
-        info_box.append(&refresh_info);
         let child_controls = ChildControls::new();
         info_box.append(&child_controls.section);
         let info_facts = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::Lg));
@@ -722,6 +733,7 @@ impl Inspector {
             switch_bar,
             ddl_toggle,
             info_toggle,
+            info_more,
             stack,
             connection_rows,
             catalog_rows,
@@ -752,12 +764,7 @@ impl Inspector {
             tab_key: RefCell::new("tree".to_owned()),
         });
         panel.install_toggles();
-        let weak = Rc::downgrade(&panel);
-        refresh_info.connect_clicked(move |_| {
-            if let Some(panel) = weak.upgrade() {
-                panel.force_reload();
-            }
-        });
+        panel.install_info_refresh();
         let weak = Rc::downgrade(&panel);
         back.connect_clicked(move |_| {
             if let Some(panel) = weak.upgrade() {
@@ -782,6 +789,81 @@ impl Inspector {
             });
         }
         panel
+    }
+
+    fn install_info_refresh(self: &Rc<Self>) {
+        let model = gio::Menu::new();
+        let item = gio::MenuItem::new(None, None);
+        item.set_attribute_value("custom", Some(&"refresh-table-info".to_variant()));
+        model.append_item(&item);
+        let popover = gtk::PopoverMenu::from_model(Some(&model));
+        popover.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "inspector.table_info_more",
+        ))]);
+        let refresh = gtk::Button::builder()
+            .accessible_role(gtk::AccessibleRole::MenuItem)
+            .label(l10n::t("inspector.refresh_table_info"))
+            .build();
+        refresh.add_css_class("flat");
+        popover.add_child(&refresh, "refresh-table-info");
+        self.info_more.set_popover(Some(&popover));
+
+        let captured = Rc::new(RefCell::new(None));
+        let owner = Rc::downgrade(self);
+        popover.connect_map({
+            let captured = Rc::clone(&captured);
+            let refresh = refresh.clone();
+            move |_| {
+                let target = owner
+                    .upgrade()
+                    .and_then(|panel| panel.info_refresh_target());
+                refresh.set_sensitive(target.is_some());
+                refresh.set_tooltip_text(
+                    target
+                        .is_none()
+                        .then(|| l10n::t("inspector.info_no_session")),
+                );
+                captured.replace(target);
+            }
+        });
+        let owner = Rc::downgrade(self);
+        refresh.connect_clicked({
+            let captured = Rc::clone(&captured);
+            move |_| {
+                if let Some(panel) = owner.upgrade() {
+                    let target = captured.take();
+                    panel.info_more.popdown();
+                    if target.is_some() && target == panel.info_refresh_target() {
+                        panel.force_reload();
+                    }
+                }
+            }
+        });
+        popover.connect_closed(move |_| {
+            captured.take();
+        });
+        let owner = Rc::downgrade(self);
+        self.table_stack
+            .connect_visible_child_name_notify(move |stack| {
+                if let Some(panel) = owner.upgrade() {
+                    panel
+                        .info_more
+                        .set_visible(stack.visible_child_name().as_deref() == Some("info"));
+                }
+            });
+    }
+
+    fn info_refresh_target(&self) -> Option<(LoadToken, ObjectRef)> {
+        let token = self
+            .info_token
+            .get()
+            .filter(|token| self.epoch.is_current(*token))?;
+        let object = self.object.borrow();
+        let node = object.as_ref()?;
+        (self.page.borrow().as_str() == "table"
+            && self.table_stack.visible_child_name().as_deref() == Some("info")
+            && self.hub(node).is_some())
+        .then(|| (token, node.reference.clone()))
     }
 
     fn install_toggles(self: &Rc<Self>) {
@@ -820,6 +902,7 @@ impl Inspector {
     /// 开启一个新加载周期：此前所有在途响应就此失效。
     fn begin_load(&self) -> LoadToken {
         self.info_token.set(None);
+        self.info_more.popdown();
         self.close_trigger_ddl();
         self.epoch.begin()
     }

@@ -200,7 +200,14 @@ def test_search_lists_all_tabs_and_filters_locally(ui_instance):
         A.wait_until(lambda: scroll_position() < end, 8, "拖拽时到达边缘自动滚动")
         A.press_keys("Escape")
     expect_active(frame, "查询 8")
+    expect_order(inst, [f"tab-q{i}" for i in range(1, 9)])
     expect(tab_rpc_counts(inst) == before, "边缘滚动及取消零新增业务请求")
+    tab(frame, "查询 8")
+    # The native restore animation can scroll the selected tab back into view.
+    # Scroll it out again before testing explicit activation.
+    after_cancel = scroll_position()
+    A.mouse_click(viewport, button=4, count=4)
+    A.wait_until(lambda: scroll_position() < after_cancel, 8, "手动滚离当前标签")
     scrolled_left = scroll_position()
     A.press_keys("Alt_L", "9")
     A.wait_until(lambda: scroll_position() > scrolled_left, 8, "显式激活定位到当前标签")
@@ -227,6 +234,9 @@ def test_reveal_background_tab_uses_captured_object(ui_instance):
     frame = ops.open_table_for_qa(inst, "widgets")
     query = ops.open_sql_page(frame)
     expect_active(frame, "查询 1")
+    navigation = A.find_one(frame, role_in=("grouping",), name="导航")
+    A.click(A.find_one(navigation, role_in=("button",), name="全部折叠"))
+    A.wait_gone(lambda: ops.find_row(navigation, exact_name="main"), 8, "定位前顶层连接已折叠")
     A.window_action(frame, "win.clear-selection")
     A.mouse_click(tab(frame, "widgets"), button=3, horizontal_fraction=0.35)
     menu = A.wait_until(lambda: next((widget for widget in A.walk(frame)
@@ -282,6 +292,40 @@ def test_sort_and_close_with_eight_established_sessions(ui_instance):
     page = ops.active_query_page(frame, "查询 9")
     A.wait_enabled(A.find_one(page, role_in=("button",), name="执行"), 15)
     A.wait_until(lambda: "标签 tab-q9 的会话已建立" in inst.log_text(), 15, "额度恢复后新增独立查询")
+
+
+def test_short_drag_and_edge_exchange_with_two_tabs(ui_instance):
+    """tabs.strip, tabs.strip.tab (A11.2)."""
+    inst = ui_instance("tab-short-drag").start(extra_args=("--lang", "zh"))
+    frame = inst.frame()
+    for _ in range(2):
+        ops.open_sql_page(frame)
+    first, second = ops.query_tab_names(frame)
+    before = tab_rpc_counts(inst)
+    reorders = inst.log_text().count("[qa.tabs] order ")
+    with A.mouse_drag(tab(frame, first), horizontal_fraction=0.6) as move_to:
+        move_to(offset=(8, 0))
+    expect_active(frame, first)
+    expect("[qa.tabs] dragging tab-q1" not in inst.log_text(), "轻微移动仍然是单击")
+    A.press_keys("Alt_L", "3")
+    expect_active(frame, second)
+
+    presses = inst.log_text().count("[qa.tabs] pressed tab-q1")
+    with A.mouse_drag(tab(frame, first), horizontal_fraction=0.6) as move_to:
+        A.wait_until(lambda: inst.log_text().count("[qa.tabs] pressed tab-q1") > presses,
+                     8, "按下进入候选状态")
+        move_to(offset=(0, 12))
+        move_to(offset=(12, 0))
+        A.wait_until(lambda: "[qa.tabs] dragging tab-q1" in inst.log_text(), 8, "水平小幅移动进入拖拽")
+        expect(inst.log_text().count("[qa.tabs] order ") == reorders, "启动拖拽和实际换位分开")
+        expect_active(frame, second)
+        # The pointer enters just the leading edge of the target, well before its midpoint.
+        move_to(tab(frame, second), horizontal_fraction=0.1)
+        expect_order(inst, ["tab-q2", "tab-q1"])
+        A.press_keys("Escape")
+        expect_order(inst, ["tab-q1", "tab-q2"])
+    expect_active(frame, second)
+    expect(tab_rpc_counts(inst) == before, "小幅拖动及取消零 RPC、零摘页")
 
 
 def test_window_local_sort_and_cancellation(ui_instance):

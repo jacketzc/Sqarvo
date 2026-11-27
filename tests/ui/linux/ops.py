@@ -17,6 +17,7 @@ from adapter import (
     find_dialog,
     find_one,
     mouse_click,
+    press_keys,
     query,
     states,
     text_value,
@@ -167,6 +168,14 @@ def expand_tree_row(row):
     """点行内展开按钮（与用户点三角箭头同一路径）。返回动作名。"""
     btn = find_one(row, role_in=("button",), name="展开或折叠")
     return click(btn)
+
+
+def activate_connection_row(row):
+    """Focus a top-level connection and activate it with Enter."""
+    label = find_one(row, role_in=("label",))
+    click_tree_until(lambda: label, lambda: "focused" in states(row),
+                     timeout=8, what="连接行已获得键盘焦点")
+    press_keys("Return")
 
 
 def open_table_for_qa(inst, name):

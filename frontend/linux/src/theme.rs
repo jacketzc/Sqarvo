@@ -395,6 +395,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         @define-color sqarvo_frame alpha(@window_fg_color, {frame});
         @define-color sqarvo_overlay alpha(@window_fg_color, {overlay});
         @define-color sqarvo_status_fg alpha(@window_fg_color, {status_fg});
+        @define-color sqarvo_navigation_fill alpha(@window_fg_color, {tab_hover});
 
         /* 主操作按钮（「连接」/「新建连接」/「保存」/「提交」/「提交事务」/「执行」）：
            实底 = 深档。libadwaita 的 hover / active 是用 `background-image` 叠一层
@@ -465,15 +466,15 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         .sqarvo-toolbar button {{ min-height: {target}px; padding: {gap_xxs}px {gap_lg}px; }}
         .sqarvo-toolbar label {{ font-size: {ui}px; }}
         .sqarvo-toolbar image {{ -gtk-icon-size: {objects_filter_icon}px; }}
+        .sqarvo-toolbar .sqarvo-toolbar-action-content > label {{
+            margin-top: {gap_xxs}px;
+        }}
         .sqarvo-toolbar button.sqarvo-layout-control image {{
             -gtk-icon-size: {toolbar_layout_icon}px;
         }}
         .sqarvo-toolbar button.sqarvo-kind,
         .sqarvo-toolbar menubutton.sqarvo-kind-active button {{
             border-radius: {radius_sm}px;
-        }}
-        .sqarvo-toolbar button.sqarvo-layout-control:checked {{
-            background-color: @sqarvo_brand_soft;
         }}
         /* 种类入口是纯拉丁文字（Tables / Views / Functions / Queries），和中文
            「新建查询」同一行混排时，Pango 的中文 em 盒比拉丁大写字高更靠下：
@@ -637,13 +638,11 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         /* 工作区标签条使用当前密度档的尺寸下限。 */
         .sqarvo-tab-strip {{
             min-height: {tab_strip}px;
-            padding: 0 {gap_sm}px;
             border-bottom: 1px solid @sqarvo_separator;
+            background-color: @window_bg_color;
         }}
-        /* AdwTabBar 的自然高度由原生控件和系统主题共同决定。 */
         .sqarvo-tab-bar {{
-            padding: 0 {gap_xxs}px;
-            min-height: {tab_strip}px;
+            padding: 0 {tab_strip_inset}px;
         }}
         /* 标签条只许有一条下边线（v0.2.4 用户反馈「分割线像两条线叠在一起」）。
            `AdwTabBar` 内部的 `.box` 自带 `box-shadow: inset 0 -1px
@@ -656,12 +655,27 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
            同名 shade 的 `@media` 变体同样被压掉。 */
         .sqarvo-tab-strip tabbar .box {{
             box-shadow: none;
+            background: transparent;
+        }}
+        /* Align the native tab boxes and the action slot in the strip's
+           height. Keep the tab and button minimums as separate metrics. */
+        .sqarvo-tab-bar tabbox,
+        .sqarvo-tab-bar .end-action {{
+            min-height: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+        }}
+        .sqarvo-tab-bar separator {{
+            background: transparent;
+            box-shadow: none;
         }}
         .sqarvo-tab-bar tab {{
             min-height: {tab_height}px;
             padding: 0 {tab_padding_h}px;
             border-radius: {tab_radius}px;
             font-size: {ui}px;
+            background-color: alpha(@sqarvo_navigation_fill, 0.5);
+            color: @sqarvo_status_fg;
         }}
         .sqarvo-tab-bar tab button.tab-close-button image {{
             -gtk-icon-size: {tab_close_icon}px;
@@ -680,18 +694,32 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             background-color: alpha(@window_fg_color, {tab_hover});
         }}
         .sqarvo-tab-bar tab:selected,
-        .sqarvo-tab-bar tab:selected:hover,
-        .sqarvo-tab-bar tab:selected:active {{
+        .sqarvo-tab-bar tab:selected:hover {{
             background-color: alpha(@window_fg_color, {tab_selected});
+            color: @window_fg_color;
+        }}
+        .sqarvo-tab-bar tab.sqarvo-tab-pressed,
+        .sqarvo-tab-bar tab.sqarvo-tab-pressed:selected,
+        .sqarvo-tab-bar tab.sqarvo-tab-dragging,
+        .sqarvo-tab-bar tab.sqarvo-tab-dragging:selected {{
+            background-color: @sqarvo_overlay;
+            color: @window_fg_color;
+        }}
+        .sqarvo-tab-bar tab.sqarvo-tab-dragging {{
+            outline: 1px solid @sqarvo_frame;
+            outline-offset: -1px;
+        }}
+        .sqarvo-tab-bar tab.sqarvo-tab-insert-left {{
+            box-shadow: inset {insertion_width}px 0 @sqarvo_frame;
+        }}
+        .sqarvo-tab-bar tab.sqarvo-tab-insert-right {{
+            box-shadow: inset -{insertion_width}px 0 @sqarvo_frame;
         }}
         .sqarvo-tab-bar tab:selected indicator {{
             background: @window_fg_color;
         }}
         .sqarvo-tab-strip button {{ min-height: {target}px; min-width: {target}px; }}
-        /* 固定 `Objects` 页（v0.2.3.2）：钉住的页永远排在最前，宽度按规范口径 84px。
-           `AdwTabBar` 没有 per-page 宽度 API；实测钉住页带 `pinned` 样式类
-           （`[tabs] 标签实际宽度：pinned=26px`），所以按它选中。
-           内容盒 84 + padding 0，避免被默认内边距撑大。 */
+        /* 固定页和普通页共用状态规则，图标页无需文字内边距。 */
         .sqarvo-tab-bar tab.pinned {{
             min-width: {objects_min_width}px;
             padding: 0;
@@ -754,6 +782,34 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             background-repeat: no-repeat;
             background-position: center;
         }}
+        paned.sqarvo-navigation-split > separator {{
+            background-color: @window_bg_color;
+            border-color: transparent;
+            box-shadow: none;
+        }}
+        .sqarvo-navigation,
+        .sqarvo-navigation .sqarvo-navigation-scroll,
+        .sqarvo-navigation listview.sqarvo-tree {{
+            background-color: @window_bg_color;
+        }}
+        .sqarvo-navigation .sqarvo-navigation-search-area {{
+            margin-bottom: {navigation_content_gap}px;
+        }}
+        .sqarvo-navigation entry.navigation-search,
+        .objects-filter {{
+            min-height: {objects_filter_height}px;
+            padding-top: 0;
+            padding-bottom: 0;
+            border-radius: {radius_sm}px;
+        }}
+        .sqarvo-navigation entry.navigation-search {{
+            padding-left: {gap_xs}px;
+            padding-right: {gap_xs}px;
+            border-width: 0;
+            border-spacing: {navigation_content_gap}px;
+            -gtk-icon-size: {objects_filter_icon}px;
+            background-color: alpha(@sqarvo_navigation_fill, 0.5);
+        }}
         .sqarvo-workspace-ops {{ min-height: 0; }}
         .sqarvo-status-right {{ padding: 0 {gap_xl}px; }}
         .sqarvo-status-row {{ min-height: {tree_row}px; }}
@@ -809,12 +865,6 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
            颜色（标签 dim）与分节间距，不再用 Medium / Semibold。 */
         .sqarvo-panel-text {{ font-size: {panel_font}px; font-weight: {fw_ui}; }}
 
-        .objects-filter {{
-            min-height: {objects_filter_height}px;
-            padding-top: 0;
-            padding-bottom: 0;
-            border-radius: {radius_sm}px;
-        }}
         .objects-filter > image {{ -gtk-icon-size: {objects_filter_icon}px; }}
 
         /* 信息面板的 [DDL] / [表信息]（v0.2.3.3）：两个独立 toggle，选中态是贴着
@@ -830,6 +880,12 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             box-shadow: none;
         }}
         .sqarvo-pane-switch > button:hover {{ background: alpha(@sqarvo_brand_soft, 0.55); }}
+        .sqarvo-inspector-more > button {{
+            min-height: {target}px;
+            min-width: {target}px;
+            padding: 0;
+            border-radius: {radius_sm}px;
+        }}
         /* 选中态用中档的**半透明**（45%）：这是 10px 正文旁边的小切换块，
            实底中档会重演一次「比文字大一圈的砖」。色相仍只来自 `sqarvo_brand_mid`，
            不引入第四种颜色。 */
@@ -1010,6 +1066,9 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         tab_padding_h = m.tab_padding_h,
         tab_radius = m.tab_radius,
         tab_close_icon = m.tab_close_icon,
+        tab_strip_inset = m.gap_px(Gap::Xxs),
+        insertion_width = m.gap_px(Gap::Xxs),
+        navigation_content_gap = m.gap_sm,
         icon_button_class = crate::icons::BUTTON_CLASS,
         icon_button_width = m.icon_button_width,
         icon_button_height = m.icon_button_height,
@@ -1032,7 +1091,6 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         secondary_min_height = m.secondary_min_height,
         gap_xxs = m.gap_px(Gap::Xxs),
         gap_xs = m.gap_px(Gap::Xs),
-        gap_sm = m.gap_px(Gap::Sm),
         gap_md = m.gap_px(Gap::Md),
         gap_lg = m.gap_px(Gap::Lg),
         gap_xl = m.gap_px(Gap::Xl),

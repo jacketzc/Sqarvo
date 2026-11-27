@@ -535,7 +535,7 @@ def test_objects_filter_is_not_restored_at_startup(ui_instance):
         A.mouse_click(saved, count=2)
         ops.wait_connected(frame, "uitest.db", timeout=20)
         if ops.find_row(frame, exact_name="main") is None:
-            ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
+            ops.activate_connection_row(ops.find_row(frame, "uitest.db", "已连接", timeout=10))
         main = ops.find_row(frame, exact_name="main", timeout=10)
         if ops.find_row(frame, exact_name="Tables") is None:
             ops.expand_tree_row(main)
@@ -753,7 +753,15 @@ def test_navigation_selection_survives_projection_without_requests(ui_instance):
     _wait_list_loaded(inst)
     if ops.find_row(frame, "widgets", "表") is None:
         ops.expand_tree_row(ops.find_row(frame, "Tables", timeout=15))
-    _select_tree_row(frame, "widgets", "表")
+    def widgets_row():
+        return ops.find_row(frame, "表", exact_name="widgets")
+
+    def widgets_label():
+        if row := widgets_row():
+            return A.find_one(row, role_in=("label",), name="widgets")
+
+    ops.click_tree_until(widgets_label, lambda: (row := widgets_row()) is not None
+                         and "selected" in A.states(row), what="实际选择 widgets")
     panel = _inspector(frame)
     A.wait_until(lambda: any("CREATE TABLE widgets" in A.text_value(control)
                              for control in A.query(panel, role_in=("text",))),
@@ -761,15 +769,10 @@ def test_navigation_selection_survives_projection_without_requests(ui_instance):
     before = _metadata_counts(inst)
 
     with step("collapse_then_restore"):
-        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接"))
-        A.wait_gone(lambda: ops.find_row(frame, "widgets", "表"), 10, "目标随折叠隐藏")
-        ops.expand_tree_row(ops.find_row(frame, "uitest.db", "已连接"))
-        main = ops.find_row(frame, "main", timeout=15)
-        if ops.find_row(frame, "Tables") is None:
-            ops.expand_tree_row(main)
         tables = ops.find_row(frame, "Tables", timeout=15)
-        if ops.find_row(frame, "widgets", "表") is None:
-            ops.expand_tree_row(tables)
+        ops.expand_tree_row(tables)
+        A.wait_gone(lambda: ops.find_row(frame, "widgets", "表"), 10, "目标随折叠隐藏")
+        ops.expand_tree_row(tables)
         A.wait_until(lambda: "selected" in A.states(
             ops.find_row(frame, "widgets", "表", timeout=5)),
             10, "同一资源恢复为可见选择")

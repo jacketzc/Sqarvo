@@ -102,8 +102,11 @@ GTK 的逻辑坐标：
 
 工作区标签栏使用 `tab_strip_height`，普通标签采用 `tab_height`、
 `tab_min_width` / `tab_max_width`、`tab_radius`、`tab_padding_h` 与 `tab_close_icon`。
-页面名称的实测文本宽度用于夹取内容宽，固定页采用 `objects_min_width`。
-原生标签和滚动分配仍受 GTK 最小尺寸约束。
+内容宽度请求按标题测量、类型图标、未保存圆点的预留空间及关闭控件计算。
+固定 Objects 使用 `objects_min_width`，与普通标签共用高度和圆角。
+`gap_xs` 是三档标签间距目标；当前 GTK 标签间距沿用原生值，
+实际宽高分配限制见[行为契约 §9](ui-behavior-contract.md#9-已知偏差与存疑)。
+左中接缝使用 `panel_handle` 命中区和居中细线，标签栏的边缘留白使用 `gap_xxs`。
 
 ### 3.2 不随档位缩放的量
 
@@ -132,10 +135,15 @@ GTK 的逻辑坐标：
 全宽标题和工具条分别使用 `header_height` 与 `toolbar_height`。工具条取
 `toolbar_padding_h`、`toolbar_button_height`、`gap_*`、`min_target`、`font_ui`、`icon_box`、
 `toolbar_layout_icon` 与 `radius_sm`。
+连接与新建查询的图文组居中，图文间距使用 `gap_sm`，文字以 `gap_xxs` 补偿视觉中线。
 空间分配取当前档位的实际控件测量与文字宽度，规则见 `shell.toolbar.more`。
 
-导航标题、标题按钮、资源行与固定搜索使用 `navigation_header_height`、
-`navigation_header_button`、`navigation_row_height`、`navigation_search_height`。
+导航标题、标题按钮与资源行使用 `navigation_header_height`、`navigation_header_button`、
+`navigation_row_height`。导航与 Objects 搜索框共用 `objects_filter_height` 和 `radius_sm`。
+导航输入框水平内边距使用 `gap_xs`，搜索区外侧与下沿使用 `gap_sm`。
+连接标题、搜索区和两种资源列表共用 `window_bg_color`。
+顶层连接行以 `gap_xs` 行外缩和 `gap_sm` 起始内距对应搜索框的外距与内距，双方共用
+`icon_box` 图标列和 `gap_sm` 图文间距。顶层无箭头槽，子层仍按 `navigation_indent` 递进。
 缩进、行内缩、圆角、箭头与状态圆点分别取 `navigation_indent`、
 `gap_xs`、`radius_sm`、`tree_arrow_box`、
 `navigation_arrow_icon`、`status_dot_diameter`。箭头命中尺寸遵循 `min_target`。

@@ -421,6 +421,12 @@ en = "Refresh Table Info"
 status = "done"
 
 [[entry]]
+key = "inspector.table_info_more"
+zh = "表信息更多操作"
+en = "More Table Info Actions"
+status = "done"
+
+[[entry]]
 key = "inspector.loading_children"
 zh = "正在读取索引与触发器…"
 en = "Loading indexes and triggers…"

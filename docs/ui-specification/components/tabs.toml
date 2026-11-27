@@ -47,12 +47,13 @@ kind = "container"
 status = "active"
 native_control = "gtk:AdwTabBar + AdwTabView / winui:TabView / swift:—"
 style.slot = "workspace.tabstrip"
-style.metrics = ["tab_strip_height", "gap_sm", "gap_xxs", "min_target", "objects_min_width"]
-style.tokens = ["sqarvo_separator"]
+style.metrics = ["tab_strip_height", "gap_xs", "gap_xxs", "min_target", "objects_min_width"]
+style.tokens = ["sqarvo_separator", "window_bg_color"]
 impl_notes = [
   "固定 Objects 和原生普通标签滚动区分开。加号位于普通标签区末端的原生动作槽，右侧列表入口常驻。滚动区溢出时两项操作仍可访问。",
   "滚动、缩放与拖拽使用同一个 AdwTabView 页面模型。手动滚动保留用户的位置，主动激活会定位对应标签。",
 ]
+platform_notes.linux = "AdwTabBar 的非扩张模式限制整排扩张，仍统一分配普通标签宽度。公开 API 无逐标签宽度或逐档间距设置，间距沿用原生常量，实际高度还受原生子控件与主题最小尺寸约束。见行为契约 §9。"
 
 [[component.interaction]]
 trigger = "scroll"
@@ -61,8 +62,7 @@ result = "可单行横向滚动，Objects、加号和所有标签入口保持可
 source = "src/tabs.rs::TabSet::new、src/tabs/strip_input.rs::TabSet::reveal_strip_page"
 
 [component.sync.linux]
-state = "done"
-spec_hash = "a81a9853219d"
+state = "blocked"
 evidence = "test_search_lists_all_tabs_and_filters_locally 验证 840 宽窗口下的边缘自动滚动、手动位置保留、Objects 与两个入口可达，以及显式激活定位。"
 
 [[component]]
@@ -73,10 +73,10 @@ kind = "row"
 status = "active"
 a11y.name = "（按实例生成的完整标签名称）"
 a11y.tab = "可聚焦；Ctrl+Tab / Ctrl+Shift+Tab 循环切换，Alt+1..9 直选第 N 个"
-style.metrics = ["tab_min_width", "tab_max_width", "tab_height", "tab_radius", "tab_padding_h", "status_dot_diameter", "min_target", "font_ui"]
-style.tokens = ["window_fg_color", "accent_bg_color"]
+style.metrics = ["tab_min_width", "tab_max_width", "tab_height", "tab_radius", "tab_padding_h", "gap_xs", "gap_xxs", "status_dot_diameter", "min_target", "font_ui"]
+style.tokens = ["window_fg_color", "accent_bg_color", "sqarvo_navigation_fill", "sqarvo_status_fg", "sqarvo_overlay", "sqarvo_frame"]
 style.icon = ["tab.unsaved"]
-style.states = { hover = "window_fg_color", selected = "window_fg_color" }
+style.states = { hover = "window_fg_color", selected = "window_fg_color", active = "sqarvo_overlay" }
 impl_notes = [
   "业务类型图标与未保存标记分别来自页面图标和原生 indicator。未保存状态来自 SQL、表数据及查询结果编辑，执行 SQL 或失败的保存不会清除编辑标记。",
   "原生标签在可访问名称和 Tooltip 暴露完整名称。右键菜单捕获实例 ID，关闭活动标签按 MRU 恢复，缺少有效历史时首先尝试右邻。",
@@ -96,14 +96,14 @@ source = "src/tabs.rs::TabSet::finish_approved_close、src/tabs.rs::TabSet::on_p
 
 [[component.interaction]]
 trigger = "drag"
-precondition = "在普通标签按住主按钮并达到拖拽阈值"
-result = "窗口内按原生模型重排，保持现有活动页和历史。Escape、越界或手势取消恢复原有存续实例的相对顺序；重新移入须发起新手势。整个排序没有业务请求或页面转移。"
+precondition = "按下主按钮时立即反馈。轻微移动仍可单击。普通标签的水平移动达到独立启动阈值且水平分量不小于垂直分量时进入拖拽。"
+result = "进入拖拽即显示轮廓和抓取光标。实际水平移动或主动边缘滚动使移动边缘进入相邻标签的尺寸相关交换区后，通过原生模型换位并标出插入侧。反方向另有换位回差。保持活动页和历史。Escape、越界或手势取消恢复存续实例的相对顺序，须重新起拖。排序零业务请求、零页面转移。"
 source = "src/tabs/strip_input.rs"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "0a05ba46f4cd"
-evidence = "test_19_workspace_tabs.py 验证真实指针窗口内排序、越界、重新移入、Escape、固定 Objects、零业务请求和零原生摘页，以及重排后的 Alt 位次。取消后可激活、执行和关闭。"
+spec_hash = "4eb722adc786"
+evidence = "test_19_workspace_tabs.py 验证两标签轻微移动仍单击、短水平移动启动拖拽后才换位、三标签及溢出排序、越界和 Escape 恢复、固定 Objects、零业务请求与零原生摘页。取消后可激活、执行和关闭。原生宽度分配限制见 tabs.strip。"
 
 [[component]]
 id = "tabs.strip.tab.table"

@@ -52,7 +52,7 @@ use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar, ToolbarTarget};
 use crate::tabs::KindShortcut;
 use crate::theme;
 use crate::tree::{KindGroup, TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
-use crate::workspace_context::{TargetState, object_scope};
+use crate::workspace_context::{ActionTarget, TargetState, object_scope};
 
 /// 主窗口与连接对话框共享的状态。
 struct UiState {
@@ -1399,8 +1399,14 @@ fn target_copy(
             None
         }
     });
-    let schema =
-        scope.and_then(|scope| (!scope.schema.is_empty()).then_some(scope.schema.as_str()));
+    let schema = scope.and_then(|scope| {
+        let name = if scope.schema.is_empty() && scope.kind == ObjectKind::Schema as i32 {
+            &scope.name
+        } else {
+            &scope.schema
+        };
+        (!name.is_empty()).then_some(name.as_str())
+    });
     let identity = [Some(connection.as_str()), database, schema]
         .into_iter()
         .flatten()
@@ -1434,14 +1440,35 @@ fn target_copy(
     if unavailable {
         details.push(l10n::t("object_tree.target_unavailable").to_owned());
     }
-    let navigation = workspace.tree.navigation_target();
     let workspace_target = workspace.tabs.workspace_context();
     let same_scope = matches!(workspace_target, TargetState::Available(active)
-        if active.profile_id == target.profile_id && active.scope == target.scope);
-    let show = unavailable
-        || (navigation != TargetState::None
-            && (!same_scope || !workspace.tree.navigation_visible()));
+        if same_toolbar_scope(&active, target));
+    let show = unavailable || !same_scope;
     (show.then_some(summary), Some(details.join("\n")))
+}
+
+fn same_toolbar_scope(active: &ActionTarget, target: &ActionTarget) -> bool {
+    if active.profile_id != target.profile_id {
+        return false;
+    }
+    fn scope_key(scope: &ObjectRef) -> Option<(&str, &str)> {
+        // The query binding can contain just the confirmed catalog name,
+        // whereas navigation can carry it in both fields of the same scope.
+        let name = scope.name.as_str();
+        let catalog = scope.catalog.as_str();
+        let schema = scope.schema.as_str();
+        match ObjectKind::try_from(scope.kind).ok()? {
+            ObjectKind::Catalog if schema.is_empty() && (catalog.is_empty() || name == catalog) => {
+                (!name.is_empty()).then_some((name, ""))
+            }
+            ObjectKind::Schema if !name.is_empty() && (schema.is_empty() || name == schema) => {
+                Some((catalog, name))
+            }
+            _ => None,
+        }
+    }
+    let active = active.scope.as_ref().and_then(scope_key);
+    active.is_some() && active == target.scope.as_ref().and_then(scope_key)
 }
 
 #[derive(Clone, Copy)]
@@ -1476,8 +1503,18 @@ fn request_toolbar_command(
         return;
     }
     let (summary, details) = target_copy(state, &workspace, &target.action);
-    if let (Some(summary), Some(details)) = (summary, details)
-        && state.toolbar().target_needs_confirmation(&summary)
+    let needs_confirmation = if let Some(summary) = summary.as_deref() {
+        state.toolbar().target_needs_confirmation(summary)
+    } else if workspace.tree.navigation_target() != TargetState::None {
+        // The title stands in for the suppressed summary. If it cannot fit,
+        // keep the full-target confirmation and the same dispatch recheck.
+        let (_, natural, _, _) = state.title.measure(gtk::Orientation::Horizontal, -1);
+        state.title.width() < natural
+    } else {
+        false
+    };
+    if let Some(details) = details
+        && needs_confirmation
     {
         let heading = match command {
             ToolbarCommand::Query => l10n::t("shell.toolbar_new_query"),
@@ -2729,6 +2766,7 @@ impl Workspace {
             .orientation(gtk::Orientation::Vertical)
             .accessible_role(gtk::AccessibleRole::Group)
             .build();
+        sidebar_box.add_css_class("sqarvo-navigation");
         sidebar_box.set_size_request(layout::metrics().sidebar_min, -1);
         sidebar_box.append(tree.widget());
 
@@ -6472,6 +6510,75 @@ fn show_about(state: &Rc<UiState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toolbar_scope_uses_exact_profile_catalog_and_schema() {
+        let live = ObjectRef {
+            name: "main".into(),
+            kind: ObjectKind::Catalog as i32,
+            ..Default::default()
+        };
+        let nav = ObjectRef {
+            catalog: "main".into(),
+            session_id: "browse-session".into(),
+            ..live.clone()
+        };
+        let active = ActionTarget::new("profile-a", Some(&live));
+        assert!(same_toolbar_scope(
+            &active,
+            &ActionTarget::new("profile-a", Some(&nav)),
+        ));
+        for target in [
+            ActionTarget::new("profile-b", Some(&nav)),
+            ActionTarget::new("profile-a", None),
+            ActionTarget::new(
+                "profile-a",
+                Some(&ObjectRef {
+                    catalog: "other".into(),
+                    name: "other".into(),
+                    ..nav
+                }),
+            ),
+        ] {
+            assert!(!same_toolbar_scope(&active, &target));
+        }
+        let schema = ObjectRef {
+            schema: "public".into(),
+            name: "public".into(),
+            catalog: "main".into(),
+            kind: ObjectKind::Schema as i32,
+            ..Default::default()
+        };
+        let active_schema = ActionTarget::new("profile-a", Some(&schema));
+        let schema_name_only = ObjectRef {
+            schema: String::new(),
+            ..schema.clone()
+        };
+        assert!(same_toolbar_scope(
+            &active_schema,
+            &ActionTarget::new("profile-a", Some(&schema_name_only)),
+        ));
+        let missing_scope_name = ObjectRef {
+            name: String::new(),
+            ..schema.clone()
+        };
+        let other_catalog = ObjectRef {
+            catalog: "other".into(),
+            ..schema.clone()
+        };
+        let other_schema = ObjectRef {
+            schema: "private".into(),
+            name: "private".into(),
+            ..schema
+        };
+        assert!(!same_toolbar_scope(&active, &active_schema));
+        for scope in [&missing_scope_name, &other_catalog, &other_schema] {
+            assert!(!same_toolbar_scope(
+                &active_schema,
+                &ActionTarget::new("profile-a", Some(scope)),
+            ));
+        }
+    }
 
     #[test]
     fn system_title_appends_the_brand_once() {

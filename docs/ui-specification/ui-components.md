@@ -7,7 +7,7 @@
 
 前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：Linux Active、Windows Rewriting、macOS Planned。同步列仅显示 Active 平台。
 
-共 240 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 241 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。
@@ -1016,7 +1016,8 @@ kind `control` · status `active` · parent `dialogs.about`
 | `inspector.object.info.children.load_more` | 　　　　加载更多索引和触发器 | control | active | done |
 | `inspector.object.info.children.retry` | 　　　　重试读取索引和触发器 | control | active | done |
 | `inspector.object.info.children.view_ddl` | 　　　　查看触发器 DDL | control | active | done |
-| `inspector.object.info.refresh` | 　　　刷新表信息 | control | active | done |
+| `inspector.object.info.refresh` | 　　　刷新表信息 | item | active | done |
+| `inspector.object.info.more` | 　　　表信息更多操作 | control | active | done |
 | `inspector.object.info.trigger_ddl` | 　　　触发器 DDL 正文 | container | active | done |
 | `inspector.object.info.trigger_ddl.copy` | 　　　　复制触发器 DDL | control | active | done |
 | `inspector.object.info.trigger_ddl.back` | 　　　　返回表信息 | control | active | done |
@@ -1163,7 +1164,7 @@ kind `container` · status `active` · parent `inspector.object`
 
 - 样式：槽位 `inspector`；尺寸 `font_panel`、`gap_lg`、`gap_sm`
 - 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py 覆盖显式分页、重试、刷新、触发器查看和对象切换；test_15_refresh_regressions.py 验证行数更新不提交元数据请求。）
-- 实现备注：分节提供列、主键、索引、触发器和行数。索引与触发器保留分页状态和显式刷新入口。按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。索引 / 触发器读取失败时显示错误及重试入口，已读回的本表资料仍然显示。内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。
+- 实现备注：分节提供列、主键、索引、触发器和行数。索引与触发器保留分页状态，显式刷新从表信息 More 菜单进入。按对象身份从有效的数据标签计算已加载行数。标签刷新、分页、关闭或失效时重算，最后一个有效来源消失后隐藏该节。这些行数事件不发送 Inspector 元数据请求。正文与 DDL 正文同字号同字重（font_panel、不加粗），层级只靠 dim 标签与分节间距。索引 / 触发器读取失败时显示错误及重试入口，已读回的本表资料仍然显示。内容多了纵向滚动，宽度不够时横向滚动，不把字段挤成两三字一行。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -1236,16 +1237,30 @@ kind `control` · status `active` · parent `inspector.object.info.children`
 
 ### `inspector.object.info.refresh` 刷新表信息
 
-kind `control` · status `active` · parent `inspector.object.info`
+kind `item` · status `active` · parent `inspector.object.info`
 
 - 样式：槽位 `inspector`
 - 无障碍：可访问名「刷新表信息」
-- 原生控件：gtk:GtkButton
+- 原生控件：gtk:GtkPopoverMenu
 - 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 显示当前表的表信息 | 显式重新读取当前表的列、主键及首批索引和触发器。 | `src/inspector.rs::Inspector::force_reload` |
+| click | 从表信息 More 菜单触发，打开菜单时捕获的对象、浏览会话及加载周期仍然有效 | 只重新读取该表的列、主键及首批索引和触发器。对象或会话失效、切换子页或目标变化时拒绝旧命令。 | `src/inspector.rs::Inspector::force_reload` |
+
+### `inspector.object.info.more` 表信息更多操作
+
+kind `control` · status `active` · parent `inspector.object.info`
+
+- 样式：槽位 `inspector`；尺寸 `min_target`、`radius_sm`
+- 无障碍：可访问名「表信息更多操作」；Tab 表信息按钮之后，表信息正文之前
+- 图标：`tree.more`
+- 原生控件：gtk:GtkMenuButton + GtkPopoverMenu
+- 同步：Linux done（tests/ui/linux/test_14_inspector_no_cache.py::test_table_info_pages_retry_and_refresh）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 当前子页是表信息 | 打开当前对象的菜单并捕获加载周期，提供刷新表信息命令。切换目标时关闭旧菜单。 | `src/inspector.rs::Inspector::install_info_refresh` |
 
 ### `inspector.object.info.trigger_ddl` 触发器 DDL 正文
 
@@ -1454,13 +1469,13 @@ kind `control` · status `active` · parent `inspector.object.info`
 | `object_tree.header.collapse_all` | 　　全部折叠 | control | active | done |
 | `object_tree.header.more` | 　　导航更多菜单 | control | active | done |
 | `object_tree.header.more.clear_selection` | 　　　清除选择 | item | active | done |
-| `object_tree.search.remote` | 　　搜索已连接的数据库 | control | active | done |
+| `object_tree.search.remote` | 　　搜索已连接的数据库 | item | active | done |
 
 ### `object_tree` 对象树侧栏
 
 kind `area` · status `active`
 
-- 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`sidebar_min`、`sidebar_max`
+- 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`sidebar_min`、`sidebar_max`；颜色 `window_bg_color`
 - 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：固定导航容器、真实动作和筛选；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：F5 列表变化拒绝旧菜单。）
 - 实现备注：顶部标题和搜索区固定，资源树独立纵向滚动。
 
@@ -1472,7 +1487,7 @@ kind `area` · status `active`
 
 kind `container` · status `active` · parent `object_tree`
 
-- 样式：槽位 `sidebar`；尺寸 `navigation_row_height`
+- 样式：槽位 `sidebar`；尺寸 `navigation_row_height`；颜色 `window_bg_color`
 - 无障碍：可访问名「对象树」；Tab 可聚焦，方向键移动或展开，Enter 激活
 - 原生控件：gtk:GtkListView + GtkTreeListModel
 - 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：真实方向键、Enter、筛选与清词恢复当前选择；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：隐藏目标、失效资源与固定页；隔离 GTK reveal_failure_preserves_search_and_newer_explicit_selection、reveal_distinguishes_page_limit_complete_absence_and_incomplete_data。）
@@ -1480,7 +1495,7 @@ kind `container` · status `active` · parent `object_tree`
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| key ↑ / ↓ / ← / → | 树有焦点 | 上下键移动逻辑选择；左右键展开、收起或移向父子资源。方向键不改变固定 Objects 范围。 | `src/tree.rs::TreePanel::install_handlers` |
+| key ↑ / ↓ / ← / → | 树有焦点 | 上下键移动逻辑选择；左右键展开、收起或移向父子资源。顶层连接即使没有箭头，已连接时仍可用左右键开合。方向键不改变固定 Objects 范围。 | `src/tree.rs::TreePanel::install_handlers` |
 | key Enter | 资源或可操作的辅助行有焦点 | 库、Schema、分类主动浏览固定 Objects；其他行激活其对应动作。 | `src/tree.rs::TreePanel::activate_row` |
 | load | 显示的模型折叠、过滤或重建 | 保留逻辑选择。失效目标持续拦截动作；明确重新选择或清除后更新目标。 | `src/tree.rs::TreePanel::restore_visible_selection` |
 | load | 显式定位命令给出完整资源身份 | 在捕获档案的现有浏览会话内沿目标路径每层最多追加两页。成功后定位并在必要时清词；失败保留选择、检索词和搜索模式。达到上限、完整路径找不到资源与读取未完成分别提示。后续定位、主动选择或更改搜索使旧定位失效。 | `src/tree.rs::TreePanel::reveal_target` |
@@ -1489,7 +1504,7 @@ kind `container` · status `active` · parent `object_tree`
 
 kind `row` · status `active` · parent `object_tree.tree`
 
-- 样式：槽位 `sidebar`；尺寸 `navigation_row_height`、`gap_xs`、`radius_sm`、`navigation_indent`、`gap_sm`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`、`sqarvo_brand_on_soft`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
+- 样式：槽位 `sidebar`；尺寸 `navigation_row_height`、`gap_xs`、`radius_sm`、`navigation_indent`、`gap_sm`、`icon_box`；颜色 `sqarvo_brand_soft`、`sqarvo_brand_mid`、`sqarvo_brand_on_mid`、`sqarvo_brand_on_soft`；状态 hover=`sqarvo_brand_soft`、selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「对象树行」
 - 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：数据库和分类与连接选择事件各自分派；tests/ui/linux/test_10_layout.py::test_layout_preference_survives_first_connection、test_bottom_state_follows_active_workspace：真实单击后 Enter 激活连接及表；tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：连接状态可访问描述。）
 - 实现备注：名称单行尾截断，完整名称和连接状态保留在 Tooltip 与可访问属性。
@@ -1504,26 +1519,27 @@ kind `control` · status `active` · parent `object_tree.tree.row`
 
 - 样式：尺寸 `tree_arrow_box`、`navigation_arrow_icon`
 - 无障碍：可访问名「展开或折叠」；Tab 不可聚焦（不占 Tab 位）
-- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_tree_navigation：箭头开合层级；tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：箭头保持活动查询。）
+- 同步：Linux done（test_04_tree.py::test_tree_navigation 验证三档密度下顶层无独立箭头操作、库箭头不浏览 Objects；test_navigation_pointer_and_filter 验证子层箭头及筛选。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 行有可展开的子层 | 单独控制展开和收起；无业务选择变化。未连接行与对象叶子不提供箭头。 | `src/tree.rs::TreePanel::toggle_branch` |
+| click | 数据库或更深层级的行可展开 | 仅控制该行的展开与收起，保留逻辑选择和当前工作区。二级及以下叶子沿用同层图标与文字基线。顶层连接不提供箭头或预留槽位。 | `src/tree.rs::TreePanel::toggle_branch` |
 
 ### `object_tree.tree.row.conn` 连接行
 
 kind `row` · status `active` · parent `object_tree.tree.row`
 
-- 样式：尺寸 `status_dot_diameter`；颜色 `sqarvo_status_fg`
-- 无障碍：可访问名「（行内容：连接显示名；可访问描述：状态）」
+- 样式：尺寸 `status_dot_diameter`、`icon_box`、`gap_xs`、`gap_sm`；颜色 `sqarvo_status_fg`
+- 无障碍：可访问名「（行内容：连接显示名；可访问描述：连接状态、已连接时的展开或折叠状态）」
 - 图标：`tree.connection`、`tree.connection.local`、`tree.connection.generic`
-- 同步：Linux done（tests/ui/linux/test_05_disconnect.py::test_menu_driven_active_disconnect：主动断开后双击重新连接；tests/ui/linux/test_16_workspace_context.py::test_navigation_target_and_clear_selection：Peer 别名及档案所有权。）
-- 实现备注：状态圆点取浏览会话状态。驱动使用系统符号图标，未知驱动使用通用图标。
+- 同步：Linux done（test_04_tree.py::test_tree_navigation 验证三档密度的离线单击、双击指定档案、缓存开合、方向键、Enter、全部折叠及实时可访问描述；test_05_disconnect.py 复验主动断开和重新连接。）
+- 实现备注：连接行省略整个箭头槽，图标和名称与导航搜索框共用基线。状态圆点只反映浏览会话状态。驱动使用系统符号图标，未知驱动使用通用图标。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 连接行 | 选择连接并更新原有预览。 | `src/tree.rs::TreePanel::install_handlers` |
-| double_click | 连接行 | 已连接时展开或收起；未连接时建立指定档案的浏览会话。缺凭据走原对话框，过渡态沿用连接入口守卫。 | `src/tree.rs::TreePanel::activate_row` |
+| click | 连接行 | 仅选择连接并更新原有预览。 | `src/tree.rs::TreePanel::install_handlers` |
+| double_click | 连接行 | 已连接时切换展开或折叠；未连接时建立指定档案的浏览会话，连接成功后展开。缺凭据走原对话框，过渡态沿用连接入口守卫。 | `src/tree.rs::TreePanel::activate_row` |
+| key ← / → / Enter | 连接行获得键盘焦点 | 已连接时左键折叠、右键展开，方向键不建立连接。Enter 执行连接行的标准激活动作。 | `src/tree.rs::TreePanel::install_handlers、TreePanel::activate_row` |
 | load | 首次展开已连接的档案 | 读该连接的目录页，后续分页由用户显式触发。 | `src/tree.rs::TreePanel::level_for` |
 
 ### `object_tree.tree.row.catalog` 库 / Schema 行
@@ -1597,22 +1613,23 @@ kind `row` · status `active` · parent `object_tree.tree.row`
 
 kind `container` · status `active` · parent `object_tree`
 
-- 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`navigation_search_height`
-- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：在导航语义容器中找到搜索、远程入口和状态。）
-- 实现备注：挂载于导航标题与资源树之间。
+- 样式：槽位 `sidebar`；尺寸 `sidebar_width`、`objects_filter_height`、`gap_sm`；颜色 `window_bg_color`
+- 同步：Linux done（test_04_tree.py::test_navigation_pointer_and_filter：在导航容器找到搜索与状态，远程操作从更多菜单访问。）
+- 实现备注：导航标题下保留固定搜索框，搜索区下沿以 gap_sm 与资源列表留出间距。搜索反馈按需显示；远程操作位于标题的更多菜单。
 
 ### `object_tree.search.box` 搜索输入框
 
 kind `control` · status `active` · parent `object_tree.search`
 
-- 样式：槽位 `sidebar`；尺寸 `font_ui`、`navigation_search_height`
+- 样式：槽位 `sidebar`；尺寸 `font_ui`、`objects_filter_height`、`radius_sm`、`gap_xs`、`gap_sm`、`icon_box`；颜色 `window_bg_color`、`sqarvo_navigation_fill`
 - 无障碍：可访问名「搜索资源…」；Tab Ctrl+F 请求显示导航并聚焦；Esc 清词
-- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：大小写不敏感、改词和清词、收起快照恢复，qa.rpc 业务计数不变。）
+- 原生控件：gtk:GtkSearchEntry
+- 同步：Linux done（test_04_tree.py::test_navigation_pointer_and_filter 与 test_10_layout.py::test_focus_and_navigation：Ctrl+F 聚焦，Enter 保持本地，输入、改词和清词业务计数不变。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | key 输入 / Esc | 输入、修改或清除关键词 | 按名称或别名匹配已加载资源，大小写不敏感。保留祖先与匹配父节点的已加载子树、可用分页和重试。输入和清词零数据库请求；退出恢复普通树展开与当前逻辑选择。 | `src/tree.rs::TreePanel::refresh_local_filter` |
-| key Enter | 搜索框有焦点 | Enter 保留当前搜索模式。远程搜索有独立按钮。 | `src/tree.rs::TreePanel::install_handlers` |
+| key Enter | 搜索框有焦点 | Enter 保留当前搜索模式。通过导航标题的更多菜单显式发起远程搜索。 | `src/tree.rs::TreePanel::install_handlers` |
 | key Ctrl+F | 工作区存在 | 请求显示导航并聚焦输入框。 | `src/ui.rs` |
 
 ### `object_tree.search.status` 搜索状态行
@@ -1632,7 +1649,7 @@ kind `control` · status `active` · parent `object_tree.search`
 
 kind `container` · status `active` · parent `object_tree.search`
 
-- 样式：槽位 `sidebar`
+- 样式：槽位 `sidebar`；颜色 `window_bg_color`
 - 无障碍：可访问名「远程搜索结果」
 - 原生控件：gtk:GtkListView
 - 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：具名远程结果列表、库行定位成功后清词；隔离 GTK late_remote_responses_leave_new_local_projection_untouched、retired_session_pages_cannot_publish_results_or_replace_new_cache；单测 remote_search_keeps_same_named_resources_in_distinct_scopes。）
@@ -1805,7 +1822,7 @@ kind `control` · status `active` · parent `object_tree`
 
 kind `container` · status `active` · parent `object_tree`
 
-- 样式：槽位 `sidebar`；尺寸 `navigation_header_height`
+- 样式：槽位 `sidebar`；尺寸 `navigation_header_height`；颜色 `window_bg_color`
 - 无障碍：可访问名「连接」
 - 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：顶部搜索、全部折叠、更多菜单位于导航语义容器。）
 
@@ -1829,11 +1846,11 @@ kind `control` · status `active` · parent `object_tree.header`
 - 样式：槽位 `sidebar`；尺寸 `navigation_header_button`
 - 无障碍：可访问名「更多」
 - 图标：`tree.more`
-- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：打开具名原生更多菜单后通过键盘激活。）
+- 同步：Linux done（test_04_tree.py::test_navigation_pointer_and_filter：从具名更多菜单显式搜索、返回本地和用键盘清除选择。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 导航可用 | 打开包含清除选择的原生菜单。 | `src/tree.rs::TreePanel::new` |
+| click | 导航可用 | 打开包含清除选择及远程搜索操作的原生菜单。远程模式期间原位提供返回本地筛选。 | `src/tree.rs::TreePanel::new` |
 
 ### `object_tree.header.more.clear_selection` 清除选择
 
@@ -1849,15 +1866,15 @@ kind `item` · status `active` · parent `object_tree.header.more`
 
 ### `object_tree.search.remote` 搜索已连接的数据库
 
-kind `control` · status `active` · parent `object_tree.search`
+kind `item` · status `active` · parent `object_tree.search`
 
 - 样式：槽位 `sidebar`
-- 无障碍：可访问名「搜索已连接的数据库」
-- 同步：Linux done（tests/ui/linux/test_04_tree.py::test_navigation_pointer_and_filter：显式按钮才发 MetadataHub 请求，改词返回本地；隔离 GTK 迟到目录与对象回包丢弃。）
+- 无障碍：可访问名「搜索已连接的数据库 / 返回本地筛选」；Tab 从 Connections 的更多菜单进入
+- 同步：Linux done（test_04_tree.py::test_navigation_pointer_and_filter：空关键词禁用，显式菜单操作才派发 MetadataHub 请求，返回本地保留关键词。隔离 GTK 的 late_remote_responses_leave_new_local_projection_untouched 验证迟到回包。）
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 已输入关键词 | 执行显式远程搜索。返回本地、修改或清词使旧请求失效。远程仅查询目录及各库的第一页，不自动翻页或建立连接。 | `src/tree.rs::TreePanel::search_now` |
+| click | 更多菜单打开且有非空白关键词；空白时禁用并提示输入关键词 | 本地模式下执行显式远程搜索。Tooltip 与状态说明目录和各库仅取第一页。远程模式下返回本地并保留关键词。返回本地、改词或清词会使旧请求失效。 | `src/tree.rs::TreePanel::search_now` |
 
 ## Objects 固定页（`objects_page`）
 
@@ -1892,7 +1909,7 @@ kind `area` · status `active`
 
 kind `control` · status `active` · parent `objects_page`
 
-- 样式：槽位 `workspace.tabstrip`；尺寸 `objects_min_width`、`tab_strip_height`
+- 样式：槽位 `workspace.tabstrip`；尺寸 `objects_min_width`、`tab_strip_height`、`tab_height`、`tab_radius`；状态 hover=`window_fg_color`、selected=`window_fg_color`、active=`sqarvo_overlay`
 - 无障碍：可访问名「Objects」；Tab 可聚焦；固定在标签条首位
 - 图标：`tab.objects`
 - 同步：Linux done（test_19_workspace_tabs.py 验证固定 Objects 不可拖拽，支持键盘位次和溢出列表，显式 Browse 参与 MRU。test_15_refresh_regressions.py 验证普通重入保留列表和检索，F5 和已知失效才刷新。test_18_unbound_query.py 覆盖未绑定草稿和会话额度。）
@@ -2265,11 +2282,11 @@ kind `container` · status `active` · parent `shell`
 
 kind `control` · status `active` · parent `shell.toolbar`
 
-- 样式：尺寸 `min_target`、`font_ui`
+- 样式：尺寸 `min_target`、`font_ui`、`icon_box`、`gap_sm`、`gap_xxs`
 - 无障碍：可访问名「连接」
 - 图标：`tree.connection`
 - 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：原生连接对话框打开和取消；test_18_unbound_query.py::test_reconnect_from_objects_only_startup：后端丢失时入口禁用。）
-- 实现备注：左侧强调动作，使用图标和文字。空间不足时保留图标、可访问名称和 tooltip。后端握手前禁用并说明原因；就绪后打开既有连接对话框。入口含义与数据库在线状态无关。
+- 实现备注：左侧强调动作，使用图标和文字。空间不足时保留图标、可访问名称和 tooltip。与新建查询共用居中的图文布局，文字用 gap_xxs 补偿与符号图标的视觉中线。后端握手前禁用并说明原因；就绪后打开既有连接对话框。入口含义与数据库在线状态无关。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2279,11 +2296,11 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 kind `control` · status `active` · parent `shell.toolbar`
 
-- 样式：尺寸 `min_target`、`font_ui`
+- 样式：尺寸 `min_target`、`font_ui`、`icon_box`、`gap_sm`、`gap_xxs`
 - 无障碍：可访问名「新建查询」
 - 图标：`action.new_query`
 - 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：双连接、仅选连接、失效与清除选择；tests/ui/linux/results/run.cmSUm8oW/report.json：截断目标时加号与 Ctrl+T 共用确认。 tests/ui/linux/results/run.kEQx6EUw/report.json：加号和工具条目标文本一致，确认时目标变化拒绝创建；toolbar_target_rejects_lost_and_replaced_sessions 覆盖失效、重连和档案修订。）
-- 实现备注：中性动作，使用图标和文字。空间不足时保留图标与可访问名称。后端握手后可用，无目标时可创建未绑定查询。tooltip 包含实际动作目标，与标签栏加号相同。工具条、加号、菜单与 Ctrl+T 共用 win.new-tab。仅连接不借用其他标签的数据库，失效目标不给回退。目标摘要被截断时先显示可读的目标确认。
+- 实现备注：中性动作，使用图标和文字。空间不足时保留图标与可访问名称。与连接共用居中的图文布局，底色沿用原生普通按钮。后端握手后可用，无目标时可创建未绑定查询。tooltip 包含实际动作目标，与标签栏加号相同。工具条、加号、菜单与 Ctrl+T 共用 win.new-tab。仅连接不借用其他标签的数据库，失效目标不给回退。目标摘要被截断时先显示可读的目标确认。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2336,8 +2353,12 @@ kind `control` · status `active` · parent `shell.toolbar`
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「目标」
 - 原生控件：gtk:GtkLabel
-- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：隐藏导航后提示、同范围且可见时隐藏、截断先确认；tests/ui/linux/results/run.TJeqNMo1/report.json：两连接、仅连接、失效和清除。 tests/ui/linux/results/run.kEQx6EUw/report.json：确认期间清除选择，继续时提示原目标失效，查询数和 Connect 数不变。）
-- 实现备注：导航目标与活动工作区的连接、库或 Schema 不一致，导航选择不可见，或明确目标失效时显示实际目标。连接级选择省略数据库值，tooltip 注明仅选连接。安全全名、附加标识和失效原因可由 tooltip 和可访问描述读取。省略同一可见操作目标的常驻提示。摘要无法完整显示时，打开业务命令前显示完整目标。继续时复核工作区、捕获目标、档案版本和会话身份。原目标失效或变化时提示并结束本次操作。普通操作直接执行。
+- 同步：Linux done（test_20_header_toolbar.py 验证同范围在导航隐藏后保持隐藏、完整 Tooltip、截断确认和旧目标拦截；test_16_workspace_context.py 验证折叠和过滤、不同档案、仅连接和失效；toolbar_scope_uses_exact_profile_catalog_and_schema 覆盖不同库及 Schema。）
+- 实现备注：连接级选择省略数据库值，Tooltip 注明仅选连接。安全全名、附加标识和失效原因可由 Tooltip 和可访问描述读取。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| load | 工作区或逻辑导航目标变化 | 两者为有效且同档案、同库和 Schema 的实际命令作用域时隐藏常驻摘要，折叠、筛选及侧栏隐藏均遵循该规则。选择不一致、仅选连接、活动工作区无库归属或明确目标失效时保留相应提示。目标的完整信息仍可从命令 Tooltip 读取；展示空间不足时先确认，继续前复核目标、工作区、档案版本和会话身份。 | `src/ui.rs::target_copy、same_toolbar_scope、request_toolbar_command` |
 
 ### `shell.toolbar.more` 更多分类
 
@@ -2517,10 +2538,10 @@ kind `item` · status `active` · parent `shell.menu`
 
 kind `container` · status `active` · parent `shell`
 
-- 样式：尺寸 `workspace_target_width`、`workspace_target_height`、`panel_handle`、`panel_recovery`、`sidebar_width`、`sidebar_min`、`sidebar_max`、`inspector_width`、`inspector_min`、`inspector_max`
+- 样式：尺寸 `workspace_target_width`、`workspace_target_height`、`panel_handle`、`panel_recovery`、`sidebar_width`、`sidebar_min`、`sidebar_max`、`inspector_width`、`inspector_min`、`inspector_max`；颜色 `window_bg_color`、`sqarvo_separator`
 - 原生控件：gtk:GtkPaned
 - 同步：Linux done（test_10_layout.py 自动折叠恢复、两侧拖拽及双击、偏好持久化，活动事务与未保存编辑下 gRPC 派发计数零增加；layout 单测覆盖精确阈值。test_15_refresh_regressions.py 复验同一导航选择、Objects 范围、标题和业务 RPC 计数，证据 tests/ui/linux/results/run.zZWok5oY/report.json。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例覆盖隐藏侧栏后的焦点转移、主动隐藏后扩宽、事务与 Objects 的业务 RPC 计数。 tests/ui/linux/results/run.FlRhTuGR/report.json）
-- 实现备注：首选宽度和主动显示偏好持久化。实际分配和运行期专注、优先请求及折叠历史不落盘。优先留出中央目标宽度。先缩右再隐藏右，再缩左再隐藏左。仅可见侧栏占用把手，自动恢复须满足恢复余量。主动展开自动折叠栏时给予临时优先，必要时隐藏另一侧；重新容纳两侧时恢复正常优先级。显隐即时生效，保留导航选择、Objects 范围、会话、编辑与事务。
+- 实现备注：左中把手以窗口底色衔接标签栏，由分隔 token 绘制居中线。首选宽度和主动显示偏好持久化。实际分配和运行期专注、优先请求及折叠历史不落盘。优先留出中央目标宽度。先缩右再隐藏右，再缩左再隐藏左。仅可见侧栏占用把手，自动恢复须满足恢复余量。主动展开自动折叠栏时给予临时优先，必要时隐藏另一侧；重新容纳两侧时恢复正常优先级。显隐即时生效，保留导航选择、Objects 范围、会话、编辑与事务。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2531,12 +2552,12 @@ kind `container` · status `active` · parent `shell`
 
 kind `control` · status `active` · parent `shell.toolbar`
 
-- 样式：尺寸 `min_target`、`toolbar_layout_icon`、`gap_xxs`、`gap_lg`；颜色 `sqarvo_brand_soft`
+- 样式：尺寸 `min_target`、`toolbar_layout_icon`、`gap_xxs`、`gap_lg`
 - 无障碍：可访问名「导航 / 专注模式 / 信息面板」
 - 图标：`layout.navigation`、`layout.focus`、`layout.inspector`
 - 原生控件：gtk:GtkToggleButton
 - 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：三档密度、无数据库连接仍可用、临时优先、专注和布局零 RPC；tests/ui/linux/results/run.cmSUm8oW/report.json：Compact 的三枚布局按钮。 tests/ui/linux/results/run.kEQx6EUw/report.json：两种语言、三档密度均可访问五个关键入口。）
-- 实现备注：主工具栏最右侧的三个图标按钮依次为导航、专注模式、信息面板；工作区外壳建立后可用，与数据库连接无关。按下状态来自实际可见侧栏或专注状态。空间不足、专注覆盖与可主动显示状态各有工具提示。专注期间点击任一侧栏按钮退出专注并请求显示该栏。按钮调用 shell.layout 的既有布局命令及临时优先求解。
+- 实现备注：主工具栏最右侧的三个图标按钮依次为导航、专注模式、信息面板；工作区外壳建立后可用，与数据库连接无关。选中态沿用原生平面切换按钮的中性底色，与新建查询同系。按下状态来自实际可见侧栏或专注状态。空间不足、专注覆盖与可主动显示状态各有工具提示。专注期间点击任一侧栏按钮退出专注并请求显示该栏。按钮调用 shell.layout 的既有布局命令及临时优先求解。
 
 ### `shell.menu.reset_layout` 视图 → 重置布局
 
@@ -2938,7 +2959,7 @@ kind `control` · status `active` · parent `status_bar.row2`
 | 组件 | 名称 | kind | 状态 | Linux |
 |---|---|---|---|---|
 | `tabs` | 标签条与查询标签工作区 | area | active | done |
-| `tabs.strip` | 　标签条容器 | container | active | done |
+| `tabs.strip` | 　标签条容器 | container | active | blocked |
 | `tabs.strip.tab` | 　　标签项（标题 · 关闭 ×） | row | active | done |
 | `tabs.strip.tab.table` | 　　　表数据标签（标题与 tooltip） | item | active | done |
 | `tabs.strip.tab.query` | 　　　查询标签（标题与 tooltip） | item | active | done |
@@ -2982,9 +3003,10 @@ kind `area` · status `active`
 
 kind `container` · status `active` · parent `tabs`
 
-- 样式：槽位 `workspace.tabstrip`；尺寸 `tab_strip_height`、`gap_sm`、`gap_xxs`、`min_target`、`objects_min_width`；颜色 `sqarvo_separator`
+- 样式：槽位 `workspace.tabstrip`；尺寸 `tab_strip_height`、`gap_xs`、`gap_xxs`、`min_target`、`objects_min_width`；颜色 `sqarvo_separator`、`window_bg_color`
 - 原生控件：gtk:AdwTabBar + AdwTabView
-- 同步：Linux done（test_search_lists_all_tabs_and_filters_locally 验证 840 宽窗口下的边缘自动滚动、手动位置保留、Objects 与两个入口可达，以及显式激活定位。）
+- 平台差异：Linux：AdwTabBar 的非扩张模式限制整排扩张，仍统一分配普通标签宽度。公开 API 无逐标签宽度或逐档间距设置，间距沿用原生常量，实际高度还受原生子控件与主题最小尺寸约束。见行为契约 §9。
+- 同步：Linux blocked（test_search_lists_all_tabs_and_filters_locally 验证 840 宽窗口下的边缘自动滚动、手动位置保留、Objects 与两个入口可达，以及显式激活定位。）
 - 实现备注：固定 Objects 和原生普通标签滚动区分开。加号位于普通标签区末端的原生动作槽，右侧列表入口常驻。滚动区溢出时两项操作仍可访问。滚动、缩放与拖拽使用同一个 AdwTabView 页面模型。手动滚动保留用户的位置，主动激活会定位对应标签。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -2995,17 +3017,17 @@ kind `container` · status `active` · parent `tabs`
 
 kind `row` · status `active` · parent `tabs.strip`
 
-- 样式：尺寸 `tab_min_width`、`tab_max_width`、`tab_height`、`tab_radius`、`tab_padding_h`、`status_dot_diameter`、`min_target`、`font_ui`；颜色 `window_fg_color`、`accent_bg_color`；状态 hover=`window_fg_color`、selected=`window_fg_color`
+- 样式：尺寸 `tab_min_width`、`tab_max_width`、`tab_height`、`tab_radius`、`tab_padding_h`、`gap_xs`、`gap_xxs`、`status_dot_diameter`、`min_target`、`font_ui`；颜色 `window_fg_color`、`accent_bg_color`、`sqarvo_navigation_fill`、`sqarvo_status_fg`、`sqarvo_overlay`、`sqarvo_frame`；状态 hover=`window_fg_color`、selected=`window_fg_color`、active=`sqarvo_overlay`
 - 无障碍：可访问名「（按实例生成的完整标签名称）」；Tab 可聚焦；Ctrl+Tab / Ctrl+Shift+Tab 循环切换，Alt+1..9 直选第 N 个
 - 图标：`tab.unsaved`
-- 同步：Linux done（test_19_workspace_tabs.py 验证真实指针窗口内排序、越界、重新移入、Escape、固定 Objects、零业务请求和零原生摘页，以及重排后的 Alt 位次。取消后可激活、执行和关闭。）
+- 同步：Linux done（test_19_workspace_tabs.py 验证两标签轻微移动仍单击、短水平移动启动拖拽后才换位、三标签及溢出排序、越界和 Escape 恢复、固定 Objects、零业务请求与零原生摘页。取消后可激活、执行和关闭。原生宽度分配限制见 tabs.strip。）
 - 实现备注：业务类型图标与未保存标记分别来自页面图标和原生 indicator。未保存状态来自 SQL、表数据及查询结果编辑，执行 SQL 或失败的保存不会清除编辑标记。原生标签在可访问名称和 Tooltip 暴露完整名称。右键菜单捕获实例 ID，关闭活动标签按 MRU 恢复，缺少有效历史时首先尝试右邻。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 标签存在且不是当前页 | 切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起 | `src/tabs.rs:1372、src/tabs.rs:2184、src/tabs.rs:2300、src/tabs.rs:2313` |
 | load | 当前页面的关闭请求已经过保护流程并确认销毁 | 销毁该页面的工作区记录并收起筛选面板，释放其独占会话（Cancel 在途查询 → Close 游标 → Disconnect），会话名额在释放得到确认后更新。 | `src/tabs.rs::TabSet::finish_approved_close、src/tabs.rs::TabSet::on_page_detached` |
-| drag | 在普通标签按住主按钮并达到拖拽阈值 | 窗口内按原生模型重排，保持现有活动页和历史。Escape、越界或手势取消恢复原有存续实例的相对顺序；重新移入须发起新手势。整个排序没有业务请求或页面转移。 | `src/tabs/strip_input.rs` |
+| drag | 按下主按钮时立即反馈。轻微移动仍可单击。普通标签的水平移动达到独立启动阈值且水平分量不小于垂直分量时进入拖拽。 | 进入拖拽即显示轮廓和抓取光标。实际水平移动或主动边缘滚动使移动边缘进入相邻标签的尺寸相关交换区后，通过原生模型换位并标出插入侧。反方向另有换位回差。保持活动页和历史。Escape、越界或手势取消恢复存续实例的相对顺序，须重新起拖。排序零业务请求、零页面转移。 | `src/tabs/strip_input.rs` |
 
 ### `tabs.strip.tab.table` 表数据标签（标题与 tooltip）
 

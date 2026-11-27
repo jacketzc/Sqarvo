@@ -2025,7 +2025,9 @@ impl TabSet {
         bar.set_view(Some(&view));
         bar.set_autohide(false);
         bar.set_hexpand(true);
+        bar.set_valign(gtk::Align::Center);
         bar.set_expand_tabs(false);
+        bar.add_css_class("inline");
         bar.add_css_class("sqarvo-tab-bar");
 
         let plus = gtk::Button::from_icon_name("tab-new-symbolic");
@@ -5251,6 +5253,7 @@ impl TabSet {
         if matches!(removed.kind, TabKind::Objects) {
             return;
         }
+        self.cancel_strip_drag_for(&removed.id);
         self.mru.borrow_mut().retain(|id| id != &removed.id);
         // 筛选与排序面板是独立窗口：标签没了它必须跟着消失（页面回调持有 Rc，页面
         // 不会立刻析构，不显式隐藏就留一扇空窗在屏幕上）。

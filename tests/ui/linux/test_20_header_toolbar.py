@@ -175,15 +175,16 @@ def test_more_reflow_and_stale_menu(ui_instance):
                     "matching visible navigation and workspace scope hide Target")
         before = inst.log_text().count("[qa.rpc] dispatch")
         A.click(A.find_one(frame, role_in=("toggle button",), name="导航"))
-        A.find_one(frame, role_in=("label",), name=target, timeout=10)
-        more = more_button()
-        A.wait_until(lambda: any("selected" in A.states(button) for button in
-                                 A.query(frame, role_in=("button",), name="更多分类")),
-                     8, "More is selected when it contains the current category")
-        A.click(more)
-        item = A.wait_until(view_items, 10, "active Views in More")[0]
-        ops.expect("checked" in A.states(item), "the active category is marked in More", A.states(item))
-        A.press_keys("Escape")
+        A.wait_gone(lambda: A.query(frame, role_in=("grouping",), name="导航"), 8,
+                    "navigation sidebar hidden")
+        A.wait_gone(lambda: A.query(frame, role_in=("label",), name=target), 8,
+                    "matching target stays hidden with the sidebar closed")
+        plus = A.find_one(frame, role_in=("button",), name_contains="新建查询标签")
+        A.wait_until(lambda: target in (plus.get_description() or ""), 8,
+                     "the full target stays in the New Query tooltip")
+        views = A.find_one(frame, role_in=("button",), name="Views", timeout=10)
+        A.wait_until(lambda: "selected" in A.states(views), 8,
+                     "Views is active when the suppressed Target frees toolbar space")
         ops.expect(inst.log_text().count("[qa.rpc] dispatch") == before,
                    "hiding Navigation, reflow and More do not browse")
         ops.expect(not ops.query_tab_names(frame), "browsing Views creates no ordinary query tabs")
@@ -261,6 +262,16 @@ def test_truncated_target_requires_confirmation_for_the_plus(ui_instance):
                  8, "GTK requested the native title tooltip for the pointer")
     ops.expect(inst.log_text().count("[qa.rpc] dispatch") == before,
                "hovering the title dispatches zero business RPCs")
+    with ops.step("matching_but_clipped_title_still_confirms"):
+        A.wait_gone(lambda: A.query(frame, role_in=("label",), name=target), 8,
+                    "matching scope suppresses even the long Target label")
+        plus = A.find_one(frame, role_in=("button",), name_contains="新建查询标签")
+        A.click(plus)
+        dialog = A.wait_dialog(inst.app, "新建查询")
+        A.find_one(dialog, role_in=("label",), name_contains=target)
+        A.click(A.find_one(dialog, role_in=("button",), name="取消"))
+        A.wait_gone(lambda: A.find_dialog(inst.app, "新建查询"), 8, "full-target confirmation closed")
+        ops.expect(len(ops.query_tab_names(frame)) == 1, "canceling confirmation keeps the original query")
 
 
 @pytest.mark.parametrize("language,toolbar_name,names", [

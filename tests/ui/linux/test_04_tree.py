@@ -9,56 +9,112 @@ from ops import expect, step
 pytestmark = pytest.mark.sql
 
 
-def test_tree_navigation(ui_instance):
-    """数据库对象树导航：连接 → 库 → 种类分组 → 表，含收起往返。
-
-    注册表组件: object_tree.tree, object_tree.tree.row.conn,
+@pytest.mark.parametrize("tier", ("compact", "comfortable", "large"))
+def test_tree_navigation(ui_instance, tier):
+    """object_tree.tree, object_tree.tree.row, object_tree.tree.row.conn,
     object_tree.tree.row.expander, object_tree.tree.row.catalog,
-    object_tree.tree.row.group, object_tree.tree.row.object。
+    object_tree.tree.row.group, object_tree.tree.row.object, object_tree.header.collapse_all.
     """
-    inst = ui_instance("navigation_round_trip").start(autoconnect=True)
+    import json
+    import shutil
+
+    inst = ui_instance(f"navigation_{tier}")
+    peer = inst.db.with_name("peer.db")
+    shutil.copyfile(inst.db, peer)
+    legacy = inst.home / "config" / "sqarvo" / "Sqarvo" / "connections.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"version": 1, "connections": [
+        {"name": name, "alias": name, "driver": "sqlite", "file_path": str(path),
+         "host": "", "port": 0, "database": "", "username": "", "read_only": True,
+         "tls_mode": "disabled", "credential_ref": ""}
+        for name, path in (("Primary", inst.db), ("Peer", peer))
+    ]}), encoding="utf-8")
+    inst.start(extra_args=("--lang", "zh", "--tier", tier))
     frame = inst.frame()
-    ops.wait_connected(frame, "uitest.db", timeout=40)
+    navigation = A.find_one(frame, role_in=("grouping",), name="导航", timeout=15)
 
-    with step("expand_connection"):
-        conn_row = ops.find_row(frame, "uitest.db")
-        expect(conn_row is not None, "连接行存在", ops.tree_rows(frame)[:4])
-        if ops.find_row(frame, "main") is None:
-            ops.expand_tree_row(conn_row)
-        main = A.wait_until(lambda: ops.find_row(frame, "main"), 10,
-                            "展开连接后出现 main 库行")
-        expect(main is not None, "main 库行出现", None)
+    def resource(name):
+        return ops.find_row(navigation, exact_name=name, timeout=10)
 
-    with step("expand_schema"):
-        if ops.find_row(frame, "Tables") is None:
-            ops.expand_tree_row(main)
-        tables = A.wait_until(lambda: ops.find_row(frame, "Tables"), 10,
-                              "展开 main 后出现 Tables 分组行")
-        expect(tables is not None, "Tables 分组行出现", ops.tree_rows(frame)[:6])
+    def click_resource(name, count=1):
+        row = resource(name)
+        A.mouse_click(A.find_one(row, role_in=("label",), name=name), count=count)
 
-    with step("expand_tables_group"):
-        ops.expand_tree_row(tables)
-        widgets = A.wait_until(lambda: ops.find_row(frame, "widgets"), 15,
-                               "展开 Tables 后出现 widgets 表行")
-        expect(widgets is not None, "widgets 表行出现", ops.tree_rows(frame)[:8])
+    def root_state(name, state):
+        row = resource(name)
+        A.wait_until(lambda: state in A.description(row), 8, f"{name} 的可访问描述为 {state}")
+        expect(not A.query(row, role_in=("button",), name="展开或折叠"),
+               "顶层行不提供独立箭头操作")
+        return row
 
-    with step("collapse_round_trip"):
-        # 同一行再点一次 = 收起（tree.rs：已连接行点击为展开/收起切换）。
-        ops.expand_tree_row(conn_row)
-        # 收起后 main 行不再 showing（树逐层实现，子行销毁）。
-        gone = A.wait_until(
-            lambda: not _row_showing(frame, "uitest.db", "main"), 10,
-            "收起连接后子行消失")
-        expect(gone, "收起连接后 main 子行不可见", None)
-        ops.expand_tree_row(conn_row)
-        A.wait_until(lambda: ops.find_row(frame, "main"), 10, "重新展开恢复 main 行")
+    def business_count():
+        return inst.log_text().count("[qa.rpc] dispatch")
 
+    with step("offline_selection_then_double_click_connects_only_the_target"):
+        root_state("Primary", "未连接")
+        root_state("Peer", "未连接")
+        click_resource("Primary")
+        primary = resource("Primary")
+        A.wait_until(lambda: "selected" in A.states(primary), 8, "单击选中离线档案")
+        A.press_keys("Right")
+        root_state("Primary", "未连接")
+        expect("main" not in [text for row in ops.tree_rows(navigation) for text in row],
+               "单击和右键方向键保持离线目录隐藏")
+        expect("[qa.rpc] dispatch Connect" not in inst.log_text(), "单击和方向键不连接")
+        click_resource("Peer")
+        click_resource("Primary", count=2)
+        ops.wait_connected(frame, "Primary", timeout=20)
+        root_state("Primary", "已展开")
+        root_state("Peer", "未连接")
+        resource("main")
 
-def _row_showing(frame, *must):
-    row = ops.find_row(frame, *must)
-    if row is None:
-        return False
-    return "showing" in A.states(row)
+    with step("cached_round_trip_by_double_click_arrows_and_enter"):
+        before = business_count()
+        click_resource("Peer")
+        click_resource("Primary", count=2)
+        A.wait_gone(lambda: ops.find_row(navigation, exact_name="main"), 8, "双击收起已连接档案")
+        root_state("Primary", "已折叠")
+        click_resource("Peer")
+        click_resource("Primary", count=2)
+        resource("main")
+        A.press_keys("Left")
+        A.wait_gone(lambda: ops.find_row(navigation, exact_name="main"), 8, "左方向键收起")
+        A.press_keys("Right")
+        resource("main")
+        root_state("Primary", "已展开")
+        ops.activate_connection_row(resource("Primary"))
+        A.wait_gone(lambda: ops.find_row(navigation, exact_name="main"), 8, "Enter 收起")
+        ops.activate_connection_row(resource("Primary"))
+        resource("main")
+        expect(business_count() == before, "反复开合有效缓存不发请求")
+
+    with step("collapse_all_keeps_selection_and_connection"):
+        primary = resource("Primary")
+        expect("selected" in A.states(primary), "连接仍是当前逻辑选择")
+        before = business_count()
+        A.click(A.find_one(navigation, role_in=("button",), name="全部折叠"))
+        root_state("Primary", "已折叠")
+        expect("selected" in A.states(resource("Primary")), "全部折叠保留逻辑选择")
+        ops.wait_connected(frame, "Primary")
+        expect(business_count() == before, "全部折叠不请求数据或断开")
+
+    with step("database_arrow_and_object_activation"):
+        ops.activate_connection_row(resource("Primary"))
+        before_browse = inst.log_text().count("[qa.metadata] submit objects.nodes ")
+        ops.expand_tree_row(resource("main"))
+        resource("Tables")
+        expect(inst.log_text().count("[qa.metadata] submit objects.nodes ") == before_browse,
+               "数据库独立箭头不浏览 Objects")
+        click_resource("main")
+        A.wait_until(lambda: "Primary" in A.nm(frame), 10, "数据库单击进入固定 Objects")
+        ops.expand_tree_row(resource("Tables"))
+
+        def widgets_label():
+            if row := ops.find_row(navigation, exact_name="widgets"):
+                return A.find_one(row, role_in=("label",), name="widgets")
+
+        ops.click_tree_until(widgets_label, lambda: A.nm(frame) == "widgets @ Primary — Sqarvo",
+                             count=2, timeout=15, what="具体对象双击打开正确工作区")
 
 
 def test_navigation_pointer_and_filter(ui_instance):
@@ -79,11 +135,16 @@ def test_navigation_pointer_and_filter(ui_instance):
     def click_name(name, **kwargs):
         A.mouse_click(A.find_one(row(name), role_in=("label",), name=name), **kwargs)
 
+    def more_item(name):
+        A.click(A.find_one(navigation, role_in=("toggle button",), name="更多"))
+        menu = A.find_one(frame, role_in=("menu",), name="更多", timeout=10)
+        return A.find_one(menu, role_in=("menu item",), name=name, timeout=10)
+
     with step("explicit_browse_uses_fixed_objects"):
         ops.open_sql_page(frame)
         active = A.nm(frame)
         if ops.find_row(navigation, "main") is None:
-            ops.expand_tree_row(row("uitest.db"))
+            ops.activate_connection_row(row("uitest.db"))
         ops.expand_tree_row(row("main"))
         expect(A.nm(frame) == active, "独立箭头不切换工作区", A.nm(frame))
         click_name("main")
@@ -132,7 +193,7 @@ def test_navigation_pointer_and_filter(ui_instance):
         A.set_text(entry, "no_matching_loaded_resource")
         A.find_one(navigation, role_in=("label",), name="已加载的资源中没有匹配项", timeout=10)
         A.set_text(entry, "view")
-        ops.expand_tree_row(row("uitest.db"))
+        ops.activate_connection_row(row("uitest.db"))
         ops.expand_tree_row(row("main"))
         click_name("Views", button=3)
         A.wait_until(lambda: "selected" in A.states(row("Views")), 10, "搜索中明确选择 Views")
@@ -145,11 +206,24 @@ def test_navigation_pointer_and_filter(ui_instance):
                "输入、改词及清词没有新增业务 RPC")
 
     with step("explicit_remote_dispatch"):
+        expect(not A.query(navigation, role_in=("button",), name="搜索已连接的数据库"),
+               "导航没有常驻远程搜索按钮")
+        expect("sensitive" not in A.states(more_item("搜索已连接的数据库")),
+               "空关键词时远程搜索不可用")
+        A.press_keys("Escape")
+        A.press_keys("Control_L", "f")
         A.set_text(entry, "widgets")
         before = inst.log_text().count("[qa.metadata] submit ")
-        A.click(A.find_one(navigation, role_in=("button",), name="搜索已连接的数据库"))
+        A.press_keys("Return")
+        expect(inst.log_text().count("[qa.metadata] submit ") == before,
+               "搜索框 Enter 保持本地筛选")
+        remote = more_item("搜索已连接的数据库")
+        A.wait_enabled(remote, 10)
+        A.press_keys("Down")
+        A.wait_until(lambda: "focused" in A.states(remote), 5, "更多菜单键盘聚焦远程搜索")
+        A.press_keys("Return")
         A.wait_until(lambda: inst.log_text().count("[qa.metadata] submit ") > before,
-                     10, "显式远程按钮派发 MetadataHub 请求")
+                     10, "更多菜单显式派发 MetadataHub 请求")
         A.set_text(entry, "no_matching_loaded_resource")
         A.find_one(navigation, role_in=("label",), name="已加载的资源中没有匹配项", timeout=10)
         expect(ops.find_row(navigation, "widgets") is None, "远程结果未覆盖本地筛选")
@@ -158,8 +232,10 @@ def test_navigation_pointer_and_filter(ui_instance):
         A.window_action(frame, "win.tab-2")
         A.wait_until(lambda: A.nm(frame) == active, 10, "定位前活动工作区是查询")
         A.set_text(entry, "main")
-        A.click(A.find_one(navigation, role_in=("button",), name="搜索已连接的数据库"))
-        A.find_one(navigation, role_in=("button",), name="返回本地筛选", timeout=10)
+        A.click(more_item("搜索已连接的数据库"))
+        A.click(more_item("返回本地筛选"))
+        expect(A.text_value(entry) == "main", "返回本地筛选保留关键词")
+        A.click(more_item("搜索已连接的数据库"))
         results = A.find_one(navigation, role_in=("list",), name="远程搜索结果", timeout=10)
         def remote_main():
             if result := ops.find_row(results, exact_name="main"):
