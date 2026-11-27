@@ -67,7 +67,7 @@ source = "src/tabs.rs::TabSet::add_objects_page"
 [[component.interaction]]
 trigger = "click"
 precondition = "页签可见"
-result = "切回固定页，恢复原浏览范围、已有分页列表和检索词。范围已待刷新且没有在途请求时重读其第一页。固定页不可关闭或拖动。"
+result = "切回固定页，恢复原浏览范围、已有分页列表和检索词，并登记一次真实激活。范围已待刷新且没有在途请求时重读其第一页。固定页不可关闭或拖动，在标签列表中始终可选。"
 source = "src/tabs.rs::TabSet::enter_objects"
 
 [[component.interaction]]
@@ -85,8 +85,8 @@ source = "src/tabs.rs:1393、src/tabs.rs:2684"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "5a1b4b52179f"
-evidence = "test_15_refresh_regressions.py::test_objects_reentry_reuses_list_and_f5_refreshes_external_ddl：普通重入不请求，F5 读取外部 DDL。test_sql_editor_ddl_refreshes_objects_on_reentry：待刷新首页失败，重新进入发起一次重试。test_18_unbound_query.py：始终保留固定 Objects，未绑定草稿与会话额度规则通过隔离用例。"
+spec_hash = "8c121f6ab79e"
+evidence = "test_19_workspace_tabs.py 验证固定 Objects 不可拖拽，支持键盘位次和溢出列表，显式 Browse 参与 MRU。test_15_refresh_regressions.py 验证普通重入保留列表和检索，F5 和已知失效才刷新。test_18_unbound_query.py 覆盖未绑定草稿和会话额度。"
 
 [[component]]
 id = "objects_page.filter"

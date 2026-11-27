@@ -655,8 +655,8 @@ def test_closing_background_data_tab_clears_only_its_rows(ui_instance):
     before = _metadata_counts(inst)
 
     with step("close_background_tab"):
-        tab = A.find_one(frame, role_in=("page tab",), name="widgets @ main", timeout=15)
-        close = A.find_one(tab, role_in=("button",), name="Close Tab")
+        tab = A.find_one(frame, role_in=("page tab",), name="widgets", timeout=15)
+        close = A.find_one(tab, role_in=("button",), name="关闭标签")
         A.click(close)
         A.wait_until(lambda: "[tabs] 标签 tab-t1 已移除" in inst.log_text(), 15, "后台数据页关闭")
         labels = _status_texts(panel)

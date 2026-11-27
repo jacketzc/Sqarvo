@@ -58,6 +58,11 @@ use crate::layout::{Gap, gap};
 use crate::proto::services::v1::{ObjectKind, ObjectRef};
 use crate::workspace_context::{ActionTarget, ResourceIdentity, TargetState, object_scope};
 
+mod close_order;
+mod presentation;
+mod strip_input;
+mod strip_menu;
+
 static NEXT_SESSION_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 use crate::qa;
@@ -574,6 +579,7 @@ pub struct TabHandle {
     restore_after_close: Cell<bool>,
     binding_failure: RefCell<Option<String>>,
     connection_label: RefCell<Option<String>>,
+    name_fields: Cell<u8>,
     /// 查询标签最近一次摘要（状态栏行 2 左段）。
     sql_summary: RefCell<Option<String>>,
     /// 查询标签上一次执行的开始时刻（用于算耗时）。
@@ -680,6 +686,7 @@ pub struct TabContext {
     /// 按表名解析一个对象（QA 脚本与「打开指定表」共用平铺列表的同一条路径）。
     pub resolve_table: TableResolver,
     pub navigation_target: Rc<dyn Fn() -> TargetState>,
+    pub reveal_target: Rc<dyn Fn(ActionTarget)>,
     pub command_feedback: Rc<dyn Fn(&str)>,
     pub binding_credentials: BindingCredentials,
     /// 当前标签的状态变化（状态栏 / 工具条 / 窗口动作）。
@@ -1935,6 +1942,7 @@ pub struct TabSet {
     root: gtk::Box,
     view: adw::TabView,
     bar: adw::TabBar,
+    strip_input: strip_input::StripInput,
     plus: gtk::Button,
     backend_ready: Cell<bool>,
     // Entries survive page detachment until the worker confirms release.
@@ -1950,6 +1958,9 @@ pub struct TabSet {
     next_tab_seq: Cell<u64>,
     /// 选中变化时的重入保护（`set_selected_page` 会再触发一次 notify）。
     switching: Cell<bool>,
+    activated_tab: RefCell<Option<String>>,
+    mru: RefCell<Vec<String>>,
+    close_batch: RefCell<Option<close_order::CloseBatch>>,
     self_ref: RefCell<Weak<TabSet>>,
     /// 最近一次「拒绝新建」的文案（QA 断言与日志用）。
     last_limit_message: RefCell<Option<String>>,
@@ -1961,6 +1972,9 @@ pub struct TabSet {
     /// 收尾。若改成再发一次 `close_page()`，页面已经在「关闭中」，这次请求会被丢掉——
     /// 标签既关不掉，后续每次关闭也都不再有任何反应（中键关脏标签就是这样卡住的）。
     pending_close: RefCell<Option<adw::TabPage>>,
+    // A detach can finalize only the exact page whose guarded close was approved.
+    approved_close: RefCell<Option<adw::TabPage>>,
+    close_after_transfer: Cell<Option<bool>>,
     confirmed_connection_close: RefCell<Option<String>>,
     /// 正在显示的上限提示对话框。
     limit_dialog: Rc<RefCell<Option<adw::AlertDialog>>>,
@@ -2000,17 +2014,18 @@ impl TabSet {
         bar.set_view(Some(&view));
         bar.set_autohide(false);
         bar.set_hexpand(true);
+        bar.set_expand_tabs(false);
         bar.add_css_class("sqarvo-tab-bar");
 
         let plus = gtk::Button::from_icon_name("tab-new-symbolic");
         plus.add_css_class("flat");
         plus.set_tooltip_text(Some(crate::l10n::t("tabs.new_tooltip")));
         plus.set_valign(gtk::Align::Center);
+        bar.set_end_action_widget(Some(&plus));
 
         let strip = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
         strip.add_css_class("sqarvo-tab-strip");
         strip.append(&bar);
-        strip.append(&plus);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
         root.set_vexpand(true);
@@ -2021,6 +2036,7 @@ impl TabSet {
             root,
             view,
             bar,
+            strip_input: strip_input::StripInput::default(),
             plus: plus.clone(),
             backend_ready: Cell::new(true),
             session_slots: RefCell::new(HashMap::new()),
@@ -2032,10 +2048,15 @@ impl TabSet {
             next_query_number: Cell::new(1),
             next_tab_seq: Cell::new(1),
             switching: Cell::new(false),
+            activated_tab: RefCell::new(None),
+            mru: RefCell::new(Vec::new()),
+            close_batch: RefCell::new(None),
             self_ref: RefCell::new(Weak::new()),
             last_limit_message: RefCell::new(None),
             qa_close_answer: Cell::new(None),
             pending_close: RefCell::new(None),
+            approved_close: RefCell::new(None),
+            close_after_transfer: Cell::new(None),
             confirmed_connection_close: RefCell::new(None),
             limit_dialog: Rc::new(RefCell::new(None)),
             catalogs: RefCell::new(HashMap::new()),
@@ -2044,6 +2065,19 @@ impl TabSet {
 
         // Objects 页先建：它是工作区的固定起点，没有会话、不占标签名额。
         set.add_objects_page();
+        set.record_activation();
+        strip_input::StripInput::install(&set);
+        set.install_strip_menu();
+        strip.append(&set.tab_list_button());
+        {
+            let weak = Rc::downgrade(&set);
+            set.bar.connect_map(move |_| {
+                let Some(set) = weak.upgrade() else { return };
+                for tab in set.tabs() {
+                    set.publish_tab_indicator(&tab);
+                }
+            });
+        }
 
         {
             let weak = Rc::downgrade(&set);
@@ -2057,14 +2091,17 @@ impl TabSet {
             // 选中变化 → 换标题 / 状态栏 / 工具条高亮（不重建会话）。
             let weak = Rc::downgrade(&set);
             set.view.connect_selected_page_notify(move |_| {
-                if let Some(set) = weak.upgrade() {
+                if let Some(set) = weak.upgrade()
+                    && !set.switching.get()
+                    && !set.view.is_transferring_page()
+                {
                     // A saved Objects scope is reused unless an operation invalidated it.
-                    if !set.switching.get() && set.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
+                    if set.record_activation()
+                        && set.current_id().as_deref() == Some(OBJECTS_TAB_ID)
+                    {
                         set.enter_objects();
                     }
-                    if !set.switching.get() {
-                        set.refresh_current();
-                    }
+                    set.refresh_current();
                 }
             });
         }
@@ -2078,7 +2115,6 @@ impl TabSet {
                 });
         }
         {
-            // 页面真的被摘掉之后才释放会话：先摘页面再关会话，避免闭包拿着已销毁的控件。
             let weak = Rc::downgrade(&set);
             set.view
                 .connect_page_detached(move |_view, page, _position| {
@@ -2086,6 +2122,29 @@ impl TabSet {
                         set.on_page_detached(page);
                     }
                 });
+        }
+        {
+            let weak = Rc::downgrade(&set);
+            set.view.connect_is_transferring_page_notify(move |view| {
+                if !view.is_transferring_page()
+                    && let Some(set) = weak.upgrade()
+                    && set.close_after_transfer.get().is_some()
+                {
+                    // Let libadwaita finish attaching and selecting its page first.
+                    let weak = Rc::downgrade(&set);
+                    glib::idle_add_local_once(move || {
+                        if let Some(set) = weak.upgrade()
+                            && !set.view.is_transferring_page()
+                            && let Some(confirm) = set.close_after_transfer.take()
+                        {
+                            let page = set.pending_close.borrow().clone();
+                            if let Some(tab) = page.and_then(|page| set.handle_for_page(&page)) {
+                                set.finish_close_page(&tab, confirm);
+                            }
+                        }
+                    });
+                }
+            });
         }
         {
             // 钉住页（Objects）的实际宽度：`AdwTabBar` 没有 per-page 宽度 API，宽度靠 CSS
@@ -2166,7 +2225,7 @@ impl TabSet {
         }
     }
 
-    /// 全部标签（含 `Objects`，顺序与标签条一致）。
+    /// 按建立顺序保留的工作区记录，包含 `Objects`。界面顺序从页面模型读取。
     #[must_use]
     pub fn tabs(&self) -> Vec<Rc<TabHandle>> {
         self.tabs.borrow().clone()
@@ -2268,11 +2327,14 @@ impl TabSet {
     /// 当前标签。
     #[must_use]
     pub fn current(&self) -> Option<Rc<TabHandle>> {
-        let page = self.view.selected_page()?;
+        self.handle_for_page(&self.view.selected_page()?)
+    }
+
+    fn handle_for_page(&self, page: &adw::TabPage) -> Option<Rc<TabHandle>> {
         self.tabs
             .borrow()
             .iter()
-            .find(|tab| tab.page == page)
+            .find(|tab| &tab.page == page)
             .cloned()
     }
 
@@ -2382,11 +2444,13 @@ impl TabSet {
 
     /// Reuse the exact same object, including while opening. A closing instance is excluded.
     fn find_table_tab(&self, wanted: &ResourceIdentity) -> Option<Rc<TabHandle>> {
+        let pending = self.pending_close.borrow();
         self.tabs
             .borrow()
             .iter()
             .find(|tab| {
                 tab.close_phase.get() == ClosePhase::Idle
+                    && pending.as_ref() != Some(&tab.page)
                     && (tab.session().is_some() || tab.session_attempt.get().is_some())
                     && matches!(&tab.kind, TabKind::Table { resource, .. } if resource == wanted)
             })
@@ -2501,6 +2565,7 @@ impl TabSet {
             self.switching.set(true);
             self.view.set_selected_page(&page);
             self.switching.set(false);
+            self.record_activation();
             self.refresh_current();
         }
     }
@@ -2776,6 +2841,7 @@ impl TabSet {
             restore_after_close: Cell::new(false),
             binding_failure: RefCell::new(None),
             connection_label: RefCell::new(None),
+            name_fields: Cell::new(0),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
@@ -2784,6 +2850,8 @@ impl TabSet {
             binding: QueryBinding::new(""),
             driver: RefCell::new(None),
         });
+        page.set_tooltip("Objects");
+        self.publish_tab_indicator(&handle);
         self.tabs.borrow_mut().push(handle);
         self.view.set_selected_page(&page);
     }
@@ -2832,6 +2900,9 @@ impl TabSet {
 
         let page = self.view.add_page(data.widget(), None);
         page.set_title(&title);
+        page.set_icon(Some(&gtk::gio::ThemedIcon::new(
+            "x-office-spreadsheet-symbolic",
+        )));
         let handle = Rc::new(TabHandle {
             id: tab_id.clone(),
             kind,
@@ -2846,6 +2917,7 @@ impl TabSet {
             restore_after_close: Cell::new(false),
             binding_failure: RefCell::new(None),
             connection_label: RefCell::new(None),
+            name_fields: Cell::new(0),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
@@ -2858,6 +2930,7 @@ impl TabSet {
             &self.tooltip_for(&handle, crate::l10n::t("tabs.tooltip_stage_tab_session")),
         );
         self.tabs.borrow_mut().push(handle);
+        self.refresh_tab_names();
         self.select_page(&page);
         eprintln!("[tabs] 新建表标签 {tab_id}：{title}");
         self.request_session(&tab_id);
@@ -2902,6 +2975,7 @@ impl TabSet {
         let sql = self.build_sql_page(&tab_id);
         let page = self.view.add_page(sql.widget(), None);
         page.set_title(&title);
+        page.set_icon(Some(&gtk::gio::ThemedIcon::new("text-x-generic-symbolic")));
         let handle = Rc::new(TabHandle {
             id: tab_id.clone(),
             kind,
@@ -2916,6 +2990,7 @@ impl TabSet {
             restore_after_close: Cell::new(false),
             binding_failure: RefCell::new(None),
             connection_label: RefCell::new(None),
+            name_fields: Cell::new(0),
             sql_summary: RefCell::new(None),
             query_started: Cell::new(None),
             query_timing: Cell::new(None),
@@ -2928,6 +3003,7 @@ impl TabSet {
         let tooltip = self.tooltip_for(&handle, crate::l10n::t("tabs.tooltip_stage_tab_session"));
         page.set_tooltip(&tooltip);
         self.tabs.borrow_mut().push(handle);
+        self.refresh_tab_names();
         self.select_page(&page);
         eprintln!(
             "[tabs] 新建查询标签 {tab_id}：{title}（tooltip「{tooltip}」，请求库 {}）",
@@ -3221,8 +3297,12 @@ impl TabSet {
             },
             state_changed: {
                 let weak = Rc::downgrade(self);
+                let id = id.clone();
                 Rc::new(move || {
                     if let Some(set) = weak.upgrade() {
+                        if let Some(tab) = set.by_id(&id) {
+                            set.publish_tab_indicator(&tab);
+                        }
                         set.refresh_current();
                     }
                 })
@@ -3293,6 +3373,16 @@ impl TabSet {
             },
         };
         let page = SqlPage::new("", callbacks);
+        {
+            let weak = Rc::downgrade(self);
+            page.connect_draft_changed(move || {
+                if let Some(set) = weak.upgrade()
+                    && let Some(tab) = set.by_id(&id)
+                {
+                    set.publish_tab_indicator(&tab);
+                }
+            });
+        }
         // QA 脚本运行时自动确认结果区丢弃对话框（与数据页同一口径，#189）：
         // 脚本无人值守，模态框会挡住后续步骤；不是给产品路径开后门。
         page.set_qa_auto_confirm(qa::auto_confirm_risk() || qa::tabs_requested());
@@ -3360,12 +3450,16 @@ impl TabSet {
     // -- 选中 / 标题 / 状态 -------------------------------------------------
 
     fn select_page(&self, page: &adw::TabPage) {
-        let was_objects = self.current_id().as_deref() == Some(OBJECTS_TAB_ID);
+        let already_selected = self.view.selected_page().as_ref() == Some(page);
         self.switching.set(true);
         self.view.set_selected_page(page);
         self.switching.set(false);
+        if already_selected {
+            self.reveal_strip_page(page);
+        }
+        self.probe_strip_targets(page);
         // 程序化切换时 selected_page_notify 被 switching 挡住，这里补一次重新进入。
-        if !was_objects && self.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
+        if self.record_activation() && self.current_id().as_deref() == Some(OBJECTS_TAB_ID) {
             self.enter_objects();
         }
         // 连接列表可能刚变过（用户又存了一条连接）：切到查询标签时顺手对齐选择器条目，
@@ -3590,13 +3684,17 @@ impl TabSet {
             crate::l10n::tf("tabs.tooltip_session", &[("id", short_id(&session))])
         } else if tab.session_attempt.get().is_some() || tab.binding.pending().is_some() {
             crate::l10n::t("tabs.tooltip_stage_tab_session").to_owned()
+        } else if tab.bound_connection().is_empty() {
+            crate::l10n::t("tabs.query_unbound").to_owned()
         } else {
             crate::l10n::t("shell.title_disconnected").to_owned()
         };
         tab.page.set_tooltip(&self.tooltip_for(tab, &stage));
+        self.publish_tab_indicator(tab);
     }
 
     pub fn refresh_connection_labels(&self) {
+        self.refresh_tab_names();
         let choices = self.connection_choices();
         for tab in self
             .tabs
@@ -3604,7 +3702,6 @@ impl TabSet {
             .iter()
             .filter(|tab| tab.kind.has_session())
         {
-            self.publish_tab_tooltip(tab);
             if let Some(sql) = tab.sql.as_ref() {
                 sql.connection_picker()
                     .set_available(self.backend_ready.get());
@@ -3661,6 +3758,9 @@ impl TabSet {
 
     /// 切换标签：换窗口标题与状态栏，**不**重建会话、不改树的展开状态。
     pub fn refresh_current(&self) {
+        if self.close_batch.borrow().is_some() {
+            return;
+        }
         let Some(tab) = self.current() else {
             return;
         };
@@ -3711,8 +3811,9 @@ impl TabSet {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
+        self.publish_tab_indicator(&tab);
         self.advance_close(&tab, &snapshot);
-        if self.current_id().as_deref() == Some(tab_id) {
+        if self.close_batch.borrow().is_none() && self.current_id().as_deref() == Some(tab_id) {
             (self.context.on_status)(TabStatus::Table(Box::new(snapshot.clone())));
         }
         self.publish_rows(&tab, &snapshot);
@@ -3749,6 +3850,7 @@ impl TabSet {
                     if transaction_failed(&snapshot.txn_label) {
                         // 提交失败：不关标签，保留现场并说明原因（不能假装保存成功）。
                         tab.close_phase.set(ClosePhase::Idle);
+                        self.finish_close_page(tab, false);
                         eprintln!(
                             "[tabs] 标签 {} 的事务提交失败（{}），不关闭标签",
                             tab.id, snapshot.txn_label
@@ -3774,6 +3876,12 @@ impl TabSet {
         let set = Rc::clone(self);
         let tab = Rc::clone(tab);
         glib::idle_add_local_once(move || set.finish_close_page(&tab, true));
+    }
+
+    fn abort_save_and_close(self: &Rc<Self>, tab: &Rc<TabHandle>) {
+        if tab.close_phase.replace(ClosePhase::Idle) != ClosePhase::Idle {
+            self.finish_close_page(tab, false);
+        }
     }
 
     // -- worker 事件路由 ---------------------------------------------------
@@ -3815,10 +3923,40 @@ impl TabSet {
                 eprintln!("[tabs] 标签 {tab_id} 已加载表 {}", open.table.display_name);
                 data.show_open(*open);
             }
-            TableEvent::Submit(snapshot) => data.show_submit(snapshot),
-            TableEvent::Applied(report) => data.show_applied(report),
-            TableEvent::Inserted(report) => data.show_inserted(report),
-            TableEvent::Failed(failure) => data.show_failure(&failure),
+            TableEvent::Submit(snapshot) => {
+                if matches!(
+                    snapshot.outcome,
+                    Some(
+                        crate::submit_batch::SubmitOutcome::Failed
+                            | crate::submit_batch::SubmitOutcome::Cancelled
+                    )
+                ) {
+                    self.abort_save_and_close(&tab);
+                }
+                data.show_submit(snapshot);
+            }
+            TableEvent::Applied(report) => {
+                if report.cancelled {
+                    self.abort_save_and_close(&tab);
+                }
+                data.show_applied(report);
+                if tab.close_phase.get() == ClosePhase::Saving {
+                    let (dirty, insert) = data.export_edit_summary();
+                    if dirty > 0 || insert {
+                        self.abort_save_and_close(&tab);
+                    }
+                }
+            }
+            TableEvent::Inserted(report) => {
+                if report.rolled_back {
+                    self.abort_save_and_close(&tab);
+                }
+                data.show_inserted(report);
+            }
+            TableEvent::Failed(failure) => {
+                self.abort_save_and_close(&tab);
+                data.show_failure(&failure);
+            }
             TableEvent::Transaction(snapshot) => data.show_transaction(&snapshot),
         }
     }
@@ -4021,7 +4159,11 @@ impl TabSet {
             let (title, subtitle, _) = self.window_title_and_subtitle(&tab);
             eprintln!("[tabs] 窗口标题：{title}（副标题：{subtitle}）");
         }
-        self.publish_tab_tooltip(&tab);
+        if tab.name_fields.get() == 0 {
+            self.publish_tab_tooltip(&tab);
+        } else {
+            self.refresh_tab_names();
+        }
         eprintln!(
             "[tabs] 标签 {} 会话就绪：{}（连接 {}，领养={}，{} ms，驱动 {}）",
             opened.tab_id,
@@ -4171,7 +4313,11 @@ impl TabSet {
             tab.id,
             context.log_note()
         );
-        self.publish_tab_tooltip(tab);
+        if tab.name_fields.get() == 0 {
+            self.publish_tab_tooltip(tab);
+        } else {
+            self.refresh_tab_names();
+        }
         if self.current_id().as_deref() == Some(tab.id.as_str()) {
             self.refresh_current();
         }
@@ -4623,6 +4769,9 @@ impl TabSet {
             }
             Err(error) => self.report_unconfirmed_release(tab_id, error),
         }
+        if self.by_id(tab_id).is_none() {
+            self.close_batch_result(tab_id, result.is_ok());
+        }
     }
 
     fn resume_binding_after_release(self: &Rc<Self>, tab_id: &str) -> bool {
@@ -4793,25 +4942,34 @@ impl TabSet {
 
     /// `close-page` 的唯一处理点。
     fn on_close_page(self: &Rc<Self>, page: &adw::TabPage) -> glib::Propagation {
-        let Some(tab) = self
-            .tabs
-            .borrow()
-            .iter()
-            .find(|tab| &tab.page == page)
-            .cloned()
-        else {
-            return glib::Propagation::Proceed;
+        let Some(tab) = self.handle_for_page(page) else {
+            self.view.close_page_finish(page, false);
+            return glib::Propagation::Stop;
         };
         if matches!(tab.kind, TabKind::Objects) {
-            // libadwaita 1.9 的 AdwTabPage 没有「不可关闭」属性：这里拒绝关闭并说明原因。
             eprintln!("[tabs] Objects 页固定存在，不可关闭");
+            self.view.close_page_finish(page, false);
+            return glib::Propagation::Stop;
+        }
+        if self.view.is_transferring_page() {
+            self.view.close_page_finish(page, false);
+            return glib::Propagation::Stop;
+        }
+        if self
+            .close_batch
+            .borrow()
+            .as_ref()
+            .is_some_and(|batch| batch.waiting.as_deref() != Some(tab.id.as_str()))
+        {
+            self.view.close_page_finish(page, false);
             return glib::Propagation::Stop;
         }
         if self.confirmed_connection_close.borrow().as_deref() == Some(tab.id.as_str()) {
             if let Some(data) = tab.data.as_ref() {
                 data.discard_changes();
             }
-            return glib::Propagation::Proceed;
+            self.finish_approved_close(page);
+            return glib::Propagation::Stop;
         }
         // A different tab may still be saving after its dialog closed.
         if self
@@ -4820,15 +4978,13 @@ impl TabSet {
             .as_ref()
             .is_some_and(|pending| pending != page)
         {
-            let view = self.view.clone();
-            let page = page.clone();
-            glib::idle_add_local_once(move || view.close_page_finish(&page, false));
+            self.view.close_page_finish(page, false);
             return glib::Propagation::Stop;
         }
         let prompt = Self::close_workspace_prompt(&tab);
         if !prompt.is_needed() {
-            self.clear_pending_close(page);
-            return glib::Propagation::Proceed;
+            self.finish_approved_close(page);
+            return glib::Propagation::Stop;
         }
         // 同一个页面已经在等回答：不要再叠一个确认框（叠出来的框用户看不到，
         // 表现就是「点关闭没有任何反应」）。用户关掉那个框、再点关闭才会重开。
@@ -4854,6 +5010,7 @@ impl TabSet {
         let mut pending = self.pending_close.borrow_mut();
         if pending.as_ref().is_some_and(|current| current == page) {
             pending.take();
+            self.close_after_transfer.take();
         }
     }
 
@@ -4869,12 +5026,39 @@ impl TabSet {
     fn finish_close_page(self: &Rc<Self>, tab: &Rc<TabHandle>, confirm: bool) {
         let was_pending = self.pending_close.borrow().as_ref() == Some(&tab.page);
         if was_pending {
+            if self.view.is_transferring_page() {
+                self.close_after_transfer.set(Some(confirm));
+                return;
+            }
             self.clear_pending_close(&tab.page);
-        }
-        if was_pending {
-            self.view.close_page_finish(&tab.page, confirm);
+            if confirm {
+                self.finish_approved_close(&tab.page);
+            } else {
+                self.view.close_page_finish(&tab.page, false);
+                self.close_batch_result(&tab.id, false);
+            }
         } else if confirm {
-            self.view.close_page(&tab.page);
+            self.close_workspace(&tab.id);
+        }
+    }
+
+    fn finish_approved_close(&self, page: &adw::TabPage) {
+        let selected = self.view.selected_page().as_ref() == Some(page);
+        let position = self.current_position().unwrap_or(0);
+        let switching = self.switching.replace(true);
+        self.approved_close.replace(Some(page.clone()));
+        self.view.close_page_finish(page, true);
+        self.approved_close.take();
+        if selected && self.close_batch.borrow().is_some() {
+            self.hold_selection_during_batch();
+        }
+        self.switching.set(switching);
+        if self.close_batch.borrow().is_none() {
+            if selected {
+                self.restore_after_close(None, position);
+            } else {
+                self.refresh_current();
+            }
         }
     }
 
@@ -4986,8 +5170,15 @@ impl TabSet {
         }
     }
 
-    /// 页面被摘掉：释放该标签的会话（`Disconnect`），并从记录里移除。
+    /// Native transfers also emit detach. Only an approved close retires the workspace.
     fn on_page_detached(self: &Rc<Self>, page: &adw::TabPage) {
+        if self.approved_close.borrow().as_ref() != Some(page) {
+            if self.view.is_transferring_page() {
+                eprintln!("[tabs] 原生临时摘页");
+            }
+            return;
+        }
+        self.approved_close.take();
         self.clear_pending_close(page);
         let removed = {
             let mut tabs = self.tabs.borrow_mut();
@@ -4999,6 +5190,7 @@ impl TabSet {
         if matches!(removed.kind, TabKind::Objects) {
             return;
         }
+        self.mru.borrow_mut().retain(|id| id != &removed.id);
         // 筛选与排序面板是独立窗口：标签没了它必须跟着消失（页面回调持有 Rc，页面
         // 不会立刻析构，不显式隐藏就留一扇空窗在屏幕上）。
         if let Some(data) = removed.data.as_ref() {
@@ -5015,12 +5207,11 @@ impl TabSet {
             removed.session().unwrap_or_else(|| "（未建立）".to_owned()),
             self.tabs.borrow().len()
         );
-        if self.current().is_none()
-            && let Some(first) = self.tabs.borrow().first().cloned()
-        {
-            self.select_page(&first.page);
-        } else {
-            self.refresh_current();
+        if !self.close_requests.borrow().contains_key(&removed.id) {
+            self.close_batch_result(
+                &removed.id,
+                !self.session_slots.borrow().contains_key(&removed.id),
+            );
         }
     }
 
@@ -5033,9 +5224,21 @@ impl TabSet {
     }
 
     pub fn close_workspace(self: &Rc<Self>, tab_id: &str) -> bool {
+        if self.view.is_transferring_page() {
+            return false;
+        }
         let Some(tab) = self.by_id(tab_id).filter(|tab| tab.kind.has_session()) else {
             return false;
         };
+        if self.pending_close.borrow().as_ref() == Some(&tab.page)
+            || self
+                .close_batch
+                .borrow()
+                .as_ref()
+                .is_some_and(|batch| batch.waiting.as_deref() != Some(tab_id))
+        {
+            return false;
+        }
         self.view.close_page(&tab.page);
         true
     }
@@ -5152,6 +5355,7 @@ impl TabSet {
         let mut pages = 0;
         let mut sql_pages = 0;
         for tab in self.tabs.borrow().iter() {
+            self.publish_tab_indicator(tab);
             if let Some(data) = tab.data.as_ref() {
                 data.reapply_metrics(old, new);
                 pages += 1;
@@ -7013,6 +7217,7 @@ mod tests {
                 navigation_target: Rc::new(move || {
                     TargetState::Available(ActionTarget::new(&key, None))
                 }),
+                reveal_target: Rc::new(|_| {}),
                 command_feedback: Rc::new(|_| {}),
                 binding_credentials: Rc::new(|_, _, _| {}),
                 on_status: Rc::new(|_| {}),
@@ -7057,6 +7262,28 @@ mod tests {
             page.set_sql("SELECT 1");
             assert!(page.execute());
             assert!(!page.execute());
+
+            // Exercise libadwaita's actual detach/attach signals with an in-flight query.
+            let during_transfer = Rc::downgrade(&tabs);
+            let transfer_id = tab.id.clone();
+            let detach_handler = tabs.view.connect_page_detached(move |view, detached, _| {
+                let tabs = during_transfer.upgrade().unwrap();
+                let tab = tabs.by_id(&transfer_id).unwrap();
+                assert_eq!(*detached, tab.page);
+                assert!(view.is_transferring_page());
+                assert!(!tabs.close_workspace(&transfer_id));
+                assert_eq!(
+                    tabs.session_state(&transfer_id),
+                    Some(TabSessionState::Established)
+                );
+                assert!(!tabs.close_requests.borrow().contains_key(&transfer_id));
+            });
+            tabs.view.transfer_page(&tab.page, &tabs.view, 1);
+            tabs.view.disconnect(detach_handler);
+            assert!(Rc::ptr_eq(&tabs.by_id(&tab.id).unwrap(), &tab));
+            assert!(tab.has_unsaved_sql());
+            assert!(page.has_active_query());
+            assert_eq!(tab.session().as_deref(), Some(session.as_str()));
 
             tabs.apply_catalog_context(
                 &tab,
@@ -7162,6 +7389,75 @@ mod tests {
             assert!(!tab.sql.as_ref().unwrap().execute());
             tabs.close_current();
             assert!(matches!(failed.session(), Err(reason) if reason.contains("标签已关闭")));
+
+            // A guarded close can finish while its page is temporarily detached.
+            let id = tabs.new_query_tab().unwrap();
+            let tab = tabs.by_id(&id).unwrap();
+            tab.sql.as_ref().unwrap().set_sql("SELECT 2");
+            assert!(tabs.close_workspace(&id));
+            assert_eq!(tabs.pending_close.borrow().as_ref(), Some(&tab.page));
+            let target_id = id.clone();
+            let during_transfer = Rc::downgrade(&tabs);
+            let detach_handler = tabs.view.connect_page_detached(move |view, _, _| {
+                if view.is_transferring_page() {
+                    let tabs = during_transfer.upgrade().unwrap();
+                    let tab = tabs.by_id(&target_id).unwrap();
+                    tabs.finish_close_page(&tab, true);
+                    assert_eq!(
+                        tabs.session_state(&target_id),
+                        Some(TabSessionState::Opening)
+                    );
+                    assert!(!tabs.close_requests.borrow().contains_key(&target_id));
+                }
+            });
+            tabs.view.transfer_page(&tab.page, &tabs.view, 1);
+            tabs.view.disconnect(detach_handler);
+            assert!(Rc::ptr_eq(&tabs.by_id(&id).unwrap(), &tab));
+            glib::MainContext::default()
+                .block_on(wait_for_qa_query(Duration::from_secs(2), || {
+                    Ok(tabs.by_id(&id).is_none().then_some(()))
+                }))
+                .unwrap();
+            assert_eq!(tabs.session_state(&id), Some(TabSessionState::Closing));
+            assert!(tabs.close_requests.borrow().contains_key(&id));
+
+            let first = tabs.new_query_tab().unwrap();
+            let second = tabs.new_query_tab().unwrap();
+            use close_order::CloseRange;
+            assert_eq!(
+                tabs.close_targets(&second, CloseRange::Left),
+                vec![first.clone()]
+            );
+            assert_eq!(
+                tabs.close_targets(&first, CloseRange::Right),
+                vec![second.clone()]
+            );
+            assert_eq!(
+                tabs.close_targets(&second, CloseRange::Other),
+                vec![first.clone()]
+            );
+            assert_eq!(
+                tabs.close_targets(OBJECTS_TAB_ID, CloseRange::All),
+                vec![first.clone(), second.clone()]
+            );
+            tabs.close_batch(vec![first.clone(), second.clone()]);
+            let request = tabs.close_requests.borrow()[&first];
+            assert!(tabs.by_id(&second).is_some());
+            assert!(tabs.select_position(1, "QA").is_some());
+            tabs.on_session_closed(
+                &first,
+                request,
+                &Err("synthetic release failure".to_owned()),
+            );
+            glib::MainContext::default()
+                .block_on(wait_for_qa_query(Duration::from_secs(2), || {
+                    Ok(tabs.close_batch.borrow().is_none().then_some(()))
+                }))
+                .unwrap();
+            assert!(tabs.by_id(&first).is_none());
+            assert_eq!(tabs.session_state(&first), Some(TabSessionState::Closing));
+            assert!(tabs.by_id(&second).is_some());
+            assert_eq!(tabs.current_id().as_deref(), Some(OBJECTS_TAB_ID));
             window.close();
         });
     }

@@ -261,16 +261,32 @@ def press_keys(*names: str):
             xtest.XTestFakeKeyEvent(display, code, False, 0)
 
 
-def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5,
-                count: int = 1, within=None):
-    """Click the AT-SPI bounds of a semantically located control."""
+def _pointer_origin():
+    env = dict(os.environ, LC_ALL="C")
+
+    def active_window():
+        prop = subprocess.check_output(
+            ["xprop", "-root", "_NET_ACTIVE_WINDOW"], env=env, text=True,
+        )
+        match = re.search(r"0x[0-9a-f]+", prop)
+        return match[0] if match and int(match[0], 16) else None
+
+    window = wait_until(active_window, 8, "active X11 window")
+    geometry = subprocess.check_output(["xwininfo", "-id", window], env=env, text=True)
+    origin = re.findall(r"Absolute upper-left [XY]:\s*(-?\d+)", geometry)
+    if len(origin) != 2:
+        raise UIError("cannot read active X11 window origin")
+    return int(origin[0]), int(origin[1])
+
+
+def _pointer_target(acc, horizontal_fraction, vertical_fraction=0.5, client_origin=None,
+                    *, within=None):
     def visible_bounds():
         bounds = Atspi.Component.get_extents(acc, Atspi.CoordType.WINDOW)
         if bounds.width <= 0 or bounds.height <= 0 or "showing" not in states(acc):
             return None
         if within is not None:
-            # GTK can expose a reopened menu item before relocating it into the
-            # popup. Never inject a click at those stale editor coordinates.
+            # GTK can expose a reopened menu item at its former editor coordinates.
             popup = Atspi.Component.get_extents(within, Atspi.CoordType.WINDOW)
             if ("showing" not in states(within)
                     or not (popup.x <= bounds.x and bounds.x + bounds.width <= popup.x + popup.width
@@ -283,31 +299,71 @@ def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5,
               wait_until(visible_bounds, 5, f"{target} allocated inside {role(within)}|{nm(within)}"))
     if bounds is None:
         raise UIError(f"no visible bounds for {target}")
-    # GTK4 reports (0, 0) for SCREEN coordinates. Offset its window-relative
-    # AT-SPI bounds by the active X11 client's origin on the private display.
+    # GTK4 reports (0, 0) for SCREEN coordinates. Offset the window-relative
+    # AT-SPI bounds by the X11 client's origin on the private display.
+    x, y = client_origin if client_origin is not None else _pointer_origin()
+    return (x + bounds.x + int(bounds.width * horizontal_fraction),
+            y + bounds.y + int(bounds.height * vertical_fraction))
+
+
+def _mouse_motion(xtest, display, target):
+    xtest.XTestFakeMotionEvent.argtypes = [
+        C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_ulong,
+    ]
+    if not xtest.XTestFakeMotionEvent(display, -1, *target, 0):
+        raise UIError("XTEST pointer motion failed")
+
+
+def _mouse_button(xtest, display, button, pressed):
+    xtest.XTestFakeButtonEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+    if not xtest.XTestFakeButtonEvent(display, button, pressed, 0):
+        raise UIError(f"XTEST pointer button {button} failed")
+
+
+def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5,
+                count: int = 1, within=None):
+    """Click the AT-SPI bounds of a semantically located control."""
     with _xtest_display() as (_, xtest, display):
-        xtest.XTestFakeMotionEvent.argtypes = [
-            C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_ulong,
-        ]
-        xtest.XTestFakeButtonEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
-        env = dict(os.environ, LC_ALL="C")
-        prop = subprocess.check_output(["xprop", "-root", "_NET_ACTIVE_WINDOW"], env=env, text=True)
-        window = re.search(r"0x[0-9a-f]+", prop)
-        if not window or int(window[0], 16) == 0:
-            raise UIError("no active X11 window")
-        geometry = subprocess.check_output(["xwininfo", "-id", window[0]], env=env, text=True)
-        origin = re.findall(r"Absolute upper-left [XY]:\s*(-?\d+)", geometry)
-        if len(origin) != 2:
-            raise UIError("cannot read active X11 window origin")
-        x = int(origin[0]) + bounds.x + int(bounds.width * horizontal_fraction)
-        y = int(origin[1]) + bounds.y + bounds.height // 2
-        if not xtest.XTestFakeMotionEvent(display, -1, x, y, 0):
-            raise UIError("XTEST pointer motion failed")
+        target = _pointer_target(acc, horizontal_fraction, within=within)
+        _mouse_motion(xtest, display, target)
         for _ in range(count):
-            if not xtest.XTestFakeButtonEvent(display, button, True, 0):
-                raise UIError("XTEST pointer press failed")
-            if not xtest.XTestFakeButtonEvent(display, button, False, 0):
-                raise UIError("XTEST pointer release failed")
+            _mouse_button(xtest, display, button, True)
+            _mouse_button(xtest, display, button, False)
+
+
+def mouse_click_surface(point):
+    """Click a live native control point in client-surface coordinates."""
+    with _xtest_display() as (_, xtest, display):
+        x, y = _pointer_origin()
+        _mouse_motion(xtest, display, (x + point[0], y + point[1]))
+        _mouse_button(xtest, display, 1, True)
+        _mouse_button(xtest, display, 1, False)
+
+
+@contextmanager
+def mouse_drag(source, *, horizontal_fraction=0.25):
+    """Hold the primary button and move relative to accessible controls."""
+    with _xtest_display() as (x11, xtest, display):
+        client_origin = _pointer_origin()
+        origin = _pointer_target(source, horizontal_fraction, client_origin=client_origin)
+        _mouse_motion(xtest, display, origin)
+        _mouse_button(xtest, display, 1, True)
+        x11.XSync(display, False)
+
+        def move_to(acc=None, horizontal_fraction=0.5, vertical_fraction=0.5, *, surface_point=None):
+            if surface_point is not None:
+                target = (client_origin[0] + surface_point[0], client_origin[1] + surface_point[1])
+            else:
+                target = origin if acc is None else _pointer_target(
+                    acc, horizontal_fraction, vertical_fraction, client_origin
+                )
+            _mouse_motion(xtest, display, target)
+            x11.XSync(display, False)
+
+        try:
+            yield move_to
+        finally:
+            _mouse_button(xtest, display, 1, False)
 
 
 def set_text(acc, text: str):

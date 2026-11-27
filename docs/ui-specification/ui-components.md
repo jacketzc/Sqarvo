@@ -7,7 +7,7 @@
 
 前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：Linux Active、Windows Rewriting、macOS Planned。同步列仅显示 Active 平台。
 
-共 236 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 238 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。
@@ -1895,13 +1895,13 @@ kind `control` · status `active` · parent `objects_page`
 - 样式：槽位 `workspace.tabstrip`；尺寸 `objects_min_width`、`tab_strip_height`
 - 无障碍：可访问名「Objects」；Tab 可聚焦；固定在标签条首位
 - 图标：`tab.objects`
-- 同步：Linux done（test_15_refresh_regressions.py::test_objects_reentry_reuses_list_and_f5_refreshes_external_ddl：普通重入不请求，F5 读取外部 DDL。test_sql_editor_ddl_refreshes_objects_on_reentry：待刷新首页失败，重新进入发起一次重试。test_18_unbound_query.py：始终保留固定 Objects，未绑定草稿与会话额度规则通过隔离用例。）
+- 同步：Linux done（test_19_workspace_tabs.py 验证固定 Objects 不可拖拽，支持键盘位次和溢出列表，显式 Browse 参与 MRU。test_15_refresh_regressions.py 验证普通重入保留列表和检索，F5 和已知失效才刷新。test_18_unbound_query.py 覆盖未绑定草稿和会话额度。）
 - 实现备注：固定页独立持有已确认的浏览范围和当前请求范围。普通标签激活和树的被动选择不会改动浏览范围。AdwTabPage:pinned = true：固定在最左、紧凑（只显示图标）、没有关闭按钮，界面上不存在可点的 × —— 比「点关闭时拒绝」更贴近固定页语义。页签文本「Objects」，图标 view-grid-symbolic（与主工具条种类入口同一枚）。不占标签名额：8 个上限只数「有会话的标签」，Objects 不在其中，开满 8 个仍能切回本页。握手后的启动态与连接态复用 TabSet 和同一固定页。页签 id 固定 OBJECTS_TAB_ID，由 TabSet::new 在其它标签之前建一次（add_objects_page），工作区里不会出现第二个 Objects 页。重入保留有效列表、检索词与行选择。F5 和已知元数据失效才重读第一页。与当前代次匹配的成功首页响应确认范围。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 工作区建立 / 启动态落地 | 在标签条首位建出本页：标题「Objects」、图标 view-grid-symbolic、pinned（最左、紧凑、无关闭按钮、不占 8 个标签名额）；首屏是空态页，不是空白列表 | `src/tabs.rs::TabSet::add_objects_page` |
-| click | 页签可见 | 切回固定页，恢复原浏览范围、已有分页列表和检索词。范围已待刷新且没有在途请求时重读其第一页。固定页不可关闭或拖动。 | `src/tabs.rs::TabSet::enter_objects` |
+| click | 页签可见 | 切回固定页，恢复原浏览范围、已有分页列表和检索词，并登记一次真实激活。范围已待刷新且没有在途请求时重读其第一页。固定页不可关闭或拖动，在标签列表中始终可选。 | `src/tabs.rs::TabSet::enter_objects` |
 | key Ctrl+W | 当前页是 Objects | 拒绝关闭（Propagation::Stop）并记一行「Objects 页固定存在，不可关闭」；页面不动、没有确认框 | `src/tabs.rs:2674、src/tabs.rs:2686` |
 | click | 中键点页签，或任何程序化 close_page 请求（当前页是 Objects） | 与 Ctrl+W 同一条 on_close_page：拒绝（Propagation::Stop）并记同一句日志；页面不动、不弹确认框——关闭请求的来源不影响结论 | `src/tabs.rs:1393、src/tabs.rs:2684` |
 
@@ -2944,7 +2944,9 @@ kind `control` · status `active` · parent `status_bar.row2`
 | `tabs.strip.tab.table` | 　　　表数据标签（标题与 tooltip） | item | active | done |
 | `tabs.strip.tab.query` | 　　　查询标签（标题与 tooltip） | item | active | done |
 | `tabs.strip.tab.close` | 　　　标签关闭按钮（×） | control | active | done |
-| `tabs.strip.new` | 　　「＋」新建查询标签 | control | active | done |
+| `tabs.strip.new` | 　　「＋」新建查询标签 | control | active | partial |
+| `tabs.strip.menu` | 　　标签右键菜单 | control | active | done |
+| `tabs.strip.list` | 　　可搜索标签列表 | control | active | done |
 | `tabs.limit` | 　「无法新建标签」提示 | control | active | done |
 | `tabs.query` | 　查询标签页 | container | active | done |
 | `tabs.query.actions` | 　　动作行（连接选择器 · 库选择器 · 执行） | control | active | done |
@@ -2974,8 +2976,8 @@ kind `control` · status `active` · parent `status_bar.row2`
 kind `area` · status `active`
 
 - 样式：槽位 `workspace.tabstrip`；尺寸 `tab_strip_height`
-- 同步：Linux done（v0.2.5 Linux 客户端；§4 十一条逐条对照 tabs.rs（标签条 + 查询标签））
-- 实现备注：标签条在最上，下面是当前标签的内容区。`Objects` 固定页钉在最左、没有会话、不占「有会话标签」的 8 个名额。标签与内容同属一个 AdwTabView：先摘页面再释放会话（on_page_detached），避免闭包拿着已销毁的控件。标签顺序即打开顺序；拖动标签会改 AdwTabView 的顺序，标签位次按 pages() 取而不是按创建顺序。
+- 同步：Linux done（隔离 UI test_window_local_sort_and_cancellation、test_sort_during_transaction_edits_and_running_query 与 test_close_receipt_during_sort_preserves_surviving_order：真实排序、越界和 Escape 后实例、草稿、事务、在途查询及会话归属保持。）
+- 实现备注：标签条在最上，下面是当前标签的内容区。`Objects` 固定页钉在最左、没有会话、不占「有会话标签」的 8 个名额。标签与内容同属一个 AdwTabView。关闭保护完成后，关闭请求对该 AdwTabPage 确认销毁；临时页面转移保留工作区记录和会话。新标签追加在末尾。拖动会修改 AdwTabView 的页面顺序，标签位次读取 pages()。
 
 ### `tabs.strip` 标签条容器
 
@@ -2983,34 +2985,41 @@ kind `container` · status `active` · parent `tabs`
 
 - 样式：槽位 `workspace.tabstrip`；尺寸 `tab_strip_height`、`gap_sm`、`gap_xxs`、`min_target`、`objects_min_width`；颜色 `sqarvo_separator`
 - 原生控件：gtk:AdwTabBar + AdwTabView
-- 同步：Linux done（test_10_layout.py 840×600 下通过标签工作区运行 SQL，既有原生页签在工作区布局中保留。 tests/ui/linux/results/run.9ME2GefI/report.json）
-- 实现备注：标签条只有一条下边线（@sqarvo_separator 的 1px）；libadwaita 的 `tabbar .box` 自带一条 shade，已压掉——两条 1px 线紧贴时会被看成「分割线画了两遍」。标签条位于中央工作区，常驻不自动隐藏（autohide=false）；标签自身的最小点击区不小于 min_target，压下去的是外层留白。固定 Objects 页按 objects_min_width 宽度钉在最左，没有关闭按钮可用的语义（点 × 由 on_close_page 拒绝）。
+- 同步：Linux done（test_search_lists_all_tabs_and_filters_locally 验证 840 宽窗口下的边缘自动滚动、手动位置保留、Objects 与两个入口可达，以及显式激活定位。）
+- 实现备注：固定 Objects 和原生普通标签滚动区分开。加号位于普通标签区末端的原生动作槽，右侧列表入口常驻。滚动区溢出时两项操作仍可访问。滚动、缩放与拖拽使用同一个 AdwTabView 页面模型。手动滚动保留用户的位置，主动激活会定位对应标签。
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| scroll | 普通标签宽度超过当前工作区 | 可单行横向滚动，Objects、加号和所有标签入口保持可达。 | `src/tabs.rs::TabSet::new、src/tabs/strip_input.rs::TabSet::reveal_strip_page` |
 
 ### `tabs.strip.tab` 标签项（标题 · 关闭 ×）
 
 kind `row` · status `active` · parent `tabs.strip`
 
-- 样式：尺寸 `min_target`、`font_ui`；颜色 `window_fg_color`；状态 hover=`window_fg_color`、selected=`window_fg_color`
-- 无障碍：可访问名「（标签内容：标题）」；Tab 可聚焦；Ctrl+Tab / Ctrl+Shift+Tab 循环切换，Alt+1..9 直选第 N 个
-- 同步：Linux done（§4 切换标签 / 标签被摘掉两行；select_page 与 on_page_detached）
-- 实现备注：hover 与选中都是 @window_fg_color 的透明档（灰），不是品牌紫：标签回答「现在看的是哪一页」这种位置问题，不该和主操作按钮抢同一层视觉。行结构：标题（单行，超宽省略）+ 关闭 ×。`Objects` 页也带 ×，但点它会被 on_close_page 拒绝并记日志（libadwaita 1.9 的 AdwTabPage 没有「不可关闭」属性）。标签本身不显示会话状态：会话在不在看 tooltip 的「会话 <id 前 8 位>」。
+- 样式：尺寸 `tab_min_width`、`tab_max_width`、`tab_height`、`tab_radius`、`tab_padding_h`、`status_dot_diameter`、`min_target`、`font_ui`；颜色 `window_fg_color`、`accent_bg_color`；状态 hover=`window_fg_color`、selected=`window_fg_color`
+- 无障碍：可访问名「（按实例生成的完整标签名称）」；Tab 可聚焦；Ctrl+Tab / Ctrl+Shift+Tab 循环切换，Alt+1..9 直选第 N 个
+- 图标：`tab.unsaved`
+- 同步：Linux done（test_19_workspace_tabs.py 验证真实指针窗口内排序、越界、重新移入、Escape、固定 Objects、零业务请求和零原生摘页，以及重排后的 Alt 位次。取消后可激活、执行和关闭。）
+- 实现备注：业务类型图标与未保存标记分别来自页面图标和原生 indicator。未保存状态来自 SQL、表数据及查询结果编辑，执行 SQL 或失败的保存不会清除编辑标记。原生标签在可访问名称和 Tooltip 暴露完整名称。右键菜单捕获实例 ID，关闭活动标签按 MRU 恢复，缺少有效历史时首先尝试右邻。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 标签存在且不是当前页 | 切到该标签：不重建会话、不发请求；窗口标题、状态栏、工具条高亮按新标签刷新；其它标签的筛选与排序面板被收起 | `src/tabs.rs:1372、src/tabs.rs:2184、src/tabs.rs:2300、src/tabs.rs:2313` |
-| load | 页面已从标签条摘掉（detach） | 释放该标签自己的会话（Cancel 在途查询 → Close 游标 → Disconnect），并收起它的筛选面板；没有当前标签时选中第一个 | `src/tabs.rs:2830、src/tabs.rs:2845、src/tabs.rs:2850` |
+| load | 当前页面的关闭请求已经过保护流程并确认销毁 | 销毁该页面的工作区记录并收起筛选面板，释放其独占会话（Cancel 在途查询 → Close 游标 → Disconnect），会话名额在释放得到确认后更新。 | `src/tabs.rs::TabSet::finish_approved_close、src/tabs.rs::TabSet::on_page_detached` |
+| drag | 在普通标签按住主按钮并达到拖拽阈值 | 窗口内按原生模型重排，保持现有活动页和历史。Escape、越界或手势取消恢复原有存续实例的相对顺序；重新移入须发起新手势。整个排序没有业务请求或页面转移。 | `src/tabs/strip_input.rs` |
 
 ### `tabs.strip.tab.table` 表数据标签（标题与 tooltip）
 
 kind `item` · status `active` · parent `tabs.strip.tab`
 
-- 无障碍：可访问名「（行内容：<对象名> @ <catalog>）」
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：本连接重复打开只复用一个标签、跨档案同名表各开一页；完整身份单测覆盖 Schema、种类、catalog 和对象名。）
-- 实现备注：标题固定是 `<对象名> @ <catalog>`；catalog 为空写「默认」——不编造库名，也不把连接名塞进标签。tooltip 是 `<标题> · 标签会话`；会话建立后阶段换成 `会话 <id 前 8 位>`。窗口标题从工作区原始名称生成，连接与库归属从资源身份生成。
+- 无障碍：可访问名「（对象名及必要的消歧义上下文）」
+- 图标：`tab.data`
+- 同步：Linux done（test_16_workspace_context.py 验证默认短名、双连接同名、工作区类型、长名可达、别名刷新、限定信息保留和外部重命名。隔离 MariaDB 探针 run.IrirBlo2 验证同一连接下的同名表各自加载正确数据，并保留限定名和完整可访问描述。）
+- 实现备注：默认显示工作区原始名称。同名组按 catalog、Schema、连接或工作区类型消歧义。已增加的限定保留至该实例关闭，档案别名按实际归属刷新。Tooltip 提供完整对象名、实际库或 Schema 和安全连接名。窗口标题继续读取工作区原始名称。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| double_click | 在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限 | 新建表数据标签：标题「<对象名> @ <catalog>」（catalog 空写「默认」），并为该标签请求一条**属于它自己的**数据库会话（Connect）；成功后切到该标签 | `src/tabs.rs:1806、src/tabs.rs:1843、src/tabs.rs:1914、src/tabs.rs:1947` |
+| double_click | 在对象树 / Objects 页双击表或视图，且没有同表标签、未达上限 | 追加并激活表数据标签，按完整资源身份建立独占会话。打开期间可复用同一实例，后台完成保留用户当前活动页。 | `src/tabs.rs:1806、src/tabs.rs:1843、src/tabs.rs:1914、src/tabs.rs:1947` |
 | double_click | 已有档案、catalog、Schema、对象种类和对象身份完全一致的表数据工作区 | 只切到已有标签：不新建标签、不新建会话、不重载数据；复用检查在标签上限之前，已开满 8 个仍可切过去 | `src/tabs.rs:1815、src/tabs.rs:128、src/tabs.rs:1599` |
 | load | 该标签的会话已建立 | tooltip 保留原始名、所属库或 Schema 与连接显示名，会话建立后阶段显示「会话 <id 前 8 位>」 | `src/tabs.rs:2563、src/tabs.rs:2273` |
 
@@ -3018,9 +3027,10 @@ kind `item` · status `active` · parent `tabs.strip.tab`
 
 kind `item` · status `active` · parent `tabs.strip.tab`
 
-- 无障碍：可访问名「（行内容：查询 N）」
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：未绑定标题及真实绑定；tests/ui/linux/results/run.3jtK5EPM/report.json SQLite 重绑/断开；tests/ui/linux/results/run.SsaVKmyr/runner.log 旧绑定隔离。）
-- 实现备注：标题只有「查询 N」：**不带** `@ 库`。序号自 1 起递增、不复用已关闭的序号（关掉「查询 2」后下一个仍是「查询 3」）。库与连接放 tooltip：`查询 N · 标签会话 · 库 <catalog> · 连接 <连接名>`，会话建立后阶段换成 `会话 <id 前 8 位>`。多连接各自开着「查询 1」时靠 tooltip 区分。窗口标题及 tooltip 都采用实际绑定，重绑在途时沿用此前已确认的归属。
+- 无障碍：可访问名「（查询 N 及同名时的必要上下文）」
+- 图标：`tab.query`
+- 同步：Linux done（test_19_workspace_tabs.py::test_sql_tab_unsaved_indicator_survives_execution：草稿编辑显示可访问状态，执行成功保留，清空后移除。test_18_unbound_query.py 覆盖实际绑定和迟到回执。）
+- 实现备注：原始名称为「查询 N」，序号从 1 递增，已经关闭的序号保留不用。库与连接放 Tooltip。每次新建分配独立序号；出现与数据工作区同名时按类型和实际上下文消歧义。窗口标题及 tooltip 都采用实际绑定，重绑在途时沿用此前已确认的归属。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -3034,16 +3044,17 @@ kind `control` · status `active` · parent `tabs.strip.tab`
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「关闭标签」
 - 图标：`action.close_tab`
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：空草稿直接关闭，有 SQL 时取消/放弃，执行成功后仍保护；tests/ui/linux/results/run.3jtK5EPM/report.json 已绑定 SQL 与提交回归。）
-- 实现备注：× 与 `Ctrl+W` 走同一条 `close-page`：只有这一条关闭入口，没有第二套旁路。`Objects` 固定页的 × 点了也不关：on_close_page 拒绝并记一行日志（AdwTabPage 没有「不可关闭」属性）。确认框已在显示时再点 × 只记日志，不叠第二个框。菜单里已不列「关闭标签」：入口只有标签上的 × 与 `Ctrl+W`，没有第三条旁路（菜单裁剪口径见契约 §1.4）。
+- 同步：Linux done（test_window_local_sort_and_cancellation 通过真实关闭按钮、中键与快捷键验证 SQL 守卫和释放回执；qa_query_target_tracks_the_original_tab_session 验证原生转移、迟到结果与批量释放失败。）
+- 实现备注：×、中键、`Ctrl+W`、标签菜单和批量关闭统一进入 close-page 守卫。钉住的 Objects 不显示关闭按钮，关闭守卫拒绝针对它的请求。确认框已在显示时再点 × 只记日志，不叠第二个框。后台关闭保留活动页。活动关闭按对象页在内的 MRU 恢复；最后一个普通关闭后回到 Objects。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 非 Objects 页，且无需要保护的内容或活动会话操作 | 直接关标签：摘页面 → 释放该标签会话（Cancel 在途查询 → Close 游标 → Disconnect）。重绑期间关闭时摘除该标签的请求归属，晚到的会话由 worker 释放，收到真实结果才更新额度 | `src/tabs.rs:2656、src/tabs.rs:2673` |
-| click | 非 Objects 页，含未保存 SQL、脏行、待提交结果、活动事务或执行中的查询 | 先弹关闭确认（tabs.close_dialog），在用户答完之前保留标签和编辑状态 | `src/tabs.rs:2673、src/tabs.rs:2688、src/tabs.rs:2692` |
+| click | 非 Objects 页，未在转移，且无需要保护的内容或活动会话操作 | 确认该实例销毁后摘页面，释放其独占会话（Cancel 在途查询 → Close 游标 → Disconnect）。重绑期间关闭时摘除该标签的请求归属，晚到的会话由 worker 释放，收到真实结果才更新额度。 | `src/tabs.rs::TabSet::on_close_page、src/tabs.rs::TabSet::finish_approved_close` |
+| click | 非 Objects 页，含未保存 SQL、脏行、待提交结果、活动事务或执行中的查询 | 先弹关闭确认（tabs.close_dialog），在用户答完之前保留标签和编辑状态 | `src/tabs.rs::TabSet::on_close_page、src/tabs.rs::TabSet::present_close_dialog` |
+| load | 已受理受保护的关闭，处理结果在原生页面转移期间返回 | 等待页面转移结束后，按该关闭请求的结果继续。转移期间的摘页保留工作区及会话。 | `src/tabs.rs::TabSet::finish_close_page` |
 | click | 该标签的确认框已在显示 | 忽略这次请求并记一行「关闭标签 `<id>` 的确认框已在显示」，不叠第二个框；答完（或关掉）那个框后再点才会重新弹 | `src/tabs.rs:2685` |
 | click | 该标签是固定 `Objects` 页 | 不关闭，记一行「Objects 页固定存在，不可关闭」 | `src/tabs.rs:2668` |
-| key Ctrl+W | 存在当前标签 | 关闭当前标签：与点 × 同一条 `close-page`（需要保护时同样先弹确认） | `src/ui.rs:328、src/tabs.rs:2867` |
+| key Ctrl+W | 存在当前标签 | 关闭当前标签，统一走 close-page 守卫。若关闭有效，按实际存续工作区恢复活动标签。 | `src/ui.rs:328、src/tabs.rs:2867` |
 
 ### `tabs.strip.new` 「＋」新建查询标签
 
@@ -3052,13 +3063,41 @@ kind `control` · status `active` · parent `tabs.strip`
 - 样式：尺寸 `min_target`
 - 无障碍：可访问名「新建查询标签」
 - 图标：`action.new_query`
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：工具条、Ctrl+T 和加号共用新建；tests/ui/linux/results/run.3jtK5EPM/report.json GAction 拒绝失效目标。）
-- 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。超限时不新建、只弹 tabs.limit（同一段文案不重复弹）；连点 ＋ 不会堆一摞对话框。
+- 平台差异：Linux：当前加号固定在原生滚动区末端的动作槽。非溢出时该槽可能与最后标签之间有留白，尚未达到紧随标签的目标。见行为契约 §9。
+- 同步：Linux partial（既有 test_18_unbound_query.py 覆盖工具条、Ctrl+T 和加号共用命令。隔离 UI 窄窗口可以访问加号。）
+- 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。普通标签末端的原生动作槽。溢出时位于滚动视口之外。超限时弹 tabs.limit，连点保持单个提示框。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 后端就绪、工作区已建立 | 按导航优先、活动工作区回退解析目标。两者均无目标时可新建独立草稿，无需会话额度；明确不可用时提示。申请独立会话才检查 tabs.limit。新建后聚焦编辑器 | `src/tabs.rs:1363、src/tabs.rs:1867、src/tabs.rs:1915、src/ui.rs:263、src/ui.rs:4607` |
 | key Ctrl+T | 后端就绪、工作区已建立 | 与点 ＋ 同一条 `win.new-tab`：新建「查询 N」并聚焦编辑器；需要申请会话且超限时提示 | `src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1867` |
+
+### `tabs.strip.menu` 标签右键菜单
+
+kind `control` · status `active` · parent `tabs.strip`
+
+- 无障碍：可访问名「标签右键菜单」
+- 原生控件：gtk:AdwTabView setup-menu + GtkPopoverMenu
+- 同步：Linux done（test_batch_cancel_stops_at_dirty_instance 与 test_reveal_background_tab_uses_captured_object：真实右键捕获后台实例、定位完整资源、剪贴板复制名称、取消停止批量。隔离 GTK 验证视觉目标集合与异步失败保留额度。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| right_click | 指向标签 | 捕获该实例且保留当前活动页。支持关闭本页、其他、左侧、右侧、全部。批量按视觉顺序捕获固定目标，排除 Objects。取消或关闭失败时停止后续操作，已完成的关闭保留。批量结束按实际存续页恢复活动状态，也保留等待回执期间对存续页的显式激活。 | `src/tabs/strip_menu.rs、src/tabs/close_order.rs` |
+| click | 菜单已捕获一个标签实例 | 复制名称使用该实例的原始完整名称。在导航中定位使用捕获的完整目标，未绑定查询没有可执行的定位命令。 | `src/tabs/strip_menu.rs::TabSet::install_strip_menu` |
+
+### `tabs.strip.list` 可搜索标签列表
+
+kind `control` · status `active` · parent `tabs.strip`
+
+- 样式：尺寸 `min_target`
+- 无障碍：可访问名「所有标签」
+- 图标：`tab.list`
+- 原生控件：gtk:GtkMenuButton + GtkPopover + GtkSearchEntry + GtkListView
+- 同步：Linux done（test_search_lists_all_tabs_and_filters_locally：列表包含 Objects 和普通实例，按名称或连接上下文过滤、改词和清空，派发计数无变化，选中结果激活指定实例。）
+
+| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
+|---|---|---|---|
+| click | 标签栏可用 | 按实际原生页顺序列出全部已打开实例，含 Objects、类型、完整名称、连接和库上下文、活动及未保存状态。输入名称或上下文子串在本地筛选；选择结果按稳定实例激活并定位。 | `src/tabs/strip_menu.rs::TabSet::tab_list_button` |
 
 ### `tabs.limit` 「无法新建标签」提示
 

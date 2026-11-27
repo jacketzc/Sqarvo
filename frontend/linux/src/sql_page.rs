@@ -631,6 +631,10 @@ impl SqlPage {
             || (!buffer.start_iter().is_end() && !buffer.start_iter().char().is_whitespace())
     }
 
+    pub(crate) fn connect_draft_changed(&self, callback: impl Fn() + 'static) {
+        self.editor.buffer().connect_changed(move |_| callback());
+    }
+
     pub fn has_open_transaction(&self) -> bool {
         self.transaction_open.get()
     }

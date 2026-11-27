@@ -52,6 +52,12 @@ inspector_width = 280   # 280 × 1.0 = 280
 inspector_min = 220
 inspector_max = 600
 tab_strip_height = 40
+tab_height = 32
+tab_min_width = 100
+tab_max_width = 240
+tab_radius = 7
+tab_padding_h = 10
+tab_close_icon = 12
 table_actions_height = 46   # 46 × 1.0 = 46
 grid_padding_start = 18   # 18 × 1.0 = 18
 grid_padding_end = 3   # 3 × 1.0 = 3
@@ -80,7 +86,7 @@ icon_button_width = 28   # 28 × 1.0 = 28
 icon_button_height = 24   # 24 × 1.0 = 24
 status_dot_diameter = 7   # 7 × 1.0 = 7
 toolbar_padding_h = 12   # 12 × 1.0 = 12
-objects_min_width = 84   # 84 × 1.0 = 84
+objects_min_width = 40
 pager_font = 12   # 12 × 1.0 = 12
 badge_min_height = 26   # 26 × 1.0 = 26
 secondary_min_height = 22   # 22 × 1.0 = 22
@@ -148,6 +154,12 @@ inspector_width = 350   # 280 × 1.25 = 350
 inspector_min = 275
 inspector_max = 750
 tab_strip_height = 50
+tab_height = 40
+tab_min_width = 125
+tab_max_width = 300
+tab_radius = 9
+tab_padding_h = 13
+tab_close_icon = 15
 table_actions_height = 58   # 46 × 1.25 = 57.5
 grid_padding_start = 23   # 18 × 1.25 = 22.5
 grid_padding_end = 4   # 3 × 1.25 = 3.75
@@ -175,7 +187,7 @@ icon_button_width = 35   # 28 × 1.25 = 35
 icon_button_height = 30   # 24 × 1.25 = 30
 status_dot_diameter = 9   # 7 × 1.25 = 8.75
 toolbar_padding_h = 15   # 12 × 1.25 = 15
-objects_min_width = 105   # 84 × 1.25 = 105
+objects_min_width = 50
 pager_font = 15   # 12 × 1.25 = 15
 badge_min_height = 33   # 26 × 1.25 = 32.5
 secondary_min_height = 28   # 22 × 1.25 = 27.5
@@ -243,6 +255,12 @@ inspector_width = 420   # 280 × 1.5 = 420
 inspector_min = 330
 inspector_max = 900
 tab_strip_height = 60
+tab_height = 48
+tab_min_width = 150
+tab_max_width = 360
+tab_radius = 11
+tab_padding_h = 15
+tab_close_icon = 18
 table_actions_height = 69   # 46 × 1.5 = 69
 grid_padding_start = 27   # 18 × 1.5 = 27
 grid_padding_end = 5   # 3 × 1.5 = 4.5
@@ -270,7 +288,7 @@ icon_button_width = 42   # 28 × 1.5 = 42
 icon_button_height = 36   # 24 × 1.5 = 36
 status_dot_diameter = 11   # 7 × 1.5 = 10.5
 toolbar_padding_h = 18   # 12 × 1.5 = 18
-objects_min_width = 126   # 84 × 1.5 = 126
+objects_min_width = 60
 pager_font = 18   # 12 × 1.5 = 18
 badge_min_height = 39   # 26 × 1.5 = 39
 secondary_min_height = 33   # 22 × 1.5 = 33

@@ -179,6 +179,22 @@ id = "sort.descending"
 linux = "view-sort-descending-symbolic"
 
 [[icon]]
+id = "tab.query"
+linux = "text-x-generic-symbolic"
+
+[[icon]]
+id = "tab.data"
+linux = "x-office-spreadsheet-symbolic"
+
+[[icon]]
+id = "tab.unsaved"
+linux = "media-record-symbolic"
+
+[[icon]]
+id = "tab.list"
+linux = "view-list-symbolic"
+
+[[icon]]
 id = "tab.objects"
 linux = "view-grid-symbolic"
 note = "`Objects` 固定页页签的图标"

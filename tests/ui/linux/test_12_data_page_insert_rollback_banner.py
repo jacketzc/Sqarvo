@@ -6,7 +6,7 @@
 草稿保留 + 错误码）都写在过程消息里；24 字上限只做视觉省略，悬停该文本给全文。
 
 注册表组件: data_page.toolbar.status_cluster（过程消息承载全文，窄时限宽 + tooltip）、
-data_page.banner（普通失败不提供「重启 Sqarvo」，仅会话丢失 / 断连提供）。
+data_page.banner（普通失败不提供「重启 Sqarvo」，仅会话丢失 / 断连提供）、tabs.strip.tab。
 只断言交互、状态流转、文案与控件可见性，不做样式 / 截图断言（ADR 0029）。
 
 对象树行的 AT-SPI 激活在本环境不可用（README 已知限制 1），故用应用自带的
@@ -46,6 +46,9 @@ def test_insert_failure_hint_is_in_status_cluster_process_message():
             expect(len(adds) == 1, "状态栏「新增行」按钮在场且唯一",
                    [A.nm(x) for x in adds])
             A.click(adds[0])
+            tab = A.find_one(frame, role_in=("page tab",), name="widgets_empty")
+            A.wait_until(lambda: "有未保存的更改" in (tab.get_description() or ""),
+                         8, "新增行草稿反映在标签的未保存状态")
 
         with step("submit_row_that_violates_not_null"):
             applies = A.query(frame, role_in=("button",),
@@ -71,6 +74,8 @@ def test_insert_failure_hint_is_in_status_cluster_process_message():
             # 草稿保留 + 错误码都在同一条文案。
             expect(any("整批已回滚" in t and "草稿保留可重试" in t for t in hints),
                    "过程消息含完整原因（整批回滚 / 草稿保留）", hints[:4])
+            expect("有未保存的更改" in (tab.get_description() or ""),
+                   "提交失败后标签继续报告未保存状态")
 
         with step("no_new_element_between_toolbar_and_editor"):
             # 不新增页首横幅 / 逐行错误列表：工具条与编辑器之间不冒出新元素。

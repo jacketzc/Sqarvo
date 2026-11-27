@@ -617,14 +617,13 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             background-color: @accent_bg_color;
         }}
 
-        /* 区域 04 顶部：标签条 24（workspace-model §2.1 的 tabStrip） */
+        /* 工作区标签条使用当前密度档的尺寸下限。 */
         .sqarvo-tab-strip {{
             min-height: {tab_strip}px;
             padding: 0 {gap_sm}px;
             border-bottom: 1px solid @sqarvo_separator;
         }}
-        /* AdwTabBar 默认把标签条撑到 ~47px；这里压到规范口径附近（24px 行高）。
-           标签本身的最小点击区仍不小于 24（§11），缩的是外层留白。 */
+        /* AdwTabBar 的自然高度由原生控件和系统主题共同决定。 */
         .sqarvo-tab-bar {{
             padding: 0 {gap_xxs}px;
             min-height: {tab_strip}px;
@@ -642,9 +641,17 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             box-shadow: none;
         }}
         .sqarvo-tab-bar tab {{
-            min-height: {target}px;
-            padding: 0 {gap_md}px;
+            min-height: {tab_height}px;
+            padding: 0 {tab_padding_h}px;
+            border-radius: {tab_radius}px;
             font-size: {ui}px;
+        }}
+        .sqarvo-tab-bar tab button.tab-close-button image {{
+            -gtk-icon-size: {tab_close_icon}px;
+        }}
+        .sqarvo-tab-bar tab button.tab-indicator image {{
+            -gtk-icon-size: {status_dot}px;
+            color: @accent_bg_color;
         }}
         /* 标签条（v0.2.5）：选中 / hover 都是**中性灰**，不再用品牌紫。
            标签回答的是「现在看的是哪一页」这种位置问题，不是「点这个」这种强调动作；
@@ -981,6 +988,10 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         data_row = m.row_height_data,
         target = m.min_target,
         tab_strip = m.tab_strip_height,
+        tab_height = m.tab_height,
+        tab_padding_h = m.tab_padding_h,
+        tab_radius = m.tab_radius,
+        tab_close_icon = m.tab_close_icon,
         icon_button_class = crate::icons::BUTTON_CLASS,
         icon_button_width = m.icon_button_width,
         icon_button_height = m.icon_button_height,

@@ -100,6 +100,11 @@ GTK 的逻辑坐标：
 |---|---|
 | Linux（Rust） | `include_str!("../../docs/ui-specification/metrics.toml")` + `toml` 解析，启动时解析一次；单测断言不变量（§3.3）与「与 baseline 完全一致」 |
 
+工作区标签栏使用 `tab_strip_height`，普通标签采用 `tab_height`、
+`tab_min_width` / `tab_max_width`、`tab_radius`、`tab_padding_h` 与 `tab_close_icon`。
+页面名称的实测文本宽度用于夹取内容宽，固定页采用 `objects_min_width`。
+原生标签和滚动分配仍受 GTK 最小尺寸约束。
+
 ### 3.2 不随档位缩放的量
 
 - **1px 描边**：`border: 1px` 在所有档位保持 1px。1.5× 的 1.5px 细线会被舍入成 1px 或 2px，

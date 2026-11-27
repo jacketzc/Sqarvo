@@ -12,6 +12,51 @@ from ops import expect, step
 pytestmark = pytest.mark.sql
 
 
+def test_tab_names_distinguish_different_workspace_types(ui_instance):
+    """tabs.strip.tab.table, tabs.strip.tab.query (A05.3, A10.4)."""
+    inst = ui_instance("workspace_tab_types")
+    with sqlite3.connect(inst.db) as connection:
+        connection.execute('CREATE TABLE "查询 1" (value INTEGER)')
+    frame = ops.open_table_for_qa(inst, "查询 1")
+    A.find_one(frame, role_in=("page tab",), name="查询 1", timeout=10)
+
+    A.press_keys("Control_L", "t")
+    for title in ("表数据 · 查询 1", "SQL 查询 · 查询 1"):
+        A.find_one(frame, role_in=("page tab",), name=title, timeout=10)
+    query = ops.active_query_page(frame, "SQL 查询 · 查询 1")
+    A.wait_enabled(A.find_one(query, role_in=("button",), name="执行"), 15)
+    A.wait_until(lambda: A.nm(frame) == "查询 1 @ uitest.db — Sqarvo", 8,
+                 "窗口标题继续使用工作区原始名称")
+    A.press_keys("Control_L", "w")
+    A.wait_gone(lambda: A.query(frame, role_in=("page tab",), name="SQL 查询 · 查询 1"),
+                8, "关闭独立查询实例")
+    A.find_one(frame, role_in=("page tab",), name="表数据 · 查询 1", timeout=8)
+
+
+def test_long_tab_name_remains_accessible_with_tab_commands(ui_instance):
+    """shell.title, tabs.strip.tab.table, tabs.strip.list (A05.4–5)."""
+    inst = ui_instance("workspace_tab_long_name")
+    long_name = "customer_order_reconciliation_" + "warehouse_" * 12 + "west"
+    with sqlite3.connect(inst.db) as connection:
+        connection.execute(f'CREATE TABLE "{long_name}" (value INTEGER)')
+    inst.start(autoconnect=True, extra_args=(
+        "--qa-tree-expand", "UITestDB", "--qa-tree-expand", "main", "--qa-tree-expand", "main",
+        "--qa-tree-activate", long_name, "--window-size", "840x600", "--lang", "zh",
+    ))
+    frame = inst.frame()
+    page = A.find_one(frame, role_in=("page tab",), name=long_name, timeout=15)
+    A.wait_until(lambda: long_name in (page.get_description() or ""), 8,
+                 "标签提供完整名称及可访问描述")
+    A.wait_until(lambda: A.nm(frame) == f"{long_name} @ uitest.db — Sqarvo", 10,
+                 "长工作区名称保留原生窗口标题")
+
+    A.click(A.find_one(frame, role_in=("toggle button",), name="所有标签"))
+    A.find_one(frame, role_in=("label",), name_contains=long_name, timeout=8)
+    A.press_keys("Escape")
+    A.click(A.find_one(frame, role_in=("button",), name_contains="新建查询标签"))
+    ops.active_query_page(frame, "查询 1")
+
+
 def test_navigation_target_and_clear_selection(ui_instance):
     """object_tree.tree, object_tree.tree.row.conn, shell.menu.clear_selection,
     shell.menu.new_tab, shell.toolbar.new_query, shell.toolbar.tables, shell.toolbar.views,
@@ -129,6 +174,7 @@ def test_navigation_target_and_clear_selection(ui_instance):
                          10, f"数据工作区属于 {label}")
 
         open_orders("uitest.db")
+        A.find_one(frame, role_in=("page tab",), name="orders", timeout=10)
         tree_menu("ctx.open-object", "orders", "表")
         A.wait_until(lambda: "复用已有表标签" in inst.log_text(), 10, "重复打开复用工作区")
         expect(inst.log_text().count("新建表标签") == 1, "同一资源只建立一个工作区")
@@ -136,6 +182,8 @@ def test_navigation_target_and_clear_selection(ui_instance):
         A.wait_gone(lambda: ops.find_row(frame, "main", "库"), 10, "A 的库已经隐藏")
         open_orders("Peer")
         expect(inst.log_text().count("新建表标签") == 2, "同名表按档案区分为两个工作区")
+        for title in ("orders @ uitest.db", "orders @ Peer"):
+            A.find_one(frame, role_in=("page tab",), name=title, timeout=10)
         A.window_action(frame, "win.tab-2")
 
     with step("objects_filter_never_crosses_profile_or_category"):
@@ -284,9 +332,20 @@ def test_navigation_target_and_clear_selection(ui_instance):
         A.click(A.find_one(edit, role_in=("button",), name="保存"))
         ops.find_row(frame, "Peer-renamed", timeout=10)
         A.find_one(panel, role_in=("label",), name="Peer-renamed", timeout=10)
+        A.find_one(frame, role_in=("page tab",), name="orders @ Peer-renamed", timeout=10)
         expect(A.nm(frame) == title_a, "B 改名不改变 A 查询归属")
         expect(inst.log_text().count("[qa.metadata] submit ") == metadata,
                "Inspector 同步连接名没有新增元数据请求")
+
+    with step("closing_a_collision_keeps_the_surviving_qualifier"):
+        A.window_action(frame, "win.tab-5")
+        A.wait_until(lambda: A.nm(frame) == "orders @ Peer-renamed — Sqarvo", 10,
+                     "关闭第二个同名实例")
+        A.window_action(frame, "win.close-tab")
+        A.wait_gone(lambda: A.query(frame, role_in=("page tab",), name="orders @ Peer-renamed"),
+                    10, "同名实例已关闭")
+        A.find_one(frame, role_in=("page tab",), name="orders @ uitest.db", timeout=10)
+        A.window_action(frame, "win.tab-2")
 
     with step("deleted_profile_still_does_not_fall_back"):
         tree_menu("ctx.delete-connection", "Peer-renamed")

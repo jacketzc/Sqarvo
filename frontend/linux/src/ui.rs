@@ -2587,6 +2587,10 @@ impl Workspace {
                 let tree = Rc::clone(&tree);
                 Rc::new(move || tree.navigation_target())
             },
+            reveal_target: {
+                let tree = Rc::clone(&tree);
+                Rc::new(move |target| tree.reveal_target(target))
+            },
             command_feedback: {
                 let tree = Rc::clone(&tree);
                 Rc::new(move |message| tree.show_hint(message))

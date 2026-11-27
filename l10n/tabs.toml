@@ -1000,3 +1000,87 @@ key = "tabs.query_rebind_failed"
 zh = "无法绑定「{target}」，已保留「{kept}」：{reason}"
 en = "Could not bind to “{target}”. Kept “{kept}”: {reason}"
 status = "done"
+
+[[entry]]
+key = "tabs.tab_unsaved"
+zh = "有未保存的更改"
+en = "Unsaved changes"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_type_table"
+zh = "表数据"
+en = "Table data"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_type_query"
+zh = "SQL 查询"
+en = "SQL query"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_list"
+zh = "所有标签"
+en = "All tabs"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_filter"
+zh = "搜索标签…"
+en = "Search tabs…"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_no_match"
+zh = "没有匹配的标签"
+en = "No matching tabs"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_active"
+zh = "活动标签"
+en = "Active tab"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_close"
+zh = "关闭标签"
+en = "Close Tab"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_close_other"
+zh = "关闭其他标签"
+en = "Close Other Tabs"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_close_left"
+zh = "关闭左侧标签"
+en = "Close Tabs to the Left"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_close_right"
+zh = "关闭右侧标签"
+en = "Close Tabs to the Right"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_close_all"
+zh = "关闭所有标签"
+en = "Close All Tabs"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_reveal"
+zh = "在导航中定位"
+en = "Reveal in Navigation"
+status = "done"
+
+[[entry]]
+key = "tabs.tab_copy"
+zh = "复制名称"
+en = "Copy Name"
+status = "done"
