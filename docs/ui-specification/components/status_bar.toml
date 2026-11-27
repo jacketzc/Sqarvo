@@ -127,7 +127,7 @@ source = "src/shell.rs:789、src/data_page.rs:5156"
 state = "done"
 spec_hash = "e58f5984fd26"
 commit = ""
-evidence = "§7 行 1 六个按钮；RowOp::Add → begin_insert"
+evidence = "§7 行 1 六个按钮；RowOp::Add → begin_insert。tests/ui/linux/test_10_data_page_insert_editor.py 核对新增产生一行可编辑草稿，取消单元格输入后草稿仍可提交。"
 
 [[component]]
 id = "status_bar.row1.ops.delete"

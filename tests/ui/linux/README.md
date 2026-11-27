@@ -55,6 +55,13 @@ bash tests/integration/run_gtk_mcp_http.sh
 入口把额外参数交给 pytest，无场景参数时按 `pytest.ini` 发现全量用例。可从仓库根传
 `tests/ui/linux/…` 或传绝对路径。每个入口调用独立运行，支持并行，单次运行内按 pytest
 默认顺序执行（夹具与 AT-SPI 选择器按单 worker 设计）。
+默认发现排除 `results/` 运行产物目录。需单独运行的探针通过显式文件参数传入。
+
+用真实 MariaDB 补测查询目标时，使用专用合成实例，绑定本地回环端口 55306。按
+[集成测试说明](../../integration/README.md) 建立测试账号 `sqarvo_test` 与两个测试库，
+再向临时实例加载 `tests/integration/mariadb_ui_catalog_fixture.sql`。运行
+`scripts/run-ui-tests-isolated.sh tests/ui/linux/mariadb_catalog_probe.py`，验证初始库确认、权限拒绝、
+失败后的会话释放及同名表数据归属。
 
 可一起运行 `test_14_inspector_no_cache.py` 与 `test_15_refresh_regressions.py`。
 后者通过 SQL 编辑器执行 CREATE、RENAME、DROP，用独立 SQLite 连接只读确认提交，
@@ -149,7 +156,8 @@ outcome/duration/step/expected/actual，`runner.log` 记录资源读回与服务
 - 测试沿用 AT-SPI Action、EditableText 和 GAction。建 SQLite 档案走 `--qa-profile`，
   由同一控件回调处理。SQL 选区执行覆盖工具栏按钮和编辑器上下文菜单的鼠标路径。
   主动断开从隔离 X11 的真实指针右键打开资源菜单，并经确认框断开。关窗、会话回收及重启状态仍由独立用例验证。
-- 新行编辑器双击入口保留原有 skip，初始状态规则由 Linux Rust 单测覆盖。
+- 新行编辑器用 X11 实际双击语义网格单元格，通过 AT-SPI 焦点事件定位弹层。用例核对
+  默认省略状态、输入和取消，初始状态规则另由 Linux Rust 单测覆盖。
 - 功能验收范围为交互、状态及可访问性语义。
 - MCP HTTP 用例的端口由内核临时分配，释放后再交给应用绑定。并行时若被其他本机进程
   抢占，相关用例会报告失败。

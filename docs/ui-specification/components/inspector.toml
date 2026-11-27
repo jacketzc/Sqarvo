@@ -220,13 +220,13 @@ source = "src/tabs.rs::TabSet::pin_target、src/ui.rs::pin_identity、src/tree.r
 
 [[component.interaction]]
 trigger = "load"
-precondition = "选中的是分组行（Tables / Views / Functions / Queries 等）"
+precondition = "选中 Tables 或 Views 分组行"
 result = "分组行没有对象信息：面板回到空态，标题回到「信息面板」"
 source = "src/ui.rs:2152"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c3b47fff03dd"
+spec_hash = "fd82479c680b"
 evidence = "test_15_refresh_regressions.py::test_query_catalog_tracks_rebind_and_disconnect 两个断开场景：同名库计数不串连接，目标失败后仍是原库。隔离 GTK qa_query_target_tracks_the_original_tab_session 覆盖迟到回答。"
 
 [[component]]

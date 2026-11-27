@@ -321,10 +321,10 @@ def _mouse_button(xtest, display, button, pressed):
 
 
 def mouse_click(acc, *, button: int = 1, horizontal_fraction: float = 0.5,
-                count: int = 1, within=None):
+                vertical_fraction: float = 0.5, count: int = 1, within=None):
     """Click the AT-SPI bounds of a semantically located control."""
     with _xtest_display() as (_, xtest, display):
-        target = _pointer_target(acc, horizontal_fraction, within=within)
+        target = _pointer_target(acc, horizontal_fraction, vertical_fraction, within=within)
         _mouse_motion(xtest, display, target)
         for _ in range(count):
             _mouse_button(xtest, display, button, True)

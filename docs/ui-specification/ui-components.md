@@ -357,7 +357,7 @@ kind `container` · status `active` · parent `data_page`
 - 无障碍：可访问名「编辑单元格」
 - 原生控件：gtk:GtkPopover（编辑器）+ GtkEntry + GtkMenuButton + GtkPopover（选择面板）+ GtkCalendar + 3×GtkSpinButton
 - 自绘：GTK4 0.11 / libadwaita 0.9 没有时间选择器，也没有 AdwDateRow / AdwTimeRow / 日期选择对话框；日期用原生 GtkCalendar、时间用三个原生 GtkSpinButton 拼成复合件（L2，登记即可无需 ADR）。
-- 同步：Linux done（§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor）
+- 同步：Linux done（§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor。tests/ui/linux/test_10_data_page_insert_editor.py::test_insert_editor_omit_unchecked_by_default：隔离 X11 双击合成表的草稿单元格，AT-SPI 核对省略默认未勾选及可输入，取消保留原草稿且零写入。）
 - 实现备注：同一个编辑器被三处复用：数据网格、单行「字段 · 值」视图的值列、查询结果区的单表编辑（open_cell_editor 是唯一实现）。标题「编辑 <列> · <类型>」；输入框 +「设为 NULL（SQL 空值）」勾选 + 提示行 +「应用」/「取消」。编辑器内容宽 320 是代码常量，未进 metrics。进入编辑时值**不被全选**、光标停在末尾（双击的目的是改值；全选会让选中底色压住原值，误按一个字符就整段替换），Ctrl+A 仍可全选。可空列提示「空文本在文本列表示空字符串；要写 NULL 请勾选上方选项」；不可空列提示「该列不允许 NULL：请输入合法值」且 NULL 勾选禁用。值转换失败时错误就地显示、编辑框不关（可以在原处改）。写库时机：应用只改**界面草稿**，不落库；真正写库只有「提交」（ApplyRowChanges）。新行用**另一套**编辑器（open_insert_editor）：多一个「省略该列（交给数据库默认值 / 自增）」态，与「设为 NULL」/ 文本三态互斥，省略的列不出现在 InsertRows 请求里；有默认值的列在省略态显示默认值原文（dim 样式 + 提示），不猜实际值。新行编辑器打开时「省略该列」**默认不勾**（双击意在填值），输入框可用；从省略态进入但没输入任何值就点应用时仍维持省略，不悄悄写成空串 / NULL。提示行固定用可空 / 不可空那一条，不取省略态的长说明——后者换行会把弹层撑高，勾选前后大小不一致；长说明仍在网格单元格 tooltip 里。日期时间字段（强类型 Date/Time/Datetime/Timestamp，以及 SQLite 声明为这些类型、实际以 Text 返回的列）用 `GtkEntry` + `GtkMenuButton`（`linked` 组合）：点日历按钮弹出独立 `GtkPopover`，面板里 `GtkCalendar` 选年月日、分隔线下三个带 Hour / Minute / Second 标题的 `GtkSpinButton` 选时分秒、底部「现在 / 应用」。面板打开时按输入框文本同步控件；旋钮显示两位、范围 0–23/0–59；手动输入格式不合法时输入框就地标红（空文本例外，保留新行省略语义）。它只是文本框的另一入口，写回文本按字段投影 Date=YYYY-MM-DD / Time=HH:MM:SS / Datetime·Timestamp=YYYY-MM-DD HH:MM:SS，NULL / 省略 / 提交路径完全不变。面板没有额外说明文字；日历保持自然宽度并居中，时间行旋钮等宽，两者左右对齐。选择器精度到秒：原值带小数秒或时区时仍可直接编辑文本框保留；无法解析为日期时间的原值（SQLite 列里存了任意文本）会以当前时间初始化，并显示点名原值的警告说明应用会覆盖；新行空初值只初始化选择器、不写文本框，「省略该列」的默认语义不变。勾选「设为 NULL」/「省略该列」时选择器与文本框同步禁用。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -1106,7 +1106,7 @@ kind `container` · status `active` · parent `inspector`
 |---|---|---|---|
 | load | 选中库 / schema 行 | 标题 = 库名、副标题「库」；字段行给名称与表 / 视图计数，计数只来自已展开的分组层，没展开过的那一行不出现 | `src/ui.rs:2132、src/inspector.rs:644、src/inspector.rs:192` |
 | load | 当前 SQL 标签已确定库上下文，或用户在 SQL 标签里切换连接 | 库视图跟随该标签实际绑定的连接。重绑等待中与失败时保留原归属及此前确认的库，成功后按新会话的库上下文更新，同名库也重新匹配统计 | `src/tabs.rs::TabSet::pin_target、src/ui.rs::pin_identity、src/tree.rs::TreePanel::group_counts_by_catalog` |
-| load | 选中的是分组行（Tables / Views / Functions / Queries 等） | 分组行没有对象信息：面板回到空态，标题回到「信息面板」 | `src/ui.rs:2152` |
+| load | 选中 Tables 或 Views 分组行 | 分组行没有对象信息：面板回到空态，标题回到「信息面板」 | `src/ui.rs:2152` |
 
 ### `inspector.object` 表 / 视图视图（标题 · 切换条 · 两页）
 
@@ -1940,7 +1940,6 @@ kind `container` · status `active` · parent `objects_page`
 | key Enter | 有选中行 | 等同于双击：打开该表的数据标签（同一个 activate 信号，同一张表复用已有标签） | `src/tabs.rs:938、src/tabs.rs:1779` |
 | load | 单击库、Schema 或表分类正文，或主动点击 Tables 入口 | 列出该库的表（filter.kinds=[TABLE]）；页面自己请求，树没展开过也能看到完整列表 | `src/ui.rs:1346、src/ui.rs:1357、src/ui.rs:2093` |
 | load | 单击 Views 分组正文，或主动点击 Views 入口 | 列出该库的视图（[VIEW, MATERIALIZED_VIEW]） | `src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366` |
-| load | 主动单击 Functions / Queries 分组正文或对应工具条入口 | 不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token | `src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984` |
 | load | 只选择连接、具体对象、辅助行或显式清除选择 | 维持已有的 Objects 浏览范围。单纯选择、程序化定位或重建不派发列表请求 | `src/ui.rs:1377、src/tabs.rs:1016` |
 | load | 重复主动浏览已加载的同一个库或 Schema 及分类 | 有效范围沿用已加载行、检索词与选中项。在途的相同请求不会叠加。 | `src/tabs.rs:1035、src/tabs.rs:1047、src/tabs.rs:1050` |
 | load | 从别的标签切回本页 | 保留有效列表与检索。非结果集 SQL（含提交、回滚）或已执行部分语句的失败脚本可能使同连接的元数据失效。重新进入时请求该范围的首页，在途时复用，成功后清除待刷新标记。右侧信息面板仍按现有工作区和导航契约更新。 | `src/tabs.rs::TabSet::enter_objects、TabSet::route_query` |
@@ -2053,15 +2052,13 @@ kind `control` · status `active` · parent `objects_page`
 - 样式：槽位 `workspace.content`；尺寸 `font_title`、`font_panel`
 - 无障碍：可访问名「对象列表空态」
 - 同步：Linux done（test_01_startup.py：握手后的空态工作区。test_16_workspace_context.py::test_navigation_target_and_clear_selection：浏览会话断开后清词并回到空态，不读取其它连接。）
-- 实现备注：adw::StatusPage，与「列表 + 状态行」在同一个 GtkStack 里互斥：要么列表，要么空态页，不存在半截。启动态与连接态是同一份实现，只换文案（set_empty_text 改的是默认文案）；未实现说明是临时文案，回到空态时恢复默认值，不残留。
+- 实现备注：adw::StatusPage，与「列表 + 状态行」在同一个 GtkStack 里互斥：要么列表，要么空态页，不存在半截。启动态与连接态共用同一个空态控件。断开当前浏览范围后恢复对应的引导文案。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 没有已浏览范围，或其浏览会话已断开 | 标题「没有选中对象」，引导选择一个库或分类。仅选中连接或辅助行会保留已有效浏览范围；范围失效时清空关键词和旧数据。 | `src/tabs.rs::ObjectsPage::show_empty、TabSet::clear_objects_for_session` |
 | load | 启动态（未连接） | 标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」 | `src/tabs.rs::TabSet::set_initial_objects_hint、src/ui.rs::show_startup_workspace` |
-| load | 树里选中 Functions 分组 | 标题「函数列表尚未实现」，说明「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；列表与分页 token 一并清空 | `src/tabs.rs:520、src/tabs.rs:984` |
-| load | 树里选中 Queries 分组 | 标题「已保存的查询尚未实现」，说明「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」 | `src/tabs.rs:524、src/tabs.rs:984` |
-| load | 从空态 / 未实现说明回到空态 | 恢复默认文案（上一次的临时说明不残留），并清空状态行与「加载更多…」 | `src/tabs.rs:971、src/tabs.rs:1025` |
+| load | 当前范围已失效，页面回到空态 | 恢复默认文案，并清空状态行与「加载更多…」。 | `src/tabs.rs::ObjectsPage::show_empty` |
 
 ## 窗口壳与主工具条（`shell`）
 
@@ -2695,7 +2692,7 @@ kind `control` · status `active` · parent `status_bar.row1.ops`
 - 样式：尺寸 `icon_button_width`、`icon_button_height`
 - 无障碍：可访问名「新增行：在当前表末尾新增一行」；Tab 在行操作组内依次 Tab 可达
 - 图标：`action.add`
-- 同步：Linux done（§7 行 1 六个按钮；RowOp::Add → begin_insert）
+- 同步：Linux done（§7 行 1 六个按钮；RowOp::Add → begin_insert。tests/ui/linux/test_10_data_page_insert_editor.py 核对新增产生一行可编辑草稿，取消单元格输入后草稿仍可提交。）
 - 实现备注：工具条上已没有这个按钮（v0.2.4 删除）：它是状态栏 `+` 与 `win.add-row` 的唯一入口，可用性由数据页显式谓词给出。禁用时 tooltip 变成「在当前表末尾新增一行（当前不可用：<原因>）」。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
@@ -3120,8 +3117,8 @@ kind `control` · status `active` · parent `tabs`
 kind `container` · status `active` · parent `tabs`
 
 - 样式：槽位 `workspace.content`；尺寸 `gap_page`
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：两个草稿零 Connect/ExecuteQuery、首次连接后同一实例、SQLite 成功及失败、精确档案缺失凭据取消、额度与真实释放。）
-- 实现备注：页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。动作行最左端是两枚下拉框：连接选择器（`tabs.query.connection_picker`）在前、库选择器（`tabs.query.database_picker`）在后；两枚都**没有可见文字**，可访问名分别是「当前连接」「当前库」。绑定请求可从连接选择器旁取消；查询执行期间的取消在状态栏行 1 的两用按钮上（`status_bar.row1.ops.cancel`），与 `Esc` 是同一个方法。标签 tooltip 的「库」段写**服务端真值**（`GetSessionContext`，ADR 0030）：没有默认库时写「未指定」，不再写死「默认」。真值只随会话就绪 / 执行成功 / 切库成功刷新，刷新不改写标签请求用的 catalog。「连接」段写**实际绑定**的连接（连接选择器换过之后跟着换）。本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。查询标签可以先以草稿编辑 SQL，显式绑定成功后使用自己的独立会话；换连接时按固定顺序重绑（取消在途查询 → 关游标 → 断开旧会话 → 用目标连接 Connect），关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个独立标签会话限制并发游标的数量。
+- 同步：Linux done（tests/ui/linux/test_18_unbound_query.py：草稿零 Connect/ExecuteQuery、首次连接后同一实例、SQLite 成功及失败、绑定取消、额度与真实释放。tests/ui/linux/mariadb_catalog_probe.py：首个查询确认目标库，初始库验证失败保留未绑定草稿。）
+- 实现备注：页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。动作行最左端是两枚下拉框：连接选择器（`tabs.query.connection_picker`）在前、库选择器（`tabs.query.database_picker`）在后；两枚都**没有可见文字**，可访问名分别是「当前连接」「当前库」。绑定请求可从连接选择器旁取消；查询执行期间的取消在状态栏行 1 的两用按钮上（`status_bar.row1.ops.cancel`），与 `Esc` 是同一个方法。标签提示中的库名和连接名取实际会话上下文。库确认、请求值和选择器见 tabs.query.database_picker。本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。查询标签可以先以草稿编辑 SQL，显式绑定成功后使用自己的独立会话；换连接时按固定顺序重绑（取消在途查询 → 关游标 → 断开旧会话 → 用目标连接 Connect），关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。游标的关停时机（§7.1 六条）：重新执行前先关上一个、取消后关、关页后关、读到底由服务端释放、离开页时若有在途执行则取消并关（空闲游标保留，切回来还能续拉）、页面重建 / 窗口关闭时逐个关。8 个独立标签会话限制并发游标的数量。
 
 ### `tabs.query.actions` 动作行（连接选择器 · 库选择器 · 执行）
 
@@ -3177,11 +3174,12 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_xs`、`min_target`
 - 无障碍：可访问名「当前库」
 - 原生控件：gtk:GtkDropDown
-- 同步：Linux done（隔离合成 MariaDB 只读用例 test_read_only_catalog_restores_after_rebind_failure：从无默认库切到 demo Schema，SELECT DATABASE() 验证实际库；重绑坏目标后恢复原 Schema，第二次不同结果再次验证。隔离 GTK qa_query_target_tracks_the_original_tab_session 验证旧回执不能覆盖实际上下文。）
-- 实现备注：摆放位置是 `tabs.query.actions` 那一行的左端、**连接选择器之后**（会话信息之前）：`parent` 记 `tabs.query` 是因为 id 的层级规则要求 `tabs.query.actions.*` 前缀，而本组件的 id 已按 `tabs.query.database_picker` 报备、不再改名。**没有可见文字**（改动确认单 #7）：原来那行「库」caption 已删，界面上只有下拉框本身；层名（库 / Schema）只出现在 tooltip 与可访问名「当前库」里。真值只有一个来源：`ConnectionService.GetSessionContext`。显示 = 服务端实际生效的库；没有默认库时显示「未指定库」，**不得**用连接配置里的 `database` 顶替（ADR 0030 §7）。会话就绪后发一次，执行成功后与切换成功后各回读一次；刷新真值只改显示，不改写标签请求用的 catalog（§8）。能力级不可用：驱动未在 `ConnectResponse.capabilities` 里声明 `session_catalog_switch` 时**整枚不渲染**（SQLite 的 main / temp / ATTACH 没有「切当前库」这个概念）——不是灰块、不是禁用，是根本没有这枚控件。会话未就绪 / 有未提交事务时**可见但禁用**，并用 tooltip 说明原因（「会话尚未建立：等标签会话就绪后才能切换库」/「事务已打开：先提交或回滚，再切换库」）。事务中切库由服务端返回 FAILED_PRECONDITION（`mariadb.catalog_switch_in_transaction`）。选中后走 `SetSessionContext`，用返回的上下文回读真值并刷新选择器与标签 tooltip；失败走查询页既有的失败提示路径，并把选择器恢复原值——切库失败时语句是按旧库跑的，绝不假装切成功（§6）。列表项 = 可见库，来源于既有 `MetadataService.ListNodes`（目录层：`parent.kind = CATALOG` 且不带名字，一页 500），首次需要时取一次并**按连接键**缓存（同一条连接的多个查询标签共用一份）。取不到时浮层里只给一行说明，不编造条目。标签 tooltip 的库段同步改成真值（无真值写「未指定」），不再写死「默认」；库名不进状态栏（v0.2.3.3）。
+- 同步：Linux done（tests/ui/linux/mariadb_catalog_probe.py：由无默认库档案打开指定库，执行前标题展示已确认的库，SELECT DATABASE() 与同名表数据核对实际目标。隔离 GTK qa_query_target_tracks_the_original_tab_session 验证旧回执不能覆盖实际上下文。）
+- 实现备注：摆放位置是 `tabs.query.actions` 那一行的左端、**连接选择器之后**（会话信息之前）：`parent` 记 `tabs.query` 是因为 id 的层级规则要求 `tabs.query.actions.*` 前缀，而本组件的 id 已按 `tabs.query.database_picker` 报备、不再改名。**没有可见文字**（改动确认单 #7）：原来那行「库」caption 已删，界面上只有下拉框本身；层名（库 / Schema）只出现在 tooltip 与可访问名「当前库」里。显示以 `ConnectionService` 返回的实际库上下文为准。没有默认库时显示「未指定库」（ADR 0030 §7）。执行成功后回读真值，刷新不改写请求用的 catalog（§8）。能力级不可用：驱动未在 `ConnectResponse.capabilities` 里声明 `session_catalog_switch` 时**整枚不渲染**（SQLite 的 main / temp / ATTACH 没有「切当前库」这个概念）——不是灰块、不是禁用，是根本没有这枚控件。会话未就绪 / 有未提交事务时**可见但禁用**，并用 tooltip 说明原因（「会话尚未建立：等标签会话就绪后才能切换库」/「事务已打开：先提交或回滚，再切换库」）。事务中切库由服务端返回 FAILED_PRECONDITION（`mariadb.catalog_switch_in_transaction`）。选中后走 `SetSessionContext`，用返回的上下文回读真值并刷新选择器与标签 tooltip；失败走查询页既有的失败提示路径，并把选择器恢复原值——切库失败时语句是按旧库跑的，绝不假装切成功（§6）。列表项 = 可见库，来源于既有 `MetadataService.ListNodes`（目录层：`parent.kind = CATALOG` 且不带名字，一页 500），首次需要时取一次并**按连接键**缓存（同一条连接的多个查询标签共用一份）。取不到时浮层里只给一行说明，不编造条目。标签 tooltip 的库段同步改成真值（无真值写「未指定」），不再写死「默认」；库名不进状态栏（v0.2.3.3）。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
+| load | 新建查询命令捕获了明确的库或 Schema | 支持切换的驱动通过 SetSessionContext 应用目标。其他驱动读取会话当前上下文并核对目标。服务端确认目标后才启用查询操作，并以实际库更新选择器、标题和标签提示。 | `src/tabs.rs::TabSet::on_session、TabSet::update_catalog_context` |
 | click | 会话已就绪、没有未提交事务，驱动声明了 session_catalog_switch，且用户在下拉里选中了另一个库 | 发 `SetSessionContext`，切换在途期间暂停会话操作并显示此前的实际库。成功后把标签请求用的 catalog 改成该库（之后执行带上它）、用返回的上下文刷新选择器与 tooltip，日志记「标签 <tab> 已切到库 <db>（服务端真值：<db>）」 | `src/sql_page.rs:1207、src/sql_page.rs:1421、src/sql_page.rs:1343、src/tabs.rs:3076、src/backend/worker.rs:1806、src/backend/client.rs:529` |
 | click | 同上，但服务端拒绝切换（事务中 / 无权限 / 库不存在 / 后端未实现） | 查询页显示该失败（`QueryFailure` 的结论 + 后端错误码）；选择器显示恢复成原值（服务端真值），标签请求用的 catalog 不变——不回落、不假装切成功 | `src/tabs.rs:3076、src/sql_page.rs:1411、src/sql_page.rs:982` |
 | click | 选择器已渲染且可用，下拉首次展开（该连接还没有库列表缓存） | 按连接取一次 `ListNodes`（目录层）并缓存；取到后把库名填进列表，取不到就在浮层里留一行「取不到库列表：<原因>」，不摆假库名 | `src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1371、src/backend/metadata.rs:545` |
@@ -3209,12 +3207,12 @@ kind `control` · status `active` · parent `tabs.query`
 
 - 样式：尺寸 `font_status`、`gap_xl`、`spinner_px`；颜色 `warning_color`
 - 无障碍：可访问名「查询状态」
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：绑定失败后 SQL 保留；tests/ui/linux/results/run.d98WgmUQ/report.json：既有查询失败、执行、结果状态。）
+- 同步：Linux done（tests/ui/linux/test_18_unbound_query.py：绑定失败后 SQL 保留。tests/ui/linux/test_03_sql.py：查询错误、执行及结果状态。tests/ui/linux/mariadb_catalog_probe.py：拒绝库保留草稿、禁止执行，收到实际会话释放回执。）
 - 实现备注：五态互斥且都带稳定文案：执行中带 spinner；空 / 错误 / 取消 / 只读 / 断开各一句，**没有**结果时同一句文案也做占位页的标题与说明。正常完成不再常驻「已完成 · 已加载 N 行 · 共 N 行」（v0.2.5 去掉）：只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句话时才对用户显示。Error / Cancelled 下保留已加载行——状态说「失败」不等于把数据抹掉；触顶（客户端结果集上限）单独一态，不能显示成「查询失败」。Linux 同一状态集合的措辞：「执行中…」/「空结果集 · 共 0 行」/「错误 · 已保留 N 行」/「已取消 · 已保留 N 行」/「已达客户端上限 · 已保留 N 行」/「已断开 · 已保留 N 行」。多语句脚本（#190 / #231）：失败且 trailing metadata 两键齐全时，错误说明前加「前 N-1 条已执行，第 N 条失败」口径（失败语句的错误行写在消息页，见 tabs.query.results.message）；已执行但结果未返回的语句用独立占位态「已执行 · 结果未返回」（Undelivered，与「无结果集」区分：前者本有结果集但后端未保留游标）。每条语句的状态独立回写，切换结果集时状态行随当前呈现的那一个变。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 结果区状态变化（含连接申请失败） | 写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行；连接申请失败保留 SQL、未保存状态与此前确认的绑定 | `src/results.rs:1370、src/sql_page.rs:617、src/sql_page.rs:643` |
+| load | 结果区状态变化（含连接申请失败） | 写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行；连接申请失败保留 SQL、未保存状态与此前确认的绑定。初始库验证失败时说明原因，保留不可执行的未绑定草稿。收到真实关闭回执后归还会话额度。 | `src/results.rs:1370、src/sql_page.rs:617、src/sql_page.rs:643` |
 | load | 语句没有结果集（UPDATE / INSERT / DDL） | 不假装有结果：写「影响 N 行」而不是画一张空表（Linux 写「语句 N 影响 N 行（无结果集）」） | `src/sql_page.rs:551、src/sql_page.rs:555` |
 
 ### `tabs.query.results` 结果区

@@ -355,7 +355,7 @@ style.metrics = ["gap_page"]
 impl_notes = [
   "页内自上而下：动作行 → 编辑器（行号沟 + 等宽文本）→ 分隔线 → 结果区（五态一行 → 表头 → 行区 → 续拉）。",
   "动作行最左端是两枚下拉框：连接选择器（`tabs.query.connection_picker`）在前、库选择器（`tabs.query.database_picker`）在后；两枚都**没有可见文字**，可访问名分别是「当前连接」「当前库」。绑定请求可从连接选择器旁取消；查询执行期间的取消在状态栏行 1 的两用按钮上（`status_bar.row1.ops.cancel`），与 `Esc` 是同一个方法。",
-  "标签 tooltip 的「库」段写**服务端真值**（`GetSessionContext`，ADR 0030）：没有默认库时写「未指定」，不再写死「默认」。真值只随会话就绪 / 执行成功 / 切库成功刷新，刷新不改写标签请求用的 catalog。「连接」段写**实际绑定**的连接（连接选择器换过之后跟着换）。",
+  "标签提示中的库名和连接名取实际会话上下文。库确认、请求值和选择器见 tabs.query.database_picker。",
   "本区只登记查询标签里的编辑器与结果区；表数据页的工具条、筛选、网格、分页、导出归 data_page。",
   "查询标签可以先以草稿编辑 SQL，显式绑定成功后使用自己的独立会话；换连接时按固定顺序重绑（取消在途查询 → 关游标 → 断开旧会话 → 用目标连接 Connect），关标签时由 worker 先 Cancel 在途查询、再 Close 游标、最后 Disconnect（§7.1 游标的 Close 时机同口径）。",
   "v0.2.5 版面收敛：这一页不再常驻 `会话建立中…`（会话行空着就不占位）、`当前为纯文本编辑，语法高亮将在后续版本提供`、`图例：NULL=…`、`已完成 · 已加载 N 行 · 共 N 行`、`语句 1：… · 查询 query_xxx`（摘要改写进日志 `[query] 语句摘要：…`）。只有失败 / 触顶 / 取消 / 断连 / 执行中需要一句原因时，状态行才出现文字。",
@@ -365,7 +365,7 @@ impl_notes = [
 [component.sync.linux]
 state = "done"
 spec_hash = "5e420c7f2c60"
-evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：两个草稿零 Connect/ExecuteQuery、首次连接后同一实例、SQLite 成功及失败、精确档案缺失凭据取消、额度与真实释放。"
+evidence = "tests/ui/linux/test_18_unbound_query.py：草稿零 Connect/ExecuteQuery、首次连接后同一实例、SQLite 成功及失败、绑定取消、额度与真实释放。tests/ui/linux/mariadb_catalog_probe.py：首个查询确认目标库，初始库验证失败保留未绑定草稿。"
 
 [[component]]
 id = "tabs.query.actions"
@@ -503,13 +503,19 @@ style.metrics = ["gap_xs", "min_target"]
 impl_notes = [
   "摆放位置是 `tabs.query.actions` 那一行的左端、**连接选择器之后**（会话信息之前）：`parent` 记 `tabs.query` 是因为 id 的层级规则要求 `tabs.query.actions.*` 前缀，而本组件的 id 已按 `tabs.query.database_picker` 报备、不再改名。",
   "**没有可见文字**（改动确认单 #7）：原来那行「库」caption 已删，界面上只有下拉框本身；层名（库 / Schema）只出现在 tooltip 与可访问名「当前库」里。",
-  "真值只有一个来源：`ConnectionService.GetSessionContext`。显示 = 服务端实际生效的库；没有默认库时显示「未指定库」，**不得**用连接配置里的 `database` 顶替（ADR 0030 §7）。会话就绪后发一次，执行成功后与切换成功后各回读一次；刷新真值只改显示，不改写标签请求用的 catalog（§8）。",
+  "显示以 `ConnectionService` 返回的实际库上下文为准。没有默认库时显示「未指定库」（ADR 0030 §7）。执行成功后回读真值，刷新不改写请求用的 catalog（§8）。",
   "能力级不可用：驱动未在 `ConnectResponse.capabilities` 里声明 `session_catalog_switch` 时**整枚不渲染**（SQLite 的 main / temp / ATTACH 没有「切当前库」这个概念）——不是灰块、不是禁用，是根本没有这枚控件。",
   "会话未就绪 / 有未提交事务时**可见但禁用**，并用 tooltip 说明原因（「会话尚未建立：等标签会话就绪后才能切换库」/「事务已打开：先提交或回滚，再切换库」）。事务中切库由服务端返回 FAILED_PRECONDITION（`mariadb.catalog_switch_in_transaction`）。",
   "选中后走 `SetSessionContext`，用返回的上下文回读真值并刷新选择器与标签 tooltip；失败走查询页既有的失败提示路径，并把选择器恢复原值——切库失败时语句是按旧库跑的，绝不假装切成功（§6）。",
   "列表项 = 可见库，来源于既有 `MetadataService.ListNodes`（目录层：`parent.kind = CATALOG` 且不带名字，一页 500），首次需要时取一次并**按连接键**缓存（同一条连接的多个查询标签共用一份）。取不到时浮层里只给一行说明，不编造条目。",
   "标签 tooltip 的库段同步改成真值（无真值写「未指定」），不再写死「默认」；库名不进状态栏（v0.2.3.3）。",
 ]
+
+[[component.interaction]]
+trigger = "load"
+precondition = "新建查询命令捕获了明确的库或 Schema"
+result = "支持切换的驱动通过 SetSessionContext 应用目标。其他驱动读取会话当前上下文并核对目标。服务端确认目标后才启用查询操作，并以实际库更新选择器、标题和标签提示。"
+source = "src/tabs.rs::TabSet::on_session、TabSet::update_catalog_context"
 
 [[component.interaction]]
 trigger = "click"
@@ -531,8 +537,8 @@ source = "src/tabs.rs:2943、src/tabs.rs:2975、src/sql_page.rs:1371、src/backe
 
 [component.sync.linux]
 state = "done"
-spec_hash = "391c4380b55a"
-evidence = "隔离合成 MariaDB 只读用例 test_read_only_catalog_restores_after_rebind_failure：从无默认库切到 demo Schema，SELECT DATABASE() 验证实际库；重绑坏目标后恢复原 Schema，第二次不同结果再次验证。隔离 GTK qa_query_target_tracks_the_original_tab_session 验证旧回执不能覆盖实际上下文。"
+spec_hash = "3fcfa62f6360"
+evidence = "tests/ui/linux/mariadb_catalog_probe.py：由无默认库档案打开指定库，执行前标题展示已确认的库，SELECT DATABASE() 与同名表数据核对实际目标。隔离 GTK qa_query_target_tracks_the_original_tab_session 验证旧回执不能覆盖实际上下文。"
 
 [[component]]
 id = "tabs.query.editor"
@@ -601,7 +607,7 @@ impl_notes = [
 [[component.interaction]]
 trigger = "load"
 precondition = "结果区状态变化（含连接申请失败）"
-result = "写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行；连接申请失败保留 SQL、未保存状态与此前确认的绑定"
+result = "写一句状态：执行中「正在执行…（等待首批数据）」/ 空「尚未执行」或「空结果集…」/ 错误「查询失败：<文案>（<错误码>）」/ 取消「已取消：保留已取的 N 行（游标已释放，可重新执行）」/ 只读「只读结果：服务端声明该结果集只读」；错误与取消下保留已加载行；连接申请失败保留 SQL、未保存状态与此前确认的绑定。初始库验证失败时说明原因，保留不可执行的未绑定草稿。收到真实关闭回执后归还会话额度。"
 source = "src/results.rs:1370、src/sql_page.rs:617、src/sql_page.rs:643"
 
 [[component.interaction]]
@@ -613,8 +619,8 @@ platform_notes.windows = "五态里多一个 `ReadOnly`（「只读结果：服�
 
 [component.sync.linux]
 state = "done"
-spec_hash = "c3e465201e47"
-evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：绑定失败后 SQL 保留；tests/ui/linux/results/run.d98WgmUQ/report.json：既有查询失败、执行、结果状态。"
+spec_hash = "9787b16c94e7"
+evidence = "tests/ui/linux/test_18_unbound_query.py：绑定失败后 SQL 保留。tests/ui/linux/test_03_sql.py：查询错误、执行及结果状态。tests/ui/linux/mariadb_catalog_probe.py：拒绝库保留草稿、禁止执行，收到实际会话释放回执。"
 
 [[component]]
 id = "tabs.query.results"

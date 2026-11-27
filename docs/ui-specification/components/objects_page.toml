@@ -205,12 +205,6 @@ source = "src/ui.rs:1354、src/ui.rs:1360、src/ui.rs:1366"
 
 [[component.interaction]]
 trigger = "load"
-precondition = "主动单击 Functions / Queries 分组正文或对应工具条入口"
-result = "不发请求、不摆假数据：切到空态页写未实现说明，并清空列表与分页 token"
-source = "src/ui.rs:1369、src/ui.rs:1372、src/tabs.rs:984"
-
-[[component.interaction]]
-trigger = "load"
 precondition = "只选择连接、具体对象、辅助行或显式清除选择"
 result = "维持已有的 Objects 浏览范围。单纯选择、程序化定位或重建不派发列表请求"
 source = "src/ui.rs:1377、src/tabs.rs:1016"
@@ -236,7 +230,7 @@ source = "src/ui.rs::Workspace::refresh、src/tabs.rs::ObjectsPage::reload"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "7487c0bca17d"
+spec_hash = "99134ba62c9e"
 evidence = "test_15_refresh_regressions.py：同范围重入和只选连接保持列表；F5、应用内 DDL、部分失败脚本、事务提交和回滚各触发一次适用的首页请求。test_16_workspace_context.py：A 的 DDL 不刷新 B 的列表，范围失效后不改投其它库。"
 
 [[component]]
@@ -468,7 +462,7 @@ style.slot = "workspace.content"
 a11y.name = "对象列表空态"
 impl_notes = [
   "adw::StatusPage，与「列表 + 状态行」在同一个 GtkStack 里互斥：要么列表，要么空态页，不存在半截。",
-  "启动态与连接态是同一份实现，只换文案（set_empty_text 改的是默认文案）；未实现说明是临时文案，回到空态时恢复默认值，不残留。",
+  "启动态与连接态共用同一个空态控件。断开当前浏览范围后恢复对应的引导文案。",
 ]
 
 [[component.interaction]]
@@ -485,23 +479,11 @@ source = "src/tabs.rs::TabSet::set_initial_objects_hint、src/ui.rs::show_startu
 
 [[component.interaction]]
 trigger = "load"
-precondition = "树里选中 Functions 分组"
-result = "标题「函数列表尚未实现」，说明「驱动没有提供 Functions 列表（契约里没有该种类的拉取能力），所以这里不摆假数据。」；列表与分页 token 一并清空"
-source = "src/tabs.rs:520、src/tabs.rs:984"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "树里选中 Queries 分组"
-result = "标题「已保存的查询尚未实现」，说明「本版没有「已保存的查询」这一层：查询只存在于打开着的查询标签里。」"
-source = "src/tabs.rs:524、src/tabs.rs:984"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "从空态 / 未实现说明回到空态"
-result = "恢复默认文案（上一次的临时说明不残留），并清空状态行与「加载更多…」"
-source = "src/tabs.rs:971、src/tabs.rs:1025"
+precondition = "当前范围已失效，页面回到空态"
+result = "恢复默认文案，并清空状态行与「加载更多…」。"
+source = "src/tabs.rs::ObjectsPage::show_empty"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "863a9b198e19"
+spec_hash = "95161dc3c288"
 evidence = "test_01_startup.py：握手后的空态工作区。test_16_workspace_context.py::test_navigation_target_and_clear_selection：浏览会话断开后清词并回到空态，不读取其它连接。"

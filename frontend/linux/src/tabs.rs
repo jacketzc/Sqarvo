@@ -324,6 +324,11 @@ impl QueryBinding {
         self.bound.borrow().clone()
     }
 
+    fn clear(&self) {
+        self.bound.replace(String::new());
+        self.generation.set(self.generation.get() + 1);
+    }
+
     /// 开始一次重绑。返回 `false` = 选中的就是当前绑定的那条连接（no-op：不重建会话）。
     ///
     /// 已有一次重绑在途时也不再开始第二次（`false`）：连点不该出现两轮 Connect。
@@ -4184,8 +4189,7 @@ impl TabSet {
         let restore = restoring.then(|| tab.catalog.truth()).flatten();
         tab.set_session(opened.session_id.clone());
         tab.set_driver(&opened.driver_id);
-        // 重绑成功（改动确认单 #7 e）：采纳目标连接、清空标签请求库、解除选择器的
-        // 「正在切换」态。必须赶在 tooltip / 标题刷新之前——它们读的是绑定值。
+        // 已绑定标签换连接时清掉旧库请求。新建查询保留捕获的目标库。
         if let Some(rebind) = tab.binding.pending() {
             let bound = tab.binding.finish(true);
             if !rebind.from.is_empty() {
@@ -4197,7 +4201,7 @@ impl TabSet {
                 sql.connection_picker().set_current(&bound);
             }
             eprintln!(
-                "[tabs] 标签 {} 重绑成功：{}（会话 {}，驱动 {}，请求库已清空 = 不改会话库）",
+                "[tabs] 标签 {} 重绑成功：{}（会话 {}，驱动 {}）",
                 opened.tab_id,
                 self.connection_name_for(&rebind.to),
                 short_id(&opened.session_id),
@@ -4222,10 +4226,11 @@ impl TabSet {
             opened.driver_id
         );
         if let Some(sql) = tab.sql.as_ref() {
-            let recovering = restore
+            let expected = restore.or_else(|| tab.catalog.request());
+            let pending = expected
                 .as_ref()
                 .map(|_| self.connection_name_for(&tab.binding.bound()));
-            sql.set_connection_pending(recovering.as_deref());
+            sql.set_connection_pending(pending.as_deref());
             sql.show_binding_status(None);
             sql.set_session_line(&format!(
                 "会话 {} · 驱动 {} · 标签 {}",
@@ -4238,11 +4243,9 @@ impl TabSet {
             // 能力位来自服务端：没声明 `session_catalog_switch` 的驱动，选择器**整枚不渲染**。
             let switchable = supports_catalog_switch(&opened.capabilities);
             tab.catalog.set_switchable(switchable);
-            // Until the old scope is verified on a replacement session it cannot execute SQL.
-            tab.catalog.switching.set(restore.is_some());
-            sql.session_opened(
-                restore.is_none() && (switchable || tab.catalog.request().is_none()),
-            );
+            // A new or reused session must confirm the requested scope before it can run SQL.
+            tab.catalog.switching.set(expected.is_some());
+            sql.session_opened(expected.is_none());
             sql.catalog_picker().set_capability(switchable);
             if switchable {
                 self.ensure_catalogs(&opened.tab_id);
@@ -4252,8 +4255,7 @@ impl TabSet {
                     opened.tab_id, opened.driver_id
                 );
             }
-            // 会话就绪后读一次真值（显示用；不改写请求值，ADR 0030 §8）。
-            self.update_catalog_context(&opened.tab_id, restore);
+            self.update_catalog_context(&opened.tab_id, expected);
         }
         if let Some(entry) = tab.pending_open.borrow_mut().take() {
             let mut reference = entry.reference.clone();
@@ -4271,27 +4273,27 @@ impl TabSet {
         self.update_catalog_context(tab_id, None);
     }
 
-    fn update_catalog_context(self: &Rc<Self>, tab_id: &str, restore: Option<String>) {
+    fn update_catalog_context(self: &Rc<Self>, tab_id: &str, expected: Option<String>) {
         let Some(tab) = self.by_id(tab_id) else {
             return;
         };
         let Some(session) = tab.session().filter(|_| tab.sql.is_some()) else {
             return;
         };
-        if restore.is_none() && tab.catalog.switching.get() {
+        if expected.is_none() && tab.catalog.switching.get() {
             return;
         }
         let revision = tab.catalog.revision.get() + 1;
         tab.catalog.revision.set(revision);
-        let wait = match restore.as_deref() {
+        let wait = match expected.as_deref() {
             Some(catalog) if tab.catalog.switchable() => {
                 self.context.worker.set_session_context(tab_id, catalog)
             }
             _ => self.context.worker.fetch_session_context(tab_id),
         };
         let Some(wait) = wait else {
-            if restore.is_some() {
-                self.fail_catalog_restore(&tab);
+            if expected.is_some() {
+                self.fail_catalog_verification(&tab, None);
             }
             return;
         };
@@ -4310,10 +4312,11 @@ impl TabSet {
             {
                 return;
             }
-            if let Some(expected) = restore.as_deref() {
+            if let Some(expected) = expected.as_deref() {
                 if !matches!(&result, Ok(Ok(context)) if context.default_catalog.as_deref() == Some(expected))
                 {
-                    set.fail_catalog_restore(&tab);
+                    let failure = result.as_ref().ok().and_then(|reply| reply.as_ref().err());
+                    set.fail_catalog_verification(&tab, failure);
                     return;
                 }
                 tab.catalog.switching.set(false);
@@ -4335,9 +4338,19 @@ impl TabSet {
         });
     }
 
-    fn fail_catalog_restore(self: &Rc<Self>, tab: &TabHandle) {
-        self.close_session(&tab.id);
-        self.on_tab_lost(&tab.id, crate::l10n::t("tabs.query_rebind_restore_failed"));
+    fn fail_catalog_verification(self: &Rc<Self>, tab: &TabHandle, failure: Option<&QueryFailure>) {
+        let reason = if tab.catalog.truth().is_some() {
+            crate::l10n::t("tabs.query_rebind_restore_failed").to_owned()
+        } else {
+            tab.binding.clear();
+            tab.binding_settled.set(false);
+            tab.catalog.set_request(None);
+            failure
+                .map(QueryFailure::detail)
+                .filter(|message| !message.is_empty())
+                .unwrap_or_else(|| crate::l10n::t("object_tree.target_unavailable").to_owned())
+        };
+        self.on_tab_lost(&tab.id, &reason);
     }
 
     /// 把服务端真值落到标签与选择器上（只改显示）。

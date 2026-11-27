@@ -327,7 +327,8 @@ def _expect_filter_rpc(inst, before, phase):
 
 def test_objects_filter_keeps_selection_and_scope_local(ui_instance):
     """objects_page, objects_page.filter, objects_page.tab, objects_page.table.row,
-    objects_page.table.row.menu, objects_page.table.row.menu.open: A09.1–4, A09.6, A13.5.
+    objects_page.table.row.menu, objects_page.table.row.menu.open,
+    object_tree.search.box, tabs.strip.list: A08.1, A09.1–4, A09.6, A11.5, A13.5.
     """
     inst = _start(ui_instance, "obj_filter")
     frame = inst.frame()
@@ -382,6 +383,34 @@ def test_objects_filter_keeps_selection_and_scope_local(ui_instance):
         A.wait_until(lambda: _objects_labels(frame) == original, 10, "Esc 恢复原排序")
         expect(A.text_value(entry) == "", "Esc 清空关键词")
         _expect_filter_rpc(inst, before, "Esc 清词")
+
+    with step("three_local_searches_keep_independent_terms"):
+        nav_entry = A.find_one(navigation, role_in=("entry",), name="搜索资源…")
+        tab_list = A.find_one(frame, role_in=("toggle button",), name="所有标签")
+        before = _rpc_counts(inst)
+        title = A.nm(frame)
+        A.set_text(nav_entry, "only_for_navigation")
+        A.find_one(navigation, role_in=("label",), name="已加载的资源中没有匹配项", timeout=10)
+        A.set_text(entry, "_EMPTY")
+        A.wait_until(lambda: row("widgets_empty") and not row("widgets"), 10, "Objects 独立检索")
+        A.click(tab_list)
+        search = A.find_one(frame, role_in=("entry", "text"), name="搜索标签…", timeout=8)
+        A.set_text(search, "only_for_tabs")
+        A.find_one(frame, role_in=("label",), name="没有匹配的标签", timeout=8)
+        expect(A.text_value(nav_entry) == "only_for_navigation" and A.text_value(entry) == "_EMPTY",
+               "标签过滤不改导航或 Objects 检索词")
+        A.set_text(search, "")
+        matches = A.find_one(frame, role_in=("list",), name="所有标签", timeout=8)
+        A.find_one(matches, role_in=("label",), name_contains="Objects", timeout=8)
+        A.press_keys("Return")
+        A.wait_gone(lambda: A.query(frame, role_in=("entry", "text"), name="搜索标签…"),
+                    8, "标签列表已关闭")
+        A.set_text(nav_entry, "")
+        A.wait_until(lambda: "selected" in A.states(ops.find_row(navigation, exact_name="Tables")),
+                     10, "清除导航筛选后原选择仍在")
+        expect(A.text_value(entry) == "_EMPTY" and A.nm(frame) == title,
+               "导航清词保留 Objects 范围和检索词")
+        _expect_filter_rpc(inst, before, "三个本地搜索入口联合操作")
 
     with step("keyboard_enters_list_without_opening"):
         A.press_keys("Control_L", "f")

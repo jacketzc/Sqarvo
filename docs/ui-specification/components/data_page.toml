@@ -851,7 +851,7 @@ platform_notes.macos = "§7.1 未记录。"
 state = "done"
 spec_hash = "d0c44be7dc7d"
 commit = ""
-evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor"
+evidence = "§5.4 双击单元格 / 编辑提示 / 应用失败就地显示；open_cell_editor + open_editor。tests/ui/linux/test_10_data_page_insert_editor.py::test_insert_editor_omit_unchecked_by_default：隔离 X11 双击合成表的草稿单元格，AT-SPI 核对省略默认未勾选及可输入，取消保留原草稿且零写入。"
 
 [[component]]
 id = "data_page.row_menu"
