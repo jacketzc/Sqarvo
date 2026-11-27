@@ -129,6 +129,11 @@ GTK 的逻辑坐标：
 | `inspector_min < inspector_width < inspector_max` | 同上 |
 | `row_height_data > row_height_tree` | 数据行比树行松 |
 
+全宽标题和工具条分别使用 `header_height` 与 `toolbar_height`。工具条取
+`toolbar_padding_h`、`toolbar_button_height`、`gap_*`、`min_target`、`font_ui`、`icon_box`、
+`toolbar_layout_icon` 与 `radius_sm`。
+空间分配取当前档位的实际控件测量与文字宽度，规则见 `shell.toolbar.more`。
+
 导航标题、标题按钮、资源行与固定搜索使用 `navigation_header_height`、
 `navigation_header_button`、`navigation_row_height`、`navigation_search_height`。
 缩进、行内缩、圆角、箭头与状态圆点分别取 `navigation_indent`、

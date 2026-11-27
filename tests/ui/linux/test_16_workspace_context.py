@@ -60,7 +60,7 @@ def test_long_tab_name_remains_accessible_with_tab_commands(ui_instance):
 def test_navigation_target_and_clear_selection(ui_instance):
     """object_tree.tree, object_tree.tree.row.conn, shell.menu.clear_selection,
     shell.menu.new_tab, shell.toolbar.new_query, shell.toolbar.tables, shell.toolbar.views,
-    shell.title, tabs.strip.tab.query, object_tree.ctx_menu, object_tree.ctx_menu.disconnect,
+    shell.title, shell.toolbar.target, tabs.strip.tab.query, object_tree.ctx_menu, object_tree.ctx_menu.disconnect,
     object_tree.ctx_menu.delete_connection, object_tree.hint,
     objects_page.table, objects_page.filter, objects_page.table.row, objects_page.empty,
     objects_page.table.row.menu, objects_page.table.row.menu.open,
@@ -139,9 +139,9 @@ def test_navigation_target_and_clear_selection(ui_instance):
         panel = A.find_one(frame, role_in=("grouping",), name="信息面板", timeout=10)
         A.find_one(panel, role_in=("label",), name="Peer", timeout=10)
         expect(A.nm(frame) == title_a, "选中 B 时窗口标题仍属于 A", A.nm(frame))
-        A.click(A.find_one(frame, role_in=("button",), name="Tables"))
-        A.find_one(frame, role_in=("label",), name="请先选择要浏览的数据库或 Schema。",
-                   timeout=10)
+        A.find_one(frame, role_in=("label",), name="目标：Peer", timeout=10)
+        tables = A.find_one(frame, role_in=("button",), name="Tables")
+        expect("sensitive" not in A.states(tables), "只选择连接时分类不可用")
         expect(A.nm(frame) == title_a, "只选择连接时不借用 A 的库", A.nm(frame))
 
         ops.expand_tree_row(primary)

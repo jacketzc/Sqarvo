@@ -7,7 +7,7 @@
 
 前端状态（源：[frontend/platforms.toml](../../frontend/platforms.toml)）：Linux Active、Windows Rewriting、macOS Planned。同步列仅显示 Active 平台。
 
-共 238 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
+共 240 个组件 / 11 个功能区。同步列：`done` 已实现并按本规范核对过，
 `partial` 部分实现（差异见组件明细的「平台」），`—` 未实现，`na` 该平台不做，
 `blocked` 平台能力做不到；`已清` / `待清` 只用于退役组件，是该端「代码删了 / 界面隐藏了」
 与「还留着」的清理进度（见文末「待清理」）。旧平台的实现描述仅供历史参考。
@@ -2065,7 +2065,7 @@ kind `control` · status `active` · parent `objects_page`
 
 ## 窗口壳与主工具条（`shell`）
 
-窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、深色模式三档、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。
+窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接、新建查询、分类、目标和布局控制）、深色模式三档、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。
 
 | 组件 | 名称 | kind | 状态 | Linux |
 |---|---|---|---|---|
@@ -2085,8 +2085,10 @@ kind `control` · status `active` · parent `objects_page`
 | `shell.toolbar.new_query` | 　　「新建查询」 | control | active | done |
 | `shell.toolbar.tables` | 　　种类入口「Tables」 | control | active | done |
 | `shell.toolbar.views` | 　　种类入口「Views」 | control | active | done |
-| `shell.toolbar.functions` | 　　种类入口「Functions」 | control | active | done |
-| `shell.toolbar.queries` | 　　种类入口「Queries」 | control | active | done |
+| `shell.toolbar.functions` | 　　种类入口「Functions」 | control | removed | 已清 |
+| `shell.toolbar.queries` | 　　种类入口「Queries」 | control | removed | 已清 |
+| `shell.toolbar.target` | 　　操作目标 | control | active | done |
+| `shell.toolbar.more` | 　　更多分类 | control | active | done |
 | `shell.theme` | 　深色模式（跟随系统 / 浅色 / 深色） | container | active | done |
 | `shell.theme.system` | 　　「跟随系统」单选项 | item | active | done |
 | `shell.theme.light` | 　　「浅色」单选项 | item | active | done |
@@ -2133,27 +2135,24 @@ kind `container` · status `active` · parent `shell`
 kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `header`；尺寸 `header_height`、`font_ui`、`gap_md`；颜色 `sqarvo_separator`
+- 原生控件：gtk:AdwHeaderBar
 - 自绘：WinUI 3 的系统标题栏不能承载自绘内容：标题行用 ExtendsContentIntoTitleBar + SetTitleBar(拖拽区) 把自绘行注册为拖拽区（图标 / 标题 / 副标题 / 汉堡按钮），窗口控制按钮仍用系统按钮；没有等价的原生「可拖拽自绘标题行」控件（§1.1）。
-- 同步：Linux done（§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮）
-- 实现备注：Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。
+- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：真实拖动、双击最大化、标题栏右键菜单、最小化、还原和关闭。）
+- 实现备注：Linux 使用 AdwHeaderBar 居中承载 AdwWindowTitle，主菜单位于结束侧。原生装饰负责拖动、双击、窗口菜单和窗口控制按钮。
 
 ### `shell.title` 标题与副标题
 
 kind `control` · status `active` · parent `shell`
 
-- 样式：尺寸 `font_ui`
+- 样式：尺寸 `font_title`、`font_status`、`font_weight_title`、`font_weight_ui`、`gap_xxs`
 - 无障碍：可访问名「窗口标题」
-- 同步：Linux done（test_16_workspace_context.py::test_navigation_target_and_clear_selection：树选 B 时系统标题保留 A；同名表标签及 Objects 分别显示实际档案。隔离 GTK qa_query_target_tracks_the_original_tab_session：在途、失败与迟到响应不改实际标题。）
-- 实现备注：由 AdwWindowTitle 承载：字号随窗口继承 font_ui，字重由 Adwaita 的内部样式决定，`.sqarvo-title` 类只用在页内标题上。标题、副标题和 tooltip 读取活动工作区的实际绑定。查询重绑的目标只用于建立会话。
+- 原生控件：gtk:AdwWindowTitle
+- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：SQLite 实际库、长名称无障碍描述、原生 Tooltip 查询及零 RPC；tests/ui/linux/results/run.TJeqNMo1/report.json：双连接归属；隔离 GTK qa_query_target_tracks_the_original_tab_session：失败重绑保留原绑定。 tests/ui/linux/results/run.kEQx6EUw/report.json：原标题、安全描述与无导航失连；system_title_appends_the_brand_once 校验品牌后缀。）
+- 实现备注：标题读取活动工作区的原始名称和实际连接显示名，副标题取友好数据库类型和实际数据库名，缺少的字段省略。Objects 分类使用实际分类名称，数据库级使用 Objects。无有效范围或无活动工作区时只显示 Sqarvo；未绑定 SQL 只显示查询名。全名、实际 Schema、安全端点、已有版本和状态按可用性补入原生 tooltip 与可访问描述。断开的存续工作区保留实际身份；在途及失败重绑不改标题。启动、重试与失连的状态继续在业务区域显示。没有业务工作区时，标题为 Sqarvo，启动状态放入 tooltip。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 握手成功且还没有数据库连接 | 标题「Sqarvo」、副标题「未连接」 | `src/ui.rs:1561` |
-| load | 连接数据库成功 | Objects 还没有成功浏览的范围时，标题是「Sqarvo」，副标题为空 | `src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770` |
-| load | 切换标签 | 主标题用工作区原始名称与连接显示名组成「<工作区名> @ <连接名>」。副标题显示驱动显示名和实际数据库或 Schema，缺失项省略。系统窗口标题加「— Sqarvo」。tooltip 补充可安全显示的目标详情。选中树资源和在途重绑都不改归属 | `src/tabs.rs:2292、src/tabs.rs:2310、src/tabs.rs:135` |
-| load | 后端断开 | 存续的普通标签保留实际归属及已加载结果，业务区域显示失连。无工作区时展示外壳的断开状态 | `src/ui.rs:587、src/tabs.rs:2632` |
-| load | 后端握手失败 | 标题回到「Sqarvo」、副标题「连接失败」 | `src/ui.rs:567、src/ui.rs:3774` |
-| load | 用户选择「重启 Sqarvo」 | 副标题「正在重启…」，标题「Sqarvo」 | `src/ui.rs:1420` |
+| load | 活动工作区或该工作区实际绑定变化 | 更新居中主副标题。系统标题保留单个 Sqarvo 品牌后缀，空工作区使用单独的 Sqarvo。长名截断，完整名称经原生 tooltip 和无障碍读取。 | `src/tabs.rs TabSet::window_title_and_subtitle；src/ui.rs TabContext::on_title` |
 
 ### `shell.menu` 主菜单
 
@@ -2190,12 +2189,12 @@ kind `item` · status `active` · parent `shell.menu`
 
 - 样式：尺寸 `font_ui`
 - 无障碍：可访问名「新建查询标签」
-- 同步：Linux done（tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。）
-- 实现备注：与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同一条 `TabSet::new_query_tab`。
+- 同步：Linux done（test_18_unbound_query.py：win.new-tab 共用入口及未绑定可用；tests/ui/linux/results/run.cmSUm8oW/report.json：真实 Ctrl+T 与加号共用目标确认。 tests/ui/linux/results/run.kEQx6EUw/report.json：win.new-tab 统一确认及失效保护。）
+- 实现备注：与工具条新建查询、标签栏加号和 Ctrl+T 共用 win.new-tab。目标摘要截断时通过同一确认流程。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；明确不可用的目标在侧栏提示。成功时聚焦编辑器；握手前禁用入口 | `src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859` |
+| click | 后端已握手且工作区存在（`set_workspace_ready` 统一开关） | 按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；目标不可用或确认期间变更时提示原因并拒绝执行。成功时聚焦编辑器；握手前禁用入口 | `src/ui.rs::request_toolbar_command、src/tabs.rs::TabSet::new_query_tab_for_target` |
 | key Ctrl+T | 后端已握手且工作区存在 | 与菜单项同一个动作 `win.new-tab` | `src/ui.rs:327` |
 
 ### `shell.menu.clear_selection` 视图 → 清除选择
@@ -2255,16 +2254,15 @@ kind `item` · status `active` · parent `shell.menu`
 
 kind `container` · status `active` · parent `shell`
 
-- 样式：槽位 `toolbar`；尺寸 `toolbar_height`、`toolbar_padding_h`、`gap_sm`、`min_target`、`font_ui`；颜色 `sqarvo_separator`
+- 样式：槽位 `toolbar`；尺寸 `toolbar_height`、`toolbar_padding_h`、`toolbar_button_height`、`gap_xxs`、`gap_xs`、`gap_sm`、`gap_lg`、`gap_xl`、`min_target`、`font_ui`、`icon_box`；颜色 `sqarvo_separator`
 - 无障碍：可访问名「主工具条」
-- 自绘：WinUI 3 的 CommandBar + AppBarButton 在真机秒级崩溃（0xc000027b，#170，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装：六个按钮都是朴素原生 Button，但它们组成的整条工具条是拼装件，不是 CommandBar，也没有原生等价的「左动作组 + 竖分隔 + 四个纯拉丁种类入口」复合控件（旧实现，见归档）。
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：启动握手、控制可用性和统一新建查询。）
-- 实现备注：窗口级控件（在标题栏之下创建），不随工作区重建：窗口构建后、拿到 worker 之前先置未就绪；握手完成置就绪；后端失效 / 退出 / 重启回退未就绪。左组 = 连接 / 新建查询；竖分隔线；种类入口组（Tables / Views / Functions / Queries，纯拉丁文字、与「新建查询」同一套 flat 样式）；其余空间弹性留白。六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`。四个种类入口共用一条目标库解析：取树里**当前选中项所在的库**（选中的表 / 视图 / 分组也算），只有什么都没选中时才退回活动连接的默认库；多连接按「会话 ID + 库名」精确匹配，避免同名 `main` 跳到别的连接（`selected_catalog` / `catalog_row` 的 require_session 一遍）。种类入口是纯拉丁文字，与中文混排时字面会偏上，由 `.sqarvo-kind label` 的 margin-top 补回来（按钮盒子与命中区不变）。
+- 自绘：GTK 提供独立按钮与原生弹出菜单。此工具条组合了这些控件，以同一行呈现动作、响应式分类、目标和右侧布局控制。
+- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：Compact 840×600 可达、原生 More、目标摘要与 零额外业务 RPC。 tests/ui/linux/results/run.kEQx6EUw/report.json：中英文三档可达，反复缩放无新增业务 RPC。）
+- 实现备注：窗口级单行工具条，位于标题栏下。左侧为连接、新建查询和分隔后的对象分类；弹性空间内显示实际目标，右侧为导航、专注、信息面板三个布局控制。GTK 原生按钮与标签的自然宽度决定分类收纳和动作图标化；始终保留实际可用范围内的关键入口。分类能力取 Action Context 和已实现能力。高亮读取活动工作区类型或 Objects 实际分类；普通 SQL 无分类高亮。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 后端就绪状态变化 | 六个按钮同时切换可用性与 tooltip，并打一行可用性日志；菜单侧走同一个状态（`WindowActions::set_backend_ready`），不出现「菜单禁用、按钮可点」 | `src/shell.rs:862、src/ui.rs:4666、src/shell.rs:840` |
-| load | 当前标签切换 / 每次标签状态刷新 | 高亮跟着当前标签：表数据标签 → 该表的种类；`Objects` 页 → 页面**正在列**的种类（树里换分组导致页换作用域时，高亮在同一次刷新里跟上）；查询标签 → 无高亮。同一时刻最多一个按钮带 `sqarvo-kind-active` | `src/ui.rs:1840、src/shell.rs:958` |
+| load | 窗口空间或动作上下文变化 | 以实际文字与原生控件测量重排工具条。分类按固定顺序恢复；布局控制延用工作区外壳的实际布局状态。 | `src/shell.rs Toolbar::reflow；src/ui.rs schedule_toolbar_refresh` |
 
 ### `shell.toolbar.connect` 「连接」
 
@@ -2272,8 +2270,9 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`
 - 无障碍：可访问名「连接」
-- 同步：Linux done（§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂）
-- 实现备注：主工具条上唯一的强调色按钮（`suggested-action`）；禁用时**摘掉**该类 —— Adwaita 的 disabled suggested 仍是橙底，视觉上像可点。tooltip：就绪时「打开连接对话框（Ctrl+N）」；未就绪时「后端尚未就绪：正在连接本地后端，握手完成后才能新建连接」。连接入口只有这一个（标题栏不放连接按钮）；连接对话框也能从「文件 → 新建连接」/ `Ctrl+N` 打开。
+- 图标：`tree.connection`
+- 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：原生连接对话框打开和取消；test_18_unbound_query.py::test_reconnect_from_objects_only_startup：后端丢失时入口禁用。）
+- 实现备注：左侧强调动作，使用图标和文字。空间不足时保留图标、可访问名称和 tooltip。后端握手前禁用并说明原因；就绪后打开既有连接对话框。入口含义与数据库在线状态无关。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -2285,72 +2284,74 @@ kind `control` · status `active` · parent `shell.toolbar`
 
 - 样式：尺寸 `min_target`、`font_ui`
 - 无障碍：可访问名「新建查询」
-- 同步：Linux done（tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。）
-- 实现备注：握手成功后可用，尚无连接也可新建未绑定查询。启用时 tooltip 为「新建查询标签（Ctrl+T）」；后端未就绪时说明握手完成后可新建。与标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」同一条 `TabSet::new_query_tab`。
+- 图标：`action.new_query`
+- 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：双连接、仅选连接、失效与清除选择；tests/ui/linux/results/run.cmSUm8oW/report.json：截断目标时加号与 Ctrl+T 共用确认。 tests/ui/linux/results/run.kEQx6EUw/report.json：加号和工具条目标文本一致，确认时目标变化拒绝创建；toolbar_target_rejects_lost_and_replaced_sessions 覆盖失效、重连和档案修订。）
+- 实现备注：中性动作，使用图标和文字。空间不足时保留图标与可访问名称。后端握手后可用，无目标时可创建未绑定查询。tooltip 包含实际动作目标，与标签栏加号相同。工具条、加号、菜单与 Ctrl+T 共用 win.new-tab。仅连接不借用其他标签的数据库，失效目标不给回退。目标摘要被截断时先显示可读的目标确认。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 后端已握手且工作区存在 | 按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；明确不可用的目标在侧栏提示。成功时聚焦编辑器；握手前禁用入口 | `src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859` |
+| click | 后端已握手且工作区存在 | 按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；目标不可用或确认期间变更时提示原因并拒绝执行。成功时聚焦编辑器；握手前禁用入口 | `src/ui.rs::request_toolbar_command、src/tabs.rs::TabSet::new_query_tab_for_target` |
 
 ### `shell.toolbar.tables` 种类入口「Tables」
 
 kind `control` · status `active` · parent `shell.toolbar`
 
-- 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
+- 样式：尺寸 `min_target`、`font_ui`、`gap_xxs`、`gap_lg`、`radius_sm`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Tables」
-- 图标：`tree.group.tables`
-- 同步：Linux done（tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。）
-- 实现备注：纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的表；未就绪提示等待握手。
+- 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：目标 B 浏览固定 Objects 且保持查询 A；隔离 GTK page_failure_keeps_loaded_rows_and_only_unsupported_hides_a_group：只有明确能力不支持才隐藏。）
+- 实现备注：纯文字分类入口。只有 Action Context 支持且软件已有实现时出现；空列表、权限错误或读取失败保留分类。缺少可用数据库范围时禁用，tooltip 说明原因。活动工作区的 Tables 类别使用圆角高亮；当入口收纳时由 More 标记该分类。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页，按解析出的目标数据库或 Schema 列出 Tables，高亮来自 Objects 当前种类。树逻辑选择保留 | `src/ui.rs:1078、src/ui.rs:1909、src/shell.rs:958` |
-| click | 工作区没有可用数据库或 Schema，或目标已失效 | 在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。 | `src/ui.rs::show_objects_for_kind` |
+| load | 工作区没有可用数据库或 Schema，或目标已失效 | 分类保留并禁用。tooltip 提供原因，当前工作区保持原样。 | `src/ui.rs::show_objects_for_kind` |
 
 ### `shell.toolbar.views` 种类入口「Views」
 
 kind `control` · status `active` · parent `shell.toolbar`
 
-- 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
+- 样式：尺寸 `min_target`、`font_ui`、`gap_xxs`、`gap_lg`、`radius_sm`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
 - 无障碍：可访问名「Views」
-- 图标：`tree.group.views`
-- 同步：Linux done（tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。）
-- 实现备注：与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的视图；未就绪提示等待握手。
+- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：More 中打开唯一的固定 Objects、空 Views、活动菜单项可读；tests/ui/linux/results/run.TJeqNMo1/report.json：目标 B 视图。）
+- 实现备注：纯文字分类入口。只有 Action Context 支持且软件已有实现时出现；空列表、权限错误或读取失败保留分类。缺少可用数据库范围时禁用，tooltip 说明原因。活动工作区的 Views 类别使用圆角高亮；当入口收纳时由 More 标记该分类。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页，按解析出的目标数据库或 Schema 列出 Views，高亮来自 Objects 当前种类。树逻辑选择保留 | `src/ui.rs:1078、src/ui.rs:1904、src/ui.rs:1920` |
-| click | 工作区没有可用数据库或 Schema，或目标已失效 | 在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。 | `src/ui.rs::show_objects_for_kind` |
+| load | 工作区没有可用数据库或 Schema，或目标已失效 | 分类保留并禁用。tooltip 提供原因，当前工作区保持原样。 | `src/ui.rs::show_objects_for_kind` |
 
 ### `shell.toolbar.functions` 种类入口「Functions」
 
-kind `control` · status `active` · parent `shell.toolbar`
+kind `control` · status `removed` · parent `shell.toolbar`
 
-- 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
-- 无障碍：可访问名「Functions」
-- 图标：`tree.group.functions`
-- 同步：Linux done（tests/ui/linux/results/run.d98WgmUQ/report.json：Functions 重入及 F5；tests/ui/linux/results/run.x16Mog9W/report.json 启动可达。）
-- 实现备注：沿用当前阶段的未实现说明页，保留树逻辑选择。tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
-
-| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
-|---|---|---|---|
-| click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页并显示 Functions 尚未实现的说明。零列表 RPC，树逻辑选择保留 | `src/ui.rs:1931、src/tabs.rs:518、src/ui.rs:1928` |
-| click | 工作区没有可用数据库或 Schema，或目标已失效 | 在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。 | `src/ui.rs:1948` |
+- 同步：Linux removed（test_01_startup.py 与 test_15_refresh_regressions.py::test_objects_unimplemented_kind_hidden_after_refresh：启动与刷新后均隐藏 Functions。）
 
 ### `shell.toolbar.queries` 种类入口「Queries」
 
+kind `control` · status `removed` · parent `shell.toolbar`
+
+- 同步：Linux removed（test_01_startup.py 与 test_15_refresh_regressions.py::test_objects_unimplemented_kind_hidden_after_refresh：启动与刷新后均隐藏 Queries。）
+
+### `shell.toolbar.target` 操作目标
+
 kind `control` · status `active` · parent `shell.toolbar`
 
-- 样式：尺寸 `min_target`、`font_ui`、`gap_xs`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`；状态 selected=`sqarvo_brand_mid`
-- 无障碍：可访问名「Queries」
-- 图标：`tree.group.queries`
-- 同步：Linux done（tests/ui/linux/results/run.d98WgmUQ/report.json：Queries 重入及 F5；tests/ui/linux/results/run.x16Mog9W/report.json 启动可达。）
-- 实现备注：与 `Functions` 同构：有入口、0 次 RPC、页面如实说明。tooltip：就绪「已保存的查询：尚未实现（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。
+- 样式：尺寸 `font_ui`
+- 无障碍：可访问名「目标」
+- 原生控件：gtk:GtkLabel
+- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：隐藏导航后提示、同范围且可见时隐藏、截断先确认；tests/ui/linux/results/run.TJeqNMo1/report.json：两连接、仅连接、失效和清除。 tests/ui/linux/results/run.kEQx6EUw/report.json：确认期间清除选择，继续时提示原目标失效，查询数和 Connect 数不变。）
+- 实现备注：导航目标与活动工作区的连接、库或 Schema 不一致，导航选择不可见，或明确目标失效时显示实际目标。连接级选择省略数据库值，tooltip 注明仅选连接。安全全名、附加标识和失效原因可由 tooltip 和可访问描述读取。省略同一可见操作目标的常驻提示。摘要无法完整显示时，打开业务命令前显示完整目标。继续时复核工作区、捕获目标、档案版本和会话身份。原目标失效或变化时提示并结束本次操作。普通操作直接执行。
 
-| 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
-|---|---|---|---|
-| click | 后端已握手，Action Context 有可用的数据库或 Schema | 切到固定 Objects 页并显示 Queries 尚未实现的说明。零列表 RPC，树逻辑选择保留 | `src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928` |
-| click | 工作区没有可用数据库或 Schema，或目标已失效 | 在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。 | `src/ui.rs:1948` |
+### `shell.toolbar.more` 更多分类
+
+kind `control` · status `active` · parent `shell.toolbar`
+
+- 样式：尺寸 `min_target`、`icon_box`、`gap_xxs`、`radius_sm`；颜色 `sqarvo_brand_mid`、`sqarvo_brand_on_mid`
+- 无障碍：可访问名「更多分类」
+- 图标：`tree.more`
+- 原生控件：gtk:GtkMenuButton + GtkPopoverMenu
+- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：溢出及恢复、项目唯一、活动项可读、旧菜单关闭、从菜单浏览固定 Objects；重排与展合零业务 RPC。 tests/ui/linux/results/run.kEQx6EUw/report.json：More 活动态、子项标记、旧目标菜单关闭及反复缩放；tests/ui/linux/results/run.WBo2vd51/runner.log：切到不支持当前分类的目标后清除高亮，空菜单隐藏。）
+- 实现备注：以分类的自然宽度和当前可分配空间决定收纳，项目按工具条顺序排列且只出现一次。没有项目时隐藏。活动分类被收纳时同时标记 More 和对应的菜单项。空间恢复后分类回到原顺序。打开时捕获 Action Context 及相应档案版本与会话身份。目标改变、失效或后端离线时关闭旧菜单，触发时再核对捕获目标。
 
 ### `shell.theme` 深色模式（跟随系统 / 浅色 / 深色）
 
@@ -2466,13 +2467,13 @@ kind `container` · status `active` · parent `shell`
 
 - 样式：槽位 `workspace.content`；尺寸 `font_title`、`font_status`、`gap_page`
 - 无障碍：可访问名「无法连接后端」
-- 同步：Linux done（tests/ui/linux/results/run.x16Mog9W/report.json：服务失效后恢复同一 SQL 编辑器，Objects 单页使用重新连接并保留单例。）
-- 实现备注：同一张 StatusPage 承载两种状态：握手失败「无法连接后端」与无工作区时的「已断开连接」；有工作区时断开**不**换页（保留已加载的行并标失连）。工具条留在错误页上方并保持全部禁用，日志「[toolbar] 后端未握手：0/6 个按钮可用」—— 错误页不是「退化成没有工具栏」。
+- 同步：Linux done（test_18_unbound_query.py：Objects 单页失连回到恢复页，存续查询保留实际标题及 SQL。）
+- 实现备注：同一张 StatusPage 承载两种状态：握手失败「无法连接后端」与无工作区时的「已断开连接」；有工作区时断开**不**换页（保留已加载的行并标失连）。工具条保留在错误页上方，依赖后端的命令禁用。工作区外壳已建立时，布局命令继续使用其当前状态。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 后端握手失败 | 主区域换成错误页：标题「无法连接后端」、副标题「连接失败」、描述为错误原文 + 「重试」按钮；标题栏回到「Sqarvo」；工具条保留在上方并保持全部禁用 | `src/ui.rs:3774、src/ui.rs:567` |
-| load | 后端断开且没有普通业务标签可提供页内恢复入口 | 同一张 StatusPage 换成「已断开连接」+ 断开原因 + 「重新连接」；标题「Sqarvo」、副标题「已断开」 | `src/ui.rs:3792、src/ui.rs:602` |
+| load | 后端握手失败 | 主区域显示「无法连接后端」、安全错误说明与「重试」按钮；标题栏显示 Sqarvo，连接失败状态进入 tooltip。工具条继续呈现其可用状态 | `src/ui.rs::show_error` |
+| load | 后端断开且没有普通业务标签可提供页内恢复入口 | 状态页显示断开原因与「重新连接」。标题栏显示 Sqarvo，断开状态进入 tooltip | `src/ui.rs::show_disconnected` |
 
 ### `shell.error.retry` 「重试」/「重新连接」
 
@@ -2480,12 +2481,12 @@ kind `control` · status `active` · parent `shell.error`
 
 - 样式：尺寸 `min_target`、`font_ui`
 - 无障碍：可访问名「重试」
-- 同步：Linux done（§1.1 错误页「重试」；retry 闭包的未就绪回退与 worker.connect）
+- 同步：Linux done（test_18_unbound_query.py::test_reconnect_from_objects_only_startup：恢复入口成功重新握手并保留运行期专注状态。）
 - 实现备注：同一枚按钮：握手失败页写「重试」，断开页写「重新连接」，走同一个回调。强调色 + pill 外形；点击后回到 Loading，而不是停在原地重试。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| click | 错误页 / 断开页可见 | 回到 Loading「准备连接本地后端…」；若之前是就绪状态，工具条与菜单先回未就绪（并打一行可用性日志），然后重新握手 | `src/ui.rs:369、src/ui.rs:3786` |
+| click | 错误页 / 断开页可见 | 回到 Loading「准备连接本地后端…」；若之前是就绪状态，工具条与菜单先回未就绪（保持后端命令禁用），然后重新握手 | `src/ui.rs:369、src/ui.rs:3786` |
 
 ### `shell.backend_failure` 后端失效恢复（「重启 Sqarvo」对话框与重启流程）
 
@@ -2533,11 +2534,12 @@ kind `container` · status `active` · parent `shell`
 
 kind `control` · status `active` · parent `shell.toolbar`
 
+- 样式：尺寸 `min_target`、`toolbar_layout_icon`、`gap_xxs`、`gap_lg`；颜色 `sqarvo_brand_soft`
 - 无障碍：可访问名「导航 / 专注模式 / 信息面板」
 - 图标：`layout.navigation`、`layout.focus`、`layout.inspector`
 - 原生控件：gtk:GtkToggleButton
-- 同步：Linux done（test_10_layout.py 启动态和连接态的布局按钮、pressed 状态、临时优先、专注及退出。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例确认隐藏导航后键盘焦点移至「导航」。 tests/ui/linux/results/run.FlRhTuGR/report.json）
-- 实现备注：三个布局按钮位于主工具栏最右，按导航、专注模式、信息面板排序。启动态及连接态都可操作。按下状态来自实际可见侧栏或当前专注状态。专注期间点击某侧栏按钮会退出专注并请求显示该栏。纯布局命令，沿用 shell.layout 计算和状态。
+- 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：三档密度、无数据库连接仍可用、临时优先、专注和布局零 RPC；tests/ui/linux/results/run.cmSUm8oW/report.json：Compact 的三枚布局按钮。 tests/ui/linux/results/run.kEQx6EUw/report.json：两种语言、三档密度均可访问五个关键入口。）
+- 实现备注：主工具栏最右侧的三个图标按钮依次为导航、专注模式、信息面板；工作区外壳建立后可用，与数据库连接无关。按下状态来自实际可见侧栏或专注状态。空间不足、专注覆盖与可主动显示状态各有工具提示。专注期间点击任一侧栏按钮退出专注并请求显示该栏。按钮调用 shell.layout 的既有布局命令及临时优先求解。
 
 ### `shell.menu.reset_layout` 视图 → 重置布局
 
@@ -2567,20 +2569,20 @@ kind `control` · status `active` · parent `shell.menu`
 kind `area` · status `active`
 
 - 样式：槽位 `startup`；尺寸 `sidebar_width`、`inspector_width`、`status_height`
-- 同步：Linux done（§1.1 应用启动；startup.rs 全模块为启动态唯一实现）
-- 实现备注：启动态不是独立一套界面：握手成功后 ui.rs 用 StartupWorkspace 组装六个区域，侧栏 / 标签条 / 信息面板与连接态是同一套实现，连上数据库后由 Workspace 整体替换。后端诊断信息（版本 / 协议 / PID / 端点文件）不在启动态出现，在「帮助 → 关于 Squarvo」里。启动顺序（窗口级，全在 ui.rs::activate）：建窗口并把 headerbar（ui.rs:177-199）、主工具条与页面槽位（ui.rs:270-271）挂进根容器 → toolbar.set_backend_ready(false)（ui.rs:274，随即打一行 0/6）→ show_loading「准备连接本地后端…」（ui.rs:275）→ WorkerHandle::spawn（ui.rs:277）→ 每个 Event::Stage 改写说明行（ui.rs:504-506）→ Event::Connected 置就绪、标题回 Sqarvo /「未连接」、show_startup_workspace（ui.rs:538-548）。页面槽位里 Loading 与启动态外壳互斥，任一时刻只有一个。
+- 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：后端握手后的工作区外壳、导航空态、无绑定查询。）
+- 实现备注：握手成功后工作区外壳挂载同一套 Shell、对象树、固定 Objects 和信息面板。首个数据库连接更新已有实例。后端诊断信息（版本、协议、PID 和端点文件）在关于对话框。启动阶段先挂标题栏、工具条和页面槽位。在页面槽位显示 Loading、后端握手、再挂工作区。状态文案留在 Loading 页面及标题栏 tooltip。
 
 ### `startup.loading` Loading 页（标题 + 握手阶段文案 + 居中 spinner）
 
 kind `container` · status `active` · parent `startup`
 
 - 样式：槽位 `startup`；尺寸 `spinner_px`、`gap_xl`
-- 同步：Linux done（§1.1 应用启动（先 Loading）；show_loading 组装 StatusPage + spinner）
-- 实现备注：AdwStatusPage：标题「正在连接后端」，说明行 = 当前握手阶段文案，子控件是 spinner（居中、上方留 gap_xl）。页面只占窗口的页面槽位：Loading 期间侧栏、标签条、信息面板、状态栏都还不存在（窗口根是 headerbar + 主工具条 + 页面槽位）。窗口标题（副标题改「正在连接…」）归 shell 的标题组件，本区不登记；后端握手失败后的错误页同样归 shell。
+- 同步：Linux done（test_01_startup.py::test_startup_readiness 与 test_18_unbound_query.py::test_reconnect_from_objects_only_startup：启动和重新握手由同一入口恢复，业务入口在未就绪时禁用。）
+- 实现备注：AdwStatusPage：标题「正在连接后端」，说明行 = 当前握手阶段文案，子控件是 spinner（居中、上方留 gap_xl）。页面只占窗口的页面槽位：Loading 期间侧栏、标签条、信息面板、状态栏都还不存在（窗口根是 headerbar + 主工具条 + 页面槽位）。窗口标题和启动状态 tooltip 归 shell 的标题组件，本区不登记；后端握手失败后的错误页同样归 shell。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
-| load | 应用启动 / 重新握手（worker 尚未回报 Connected） | 页面槽位换成居中 StatusPage：标题「正在连接后端」、说明行写当前阶段文案、spinner 同时开始旋转；主工具条在此之前已存在但六个按钮全禁用 | `src/ui.rs:1552、src/ui.rs:275、src/ui.rs:274` |
+| load | 应用启动 / 重新握手（worker 尚未回报 Connected） | 页面槽位换成居中 StatusPage：标题「正在连接后端」、说明行写当前阶段文案、spinner 同时开始旋转；主工具条已挂载，依赖后端的入口在握手前禁用 | `src/ui.rs::show_loading` |
 
 ### `startup.loading.spinner` 加载 spinner
 
@@ -2612,15 +2614,15 @@ kind `control` · status `active` · parent `startup.loading`
 kind `container` · status `active` · parent `startup`
 
 - 样式：槽位 `startup`；尺寸 `sidebar_width`、`inspector_width`、`status_height`、`tab_strip_height`
-- 同步：Linux done（tests/ui/linux/test_01_startup.py::test_startup_readiness：空注册表显示导航标题与保存连接说明（run.Sa2tjWUj）；test_18_unbound_query.py 覆盖启动态固定 Objects 和草稿、首次连接及容量保护（run.GrmzAToC）。）
-- 实现备注：握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。握手完成创建一个 Workspace、TabSet 和 Shell；首次数据库连接更新同一实例。保留布局、标签顺序、活动页和草稿的未绑定状态。握手完成后可从标签行、工具条、菜单和快捷键新建草稿。主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区保证无普通标签时显示这一页。由 TabSet 建立单个固定 Objects 页，首次连接保留这一页。信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时省略）。启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。启动态没有表标签：中央操作行的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。
+- 同步：Linux done（tests/ui/linux/results/run.TJeqNMo1/report.json：未连接时固定 Objects 及布局入口；test_18_unbound_query.py：未绑定草稿和首个数据库连接。）
+- 实现备注：握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题为 `Sqarvo` 且副标题为空（标题归 shell 区）。侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。握手完成创建一个 Workspace、TabSet 和 Shell；首次数据库连接更新同一实例。保留布局、标签顺序、活动页和草稿的未绑定状态。握手完成后可从标签行、工具条、菜单和快捷键新建草稿。主区域落地就是固定 Objects 页的空态：标题「没有选中对象」，说明「从左侧选择一个连接开始：双击一条已保存的连接即可连接。」。页面本体（页签、三列表格、状态行）与这一档文案已由 objects_page 区登记（objects_page.tab / objects_page.empty），本区保证无普通标签时显示这一页。由 TabSet 建立单个固定 Objects 页，首次连接保留这一页。信息面板是同一套外壳：未选中对象时内容区留白；选中一条已保存的连接时按 inspector 区显示连接卡片，只是没有服务端版本 / 延迟两行（未连接时省略）。启动态摘要不属于本区：状态栏把连接名「未连接」与「驱动 N · 浏览会话 M」拼成一行「未连接 · 驱动 0 · 浏览会话 0」，登记在 status_bar 区（status_bar.row2.session）；本区只把 N / M 的真实取值（驱动数照抄握手快照、浏览会话数为 0）交给它。启动态没有表标签：中央操作行的行操作全部禁用并给原因「未连接：从左侧选择一个连接开始」，SQL 摘要写「尚未连接」——行 1 的结构与原因文案归 status_bar 区。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
 | load | 握手成功（Event::Connected） | 外壳落地：侧栏换成对象树（已保存连接全部「未连接」）、主区域放固定 Objects 页、信息面板按布局状态显隐，未选中对象时内容区留白、状态栏写「未连接」；连上数据库前不存在表标签 | `src/ui.rs::show_startup_workspace` |
-| load | 主工具条是窗口级控件（不随外壳重建） | 握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时六个入口均可用，缺少目标时按各命令规则处理 | `src/ui.rs::show_startup_workspace、src/shell.rs::Toolbar::set_backend_ready` |
+| load | 主工具条是窗口级控件（不随外壳重建） | 握手后可连接或新建未绑定查询；分类需要可用数据库目标。三个布局按钮随工作区可用 | `src/ui.rs::show_startup_workspace、src/shell.rs::Toolbar::set_backend_ready` |
 | load | 连接注册表为空（没有已保存的连接） | 侧栏不列行，显示状态页：标题「还没有保存的连接」，说明「用工具条的「连接」保存一条连接。保存后可在导航中找到它。」；树状态行写「连接注册表为空」。树本体与行模板不在本区重复登记，本条目只记启动态会看到什么 | `src/tree.rs:1520、src/tree.rs:3179` |
-| click | 点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接 | 没有可用浏览目标时提示选择连接或数据库，保留当前工作区 | `src/ui.rs::show_objects_for_kind` |
+| load | 后端已握手但没有可用浏览目标 | 可适用的分类入口保持禁用，tooltip 说明需要选择数据库或 Schema | `src/shell.rs::Toolbar::update_buttons` |
 
 ## 状态栏（`status_bar`）
 
@@ -3064,8 +3066,8 @@ kind `control` · status `active` · parent `tabs.strip`
 - 无障碍：可访问名「新建查询标签」
 - 图标：`action.new_query`
 - 平台差异：Linux：当前加号固定在原生滚动区末端的动作槽。非溢出时该槽可能与最后标签之间有留白，尚未达到紧随标签的目标。见行为契约 §9。
-- 同步：Linux partial（既有 test_18_unbound_query.py 覆盖工具条、Ctrl+T 和加号共用命令。隔离 UI 窄窗口可以访问加号。）
-- 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。普通标签末端的原生动作槽。溢出时位于滚动视口之外。超限时弹 tabs.limit，连点保持单个提示框。
+- 同步：Linux partial（tests/ui/linux/results/run.cmSUm8oW/report.json：加号可达、目标完整可读、取消确认不创建工作区。非溢出时沿用已接受的原生动作槽留白。 tests/ui/linux/results/run.kEQx6EUw/report.json：与工具条提供同一份完整目标描述，失效确认保留原工作区。）
+- 实现备注：四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。使用与工具条相同的目标 tooltip 和可访问描述，摘要截断时显示同一目标确认，继续时校验捕获的目标。普通标签末端的原生动作槽。溢出时位于滚动视口之外。超限时弹 tabs.limit，连点保持单个提示框。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -3144,8 +3146,8 @@ kind `control` · status `active` · parent `tabs.query`
 - 样式：尺寸 `gap_xs`、`min_target`
 - 无障碍：可访问名「当前连接」
 - 原生控件：gtk:GtkDropDown
-- 同步：Linux done（tests/ui/linux/results/run.DmA8Fxr9/report.json：绑定成功、失败、缺少凭据取消、满额恢复原绑定及重握手后显式重连原档案。tests/ui/linux/results/run.TIP6OYEv/runner.log：关闭取消后继续原重绑，旧回执隔离。）
-- 实现备注：摆放位置是 `tabs.query.actions` 那一行的**最左端**（库选择器之前、会话信息之前）：`parent` 记 `tabs.query` 与 `tabs.query.database_picker` 同一原因（id 已按 `tabs.query.connection_picker` 报备）。**没有可见文字**（改动确认单 #7）：未绑定显示「选择连接…」，下拉框列出已保存档案。绑定在途显示「取消绑定」。列表 = 注册表里**已保存的连接**（连接键 + 公共显示名）；显示名随注册表更新。当前值 = 本标签已结算的连接（`QueryBinding::bound`），由标签写进来。选中**同一条**连接是 no-op：不重建会话、不发任何 RPC（连点也不会多出会话）。目标档案缺少凭据时打开该档案的现有编辑对话框；取消保留草稿及此前的绑定。绑定在途时下拉框置灰并在 tooltip 写「正在把本标签的会话切到「<连接名>」…」：连点不会触发两轮 Connect。
+- 同步：Linux done（tests/ui/linux/results/run.cmSUm8oW/report.json：超长已绑定名可读且窗口仍可缩至 840×600；test_18_unbound_query.py：原生下拉绑定和取消流程。）
+- 实现备注：摆放位置是 `tabs.query.actions` 那一行的**最左端**（库选择器之前、会话信息之前）：`parent` 记 `tabs.query` 与 `tabs.query.database_picker` 同一原因（id 已按 `tabs.query.connection_picker` 报备）。**没有可见文字**（改动确认单 #7）：未绑定显示「选择连接…」，下拉框列出已保存档案。绑定在途显示「取消绑定」。列表 = 注册表里**已保存的连接**（连接键 + 公共显示名）；显示名随注册表更新。当前值 = 本标签已结算的连接（`QueryBinding::bound`），由标签写进来。选中**同一条**连接是 no-op：不重建会话、不发任何 RPC（连点也不会多出会话）。目标档案缺少凭据时打开该档案的现有编辑对话框；取消保留草稿及此前的绑定。绑定在途时下拉框置灰并在 tooltip 写「正在把本标签的会话切到「<连接名>」…」：连点不会触发两轮 Connect。连接名空间不足时截断，原生 tooltip 和可访问文本仍提供完整名称。
 
 | 触发 | 前置状态与可用性 | 结果（含文案/错误/取消） | 源码依据 |
 |---|---|---|---|
@@ -3545,3 +3547,5 @@ kind `item` · status `active` · parent `workspace.mcp_management`
 | v0.2.4 | `status_bar.gutter` | 左边沟（分栏线左侧整块） | removed | 已清 | 导航搜索已移入导航侧栏，状态栏全宽。 |
 | v0.2.5 | `object_tree.tree.row.field` | 列 / 索引 / 触发器行 | removed | 已清 | 表和视图保留为导航叶节点。字段详情仍从数据表列头打开。索引和触发器的分页、重试和 SQLite 触发器原文 DDL 的查看与复制迁入 Inspector 表信息；原单组刷新由显式刷新表信息承接。 |
 | v0.2.5 | `shell.menu.export_csv` | 表 → 导出 CSV | removed | 已清 | 主菜单暂时隐藏（改动确认单 #1 / #198）：导出入口收敛到表工具条「导出 ▾」与 Ctrl+Shift+E；条目保留，恢复时翻回 active |
+| v0.2.5 | `shell.toolbar.functions` | 种类入口「Functions」 | removed | 已清 | 退役打开未实现说明页的 Functions 占位入口。已有实现且目标支持时可再引入实际管理命令。 |
+| v0.2.5 | `shell.toolbar.queries` | 种类入口「Queries」 | removed | 已清 | 退役打开未实现说明页的 Queries 占位入口。已有实现且目标支持时可再引入实际管理命令。 |

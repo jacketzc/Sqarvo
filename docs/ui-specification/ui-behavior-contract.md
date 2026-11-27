@@ -72,7 +72,7 @@
 | 动作 | 快捷键 | 语义 | 源码依据 |
 |---|---|---|---|
 | 新建连接 | `Ctrl+N` | 打开连接对话框（后端未握手时忽略） | `src/ui.rs:293`、`src/ui.rs:4505` |
-| 新建查询标签 | `Ctrl+T` | 与 `＋`、工具条「新建查询」同一路径 | `src/ui.rs:300`、`src/ui.rs:4511` |
+| 新建查询标签 | `Ctrl+T` | 与加号、工具条和菜单共用 `win.new-tab`，执行同一目标保护 | `src/ui.rs::request_new_query_tab`、`src/tabs.rs::TabSet::new_query_tab` |
 | 关闭当前标签 | `Ctrl+W` | 非 `Objects`；存在需保护内容或活动会话操作时先确认。与标签右键菜单及关闭按钮共用关闭守卫 | `src/ui.rs:301`、`src/ui.rs:4522`（`win.close-tab`） |
 | 关闭窗口 | `Ctrl+Shift+W` | 与标题栏关闭按钮同一清理路径 | `src/ui.rs:190-195` |
 | 退出应用 | `Ctrl+Q` | 走关窗守卫：先 `window.close()` 主窗口（与标题栏关闭 / `Ctrl+Shift+W` 同一条 `close-request`），有未提交更改时先弹「有未提交的更改」（取消 / 放弃更改并退出），窗口关完后 GApplication 自然退出；只有没有窗口时才直接 `app.quit()` | `src/main.rs:297-320`、`src/ui.rs:377` |
@@ -166,7 +166,7 @@ metrics，libadwaita 仍在可用空间内统一分配普通标签宽度，系�
 
 | 边界 | 现状 | 正文 |
 |---|---|---|
-| S2 多显示器、高 DPI、Wayland | BLOCKED。S2 隔离 runner 为单显示器 X11，真实桌面验证交接 S8。标题栏拖动交接 S7。 | 窗口尺寸与布局 |
+| S2 多显示器、高 DPI、Wayland | BLOCKED。S2 隔离 runner 为单显示器 X11，真实桌面验证交接 S8。S7 在隔离 X11 验证了标题栏拖动、双击最大化、原生窗口按钮及菜单。 | 窗口尺寸与布局 |
 | 快捷键验收方式 | 当前隔离 X11 runner 可通过 XTEST 注入按键。部分既有用例复用 GApplication 绑定的同一动作 | §8.1 |
 | 事务失败态 | 与其它三态共用 `TransactionBadge::label()`，未单独截图 | §5.2 |
 | 960×640 下状态簇 | 动作行分配约 417px；两段常驻文字收成 24×24 的状态圆点后，整行需求 409 ≤ 分配 417、状态簇自身需求 38（`--qa-layout-audit` 实测，17 项 0 超限）；过程消息仍按省略号收缩，完整文案留在圆点 tooltip 与状态栏；删除 / 放弃的操作结果也只写在 tooltip 末段「最近一次操作：…」，可见过程消息为空（`--qa-expect-status-dot` + 「状态簇」需求 42px 实测，1400 宽） | §5.1 |

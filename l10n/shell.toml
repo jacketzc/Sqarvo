@@ -406,3 +406,87 @@ key = "shell.layout_status"
 zh = "全局状态栏"
 en = "Global Status Bar"
 status = "done"
+
+[[entry]]
+key = "shell.toolbar_name"
+zh = "主工具条"
+en = "Global toolbar"
+status = "done"
+
+[[entry]]
+key = "shell.toolbar_more"
+zh = "更多分类"
+en = "More categories"
+status = "done"
+
+[[entry]]
+key = "shell.kind_tables"
+zh = "Tables"
+en = "Tables"
+status = "done"
+
+[[entry]]
+key = "shell.kind_views"
+zh = "Views"
+en = "Views"
+status = "done"
+
+[[entry]]
+key = "shell.kind_functions"
+zh = "Functions"
+en = "Functions"
+status = "done"
+
+[[entry]]
+key = "shell.kind_queries"
+zh = "Queries"
+en = "Queries"
+status = "done"
+
+[[entry]]
+key = "shell.target"
+zh = "目标：{target}"
+en = "Target: {target}"
+status = "done"
+
+[[entry]]
+key = "shell.target_unavailable"
+zh = "目标不可用：{target}"
+en = "Target unavailable: {target}"
+status = "done"
+
+[[entry]]
+key = "shell.target_connection_only"
+zh = "仅选择连接，未指定数据库。"
+en = "Connection only. No database selected."
+status = "done"
+
+[[entry]]
+key = "shell.target_continue"
+zh = "继续"
+en = "Continue"
+status = "done"
+
+[[entry]]
+key = "shell.title_schema"
+zh = "Schema：{schema}"
+en = "Schema: {schema}"
+status = "done"
+
+[[entry]]
+key = "shell.title_active_session"
+zh = "已连接"
+en = "Connected"
+status = "done"
+
+[[entry]]
+key = "shell.header_name"
+zh = "标题栏"
+en = "Title bar"
+status = "done"
+
+[[entry]]
+key = "shell.layout_exit_focus"
+zh = "退出专注模式并显示此面板"
+en = "Exit focus mode and show this panel"
+status = "done"

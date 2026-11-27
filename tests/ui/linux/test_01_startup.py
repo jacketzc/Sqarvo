@@ -34,9 +34,13 @@ def test_main_window_accessibility(app_bare):
     frame = app_bare.frame()
     connect = A.find_one(frame, role_in=("button",), name="连接", timeout=20)
     expect("sensitive" in A.states(connect), "「连接」按钮可用", A.states(connect))
-    for name in ("Tables", "Views", "Functions", "Queries", "新建查询"):
+    new_query = A.find_one(frame, role_in=("button",), name="新建查询", timeout=10)
+    expect("sensitive" in A.states(new_query), "可创建未绑定查询")
+    for name in ("Tables", "Views"):
         button = A.find_one(frame, role_in=("button",), name=name, timeout=10)
-        expect("sensitive" in A.states(button), f"「{name}」按钮可用", A.states(button))
+        expect("sensitive" not in A.states(button), f"「{name}」需要数据库目标")
+    for name in ("Functions", "Queries"):
+        expect(not A.query(frame, role_in=("button",), name=name), f"隐藏未实现的 {name}")
 
 
 def test_connection_dialog_open_and_cancel(app_bare):

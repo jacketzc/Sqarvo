@@ -240,7 +240,7 @@ style.icon = ["action.new_query"]
 a11y.name = "新建查询标签"
 style.metrics = ["min_target"]
 impl_notes = [
-  "四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。",
+  "四个入口同一条路径，没有旁路：工具条「新建查询」、标签条 ＋、`Ctrl+T`、菜单「文件 → 新建查询标签」；成功后把焦点交给编辑器。使用与工具条相同的目标 tooltip 和可访问描述，摘要截断时显示同一目标确认，继续时校验捕获的目标。",
   "普通标签末端的原生动作槽。溢出时位于滚动视口之外。超限时弹 tabs.limit，连点保持单个提示框。",
 ]
 
@@ -262,7 +262,7 @@ source = "src/ui.rs:327、src/ui.rs:4769、src/tabs.rs:1867"
 [component.sync.linux]
 state = "partial"
 spec_hash = "5dca3c8e9280"
-evidence = "既有 test_18_unbound_query.py 覆盖工具条、Ctrl+T 和加号共用命令。隔离 UI 窄窗口可以访问加号。"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：加号可达、目标完整可读、取消确认不创建工作区。非溢出时沿用已接受的原生动作槽留白。 tests/ui/linux/results/run.kEQx6EUw/report.json：与工具条提供同一份完整目标描述，失效确认保留原工作区。"
 
 [[component]]
 id = "tabs.strip.menu"
@@ -432,6 +432,7 @@ impl_notes = [
   "选中**同一条**连接是 no-op：不重建会话、不发任何 RPC（连点也不会多出会话）。",
   "目标档案缺少凭据时打开该档案的现有编辑对话框；取消保留草稿及此前的绑定。",
   "绑定在途时下拉框置灰并在 tooltip 写「正在把本标签的会话切到「<连接名>」…」：连点不会触发两轮 Connect。",
+  "连接名空间不足时截断，原生 tooltip 和可访问文本仍提供完整名称。",
 ]
 
 [[component.interaction]]
@@ -467,7 +468,7 @@ source = "src/sql_page.rs::SqlPage::set_reconnect_available、src/tabs.rs::TabSe
 [component.sync.linux]
 state = "done"
 spec_hash = "71f53fd8b890"
-evidence = "tests/ui/linux/results/run.DmA8Fxr9/report.json：绑定成功、失败、缺少凭据取消、满额恢复原绑定及重握手后显式重连原档案。tests/ui/linux/results/run.TIP6OYEv/runner.log：关闭取消后继续原重绑，旧回执隔离。"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：超长已绑定名可读且窗口仍可缩至 840×600；test_18_unbound_query.py：原生下拉绑定和取消流程。"
 
 [[component]]
 id = "tabs.query.connection_picker.cancel_binding"

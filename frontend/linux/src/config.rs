@@ -214,7 +214,7 @@ impl SavedConnection {
     }
 }
 
-fn safe_display_label(label: &str) -> bool {
+pub(crate) fn safe_display_label(label: &str) -> bool {
     let lowercase = label.to_ascii_lowercase();
     !label.chars().any(char::is_control)
         && !["://", "password=", "token=", "credential_ref="]

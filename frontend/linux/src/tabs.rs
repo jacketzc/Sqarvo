@@ -786,6 +786,15 @@ impl KindShortcut {
         }
     }
 
+    pub fn display_label(self) -> &'static str {
+        crate::l10n::t(match self {
+            Self::Tables => "shell.kind_tables",
+            Self::Views => "shell.kind_views",
+            Self::Functions => "shell.kind_functions",
+            Self::Queries => "shell.kind_queries",
+        })
+    }
+
     /// 入口名（日志与文案用）。
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -859,11 +868,8 @@ pub enum TabPin {
 /// 当前标签推给外壳的状态。
 #[derive(Debug, Clone)]
 pub enum TabStatus {
-    /// `Objects` 页：没有表格状态；`shortcut` 是它当前列的种类（用于工具条高亮）。
-    Objects {
-        /// 当前列出的种类入口（空态 / 未实现时是点进来的那一个）。
-        shortcut: Option<KindShortcut>,
-    },
+    /// The Objects page has no row operations.
+    Objects,
     /// 表数据标签：完整的数据页快照（箱装：比其它变体大得多）。
     Table(Box<StatusSnapshot>),
     /// 查询标签：SQL 摘要与上一次查询耗时。
@@ -2021,6 +2027,10 @@ impl TabSet {
         plus.add_css_class("flat");
         plus.set_tooltip_text(Some(crate::l10n::t("tabs.new_tooltip")));
         plus.set_valign(gtk::Align::Center);
+        plus.set_action_name(Some("win.new-tab"));
+        plus.update_property(&[gtk::accessible::Property::Label(crate::l10n::t(
+            "tabs.new_tooltip",
+        ))]);
         bar.set_end_action_widget(Some(&plus));
 
         let strip = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xs));
@@ -2079,14 +2089,6 @@ impl TabSet {
             });
         }
 
-        {
-            let weak = Rc::downgrade(&set);
-            plus.connect_clicked(move |_| {
-                if let Some(set) = weak.upgrade() {
-                    set.new_query_tab_from_ui();
-                }
-            });
-        }
         {
             // 选中变化 → 换标题 / 状态栏 / 工具条高亮（不重建会话）。
             let weak = Rc::downgrade(&set);
@@ -2517,6 +2519,20 @@ impl TabSet {
         TargetState::for_target(target, available)
     }
 
+    /// The active workspace determines category selection independently of the command target.
+    pub fn workspace_shortcut(&self) -> Option<KindShortcut> {
+        let tab = self.current()?;
+        match &tab.kind {
+            TabKind::Objects if self.workspace_context() != TargetState::None => {
+                self.objects_shortcut()
+            }
+            TabKind::Table { resource, .. } => {
+                KindShortcut::of_kind(ObjectKind::try_from(resource.object.kind).ok()?)
+            }
+            _ => None,
+        }
+    }
+
     pub fn action_context(&self) -> TargetState {
         TargetState::resolve((self.context.navigation_target)(), self.workspace_context())
     }
@@ -2579,9 +2595,7 @@ impl TabSet {
             return;
         }
         self.publish_title();
-        (self.context.on_status)(TabStatus::Objects {
-            shortcut: self.objects_shortcut(),
-        });
+        (self.context.on_status)(TabStatus::Objects);
     }
 
     /// Re-enter the fixed page without re-reading a valid scope.
@@ -2939,10 +2953,18 @@ impl TabSet {
 
     /// 新建查询标签（工具条「新建查询」、`＋`、Ctrl+T 共用这一条路径）。
     pub fn new_query_tab(self: &Rc<Self>) -> Result<String, String> {
+        self.new_query_tab_for_target(self.action_context())
+    }
+
+    /// Dispatch a target revalidated by the window immediately before invocation.
+    pub(crate) fn new_query_tab_for_target(
+        self: &Rc<Self>,
+        captured: TargetState,
+    ) -> Result<String, String> {
         if !self.backend_ready.get() {
             return Err(crate::l10n::t("tabs.query_backend_unavailable").to_owned());
         }
-        let target = match self.action_context() {
+        let target = match captured {
             TargetState::Available(target) => Some(target),
             TargetState::None => None,
             TargetState::Unavailable(_) => {
@@ -3063,9 +3085,10 @@ impl TabSet {
         }
     }
 
-    /// UI entry shared with tool bar and window action.
-    fn new_query_tab_from_ui(self: &Rc<Self>) {
-        let _ = self.new_query_tab();
+    pub fn set_new_query_tooltip(&self, tooltip: &str) {
+        self.plus.set_tooltip_text(Some(tooltip));
+        self.plus
+            .update_property(&[gtk::accessible::Property::Description(tooltip)]);
     }
 
     fn connection_name_for(&self, key: &str) -> String {
@@ -3612,7 +3635,11 @@ impl TabSet {
             TargetState::None if matches!(tab.kind, TabKind::Objects) => {
                 return ("Sqarvo".to_owned(), String::new(), String::new());
             }
-            TargetState::None => return (tab.kind.raw_name(), String::new(), String::new()),
+            TargetState::None => {
+                let name = tab.kind.raw_name();
+                let tooltip = format!("{name}\n{}", crate::l10n::t("tabs.query_unbound"));
+                return (name, String::new(), tooltip);
+            }
         };
         let registry = self.context.registry.as_ref();
         let snapshot = registry.and_then(|registry| registry.snapshot(&target.profile_id));
@@ -3623,13 +3650,13 @@ impl TabSet {
             .driver()
             .or_else(|| snapshot.as_ref().map(|row| row.driver.clone()))
             .and_then(|driver| (self.context.driver_name)(&driver));
-        let scope = target.scope.as_ref().map(|scope| {
-            let label = scope_label(scope);
-            if label.is_empty() {
-                scope.name.clone()
+        let database = target.scope.as_ref().and_then(|scope| {
+            let name = if scope.catalog.is_empty() && scope.kind == ObjectKind::Catalog as i32 {
+                &scope.name
             } else {
-                label
-            }
+                &scope.catalog
+            };
+            (!name.is_empty()).then_some(name.as_str())
         });
         let raw = self
             .objects_shortcut()
@@ -3641,13 +3668,19 @@ impl TabSet {
                         .as_ref()
                         .is_some_and(|page| page.explicit_category.get())
             })
-            .map_or_else(|| tab.kind.raw_name(), |kind| kind.label().to_owned());
+            .map_or_else(
+                || tab.kind.raw_name(),
+                |kind| kind.display_label().to_owned(),
+            );
         let title = window_title_for(&raw, &connection);
-        let subtitle = [driver.as_deref(), scope.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let subtitle = [
+            driver.as_deref().filter(|name| !name.trim().is_empty()),
+            database,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
         let mut tooltip = vec![title.clone()];
         if !subtitle.is_empty() {
             tooltip.push(subtitle.clone());
@@ -3662,20 +3695,37 @@ impl TabSet {
         if let Some(version) = snapshot
             .as_ref()
             .map(|row| row.server_version.as_str())
-            .filter(|version| !version.trim().is_empty())
+            .filter(|version| {
+                !version.trim().is_empty()
+                    && !version.trim().eq_ignore_ascii_case("unknown")
+                    && crate::config::safe_display_label(version)
+            })
         {
             tooltip.push(crate::l10n::tf(
                 "shell.title_server_version",
                 &[("version", version.to_owned())],
             ));
         }
-        if matches!(context, TargetState::Unavailable(_))
-            && tab.session().is_none()
-            && tab.session_attempt.get().is_none()
-            && tab.binding.pending().is_none()
+        if let Some(schema) = target
+            .scope
+            .as_ref()
+            .map(|scope| &scope.schema)
+            .filter(|name| !name.is_empty())
         {
-            tooltip.push(crate::l10n::t("shell.title_disconnected").to_owned());
+            tooltip.push(crate::l10n::tf(
+                "shell.title_schema",
+                &[("schema", schema.clone())],
+            ));
         }
+        let connected = tab.session().is_some() || matches!(context, TargetState::Available(_));
+        tooltip.push(
+            crate::l10n::t(if connected {
+                "shell.title_active_session"
+            } else {
+                "shell.title_disconnected"
+            })
+            .to_owned(),
+        );
         (title, subtitle, tooltip.join("\n"))
     }
 
@@ -3780,9 +3830,7 @@ impl TabSet {
         // 标题属于当前标签（§5.1）；副标题是连接级信息，不随标签改。
         self.publish_title();
         let status = match (&tab.kind, tab.data.as_ref(), tab.sql.as_ref()) {
-            (TabKind::Objects, _, _) => TabStatus::Objects {
-                shortcut: self.objects_shortcut(),
-            },
+            (TabKind::Objects, _, _) => TabStatus::Objects,
             (_, Some(data), _) => TabStatus::Table(Box::new(data.status_snapshot())),
             (_, _, Some(page)) => TabStatus::Query {
                 summary: if page.is_disconnected() {
@@ -3795,7 +3843,7 @@ impl TabSet {
                 bound: !tab.bound_connection().is_empty(),
                 row_ops: page.row_ops(),
             },
-            _ => TabStatus::Objects { shortcut: None },
+            _ => TabStatus::Objects,
         };
         (self.context.on_status)(status);
         eprintln!(

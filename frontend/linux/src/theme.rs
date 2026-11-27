@@ -437,7 +437,13 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         window.{window_class} {{ font-size: {ui}px; }}
 
         .sqarvo-main-header {{ min-height: {header}px; }}
-        /* 区域 01：标题 13 semibold（标题控件在 headerbar 里） */
+        .sqarvo-main-header .title {{ font-size: {title}px; font-weight: {fw_title}; }}
+        .sqarvo-main-header .subtitle {{
+            font-size: {status_font}px;
+            font-weight: {fw_ui};
+            margin-top: {gap_xxs}px;
+        }}
+        /* 页内标题 */
         .sqarvo-title {{ font-size: {title}px; font-weight: {fw_title}; }}
         /* 卡片 / 面板 / 对象树的连接与分组名：原来是 Adwaita 的 `.heading`（它只有
            font-weight: 700 一条规则）。改成自有类，字重由 metrics.toml 的
@@ -458,6 +464,17 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
         }}
         .sqarvo-toolbar button {{ min-height: {target}px; padding: {gap_xxs}px {gap_lg}px; }}
         .sqarvo-toolbar label {{ font-size: {ui}px; }}
+        .sqarvo-toolbar image {{ -gtk-icon-size: {objects_filter_icon}px; }}
+        .sqarvo-toolbar button.sqarvo-layout-control image {{
+            -gtk-icon-size: {toolbar_layout_icon}px;
+        }}
+        .sqarvo-toolbar button.sqarvo-kind,
+        .sqarvo-toolbar menubutton.sqarvo-kind-active button {{
+            border-radius: {radius_sm}px;
+        }}
+        .sqarvo-toolbar button.sqarvo-layout-control:checked {{
+            background-color: @sqarvo_brand_soft;
+        }}
         /* 种类入口是纯拉丁文字（Tables / Views / Functions / Queries），和中文
            「新建查询」同一行混排时，Pango 的中文 em 盒比拉丁大写字高更靠下：
            盒子同高同 y 也会看起来「一高一低」。这里只把**字**下移 2px
@@ -873,7 +890,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
            高亮只表示「现在列的是这一类」（v0.2.3.3 起它们会打开 Objects 页）。
            这是「当前选中的是哪一个」→ 中档实底；原来是 accent 20% 的淡 tint，
            和标签 / 表格行的选中态不是同一个颜色。 */
-        .sqarvo-kind-active {{
+        menubutton.sqarvo-kind-active button, .sqarvo-kind-active {{
             background: @sqarvo_brand_mid;
             color: @sqarvo_brand_on_mid;
         }}
@@ -983,6 +1000,7 @@ pub fn stylesheet_for(dark: bool, high_contrast: bool, tier: Tier) -> String {
             m.font_weight_heading
         },
         toolbar = m.toolbar_height,
+        toolbar_layout_icon = m.toolbar_layout_icon,
         toolbar_padding_h = m.toolbar_padding_h,
         tree_row = m.row_height_tree,
         data_row = m.row_height_data,

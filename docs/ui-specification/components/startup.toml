@@ -8,7 +8,7 @@
 # - 侧栏对象树、Objects 页三列表格、信息面板、状态栏两行结构、主工具条都是连接态
 #   已有的组件，归各自功能区（object_tree / objects_page / inspector / status_bar / shell）；
 #   本区只登记启动态这一档的摆放、空态文案与摘要文案来源。
-# - 后端握手失败的错误页、握手期间的窗口标题（标题栏副标题改「正在连接…」）归 shell。
+# - 后端握手失败的错误页、握手期间的窗口标题（状态位于标题栏 tooltip）归 shell。
 #
 # 迁移状态：P0。行为条目取自 ui-behavior-contract.md §1.1（应用启动）、§3（启动态空态）、
 # §7（启动态状态栏摘要）与 workspace-model.md §4 / §5 的启动态段落；源码行号按当前
@@ -29,16 +29,16 @@ status = "active"
 style.slot = "startup"
 style.metrics = ["sidebar_width", "inspector_width", "status_height"]
 impl_notes = [
-  "启动态不是独立一套界面：握手成功后 ui.rs 用 StartupWorkspace 组装六个区域，侧栏 / 标签条 / 信息面板与连接态是同一套实现，连上数据库后由 Workspace 整体替换。",
-  "后端诊断信息（版本 / 协议 / PID / 端点文件）不在启动态出现，在「帮助 → 关于 Squarvo」里。",
-  "启动顺序（窗口级，全在 ui.rs::activate）：建窗口并把 headerbar（ui.rs:177-199）、主工具条与页面槽位（ui.rs:270-271）挂进根容器 → toolbar.set_backend_ready(false)（ui.rs:274，随即打一行 0/6）→ show_loading「准备连接本地后端…」（ui.rs:275）→ WorkerHandle::spawn（ui.rs:277）→ 每个 Event::Stage 改写说明行（ui.rs:504-506）→ Event::Connected 置就绪、标题回 Sqarvo /「未连接」、show_startup_workspace（ui.rs:538-548）。页面槽位里 Loading 与启动态外壳互斥，任一时刻只有一个。",
+  "握手成功后工作区外壳挂载同一套 Shell、对象树、固定 Objects 和信息面板。首个数据库连接更新已有实例。",
+  "后端诊断信息（版本、协议、PID 和端点文件）在关于对话框。",
+  "启动阶段先挂标题栏、工具条和页面槽位。在页面槽位显示 Loading、后端握手、再挂工作区。状态文案留在 Loading 页面及标题栏 tooltip。",
 ]
 
 [component.sync.linux]
 state = "done"
 spec_hash = "4609e5ded0f3"
 commit = "7436cd5"
-evidence = "§1.1 应用启动；startup.rs 全模块为启动态唯一实现"
+evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：后端握手后的工作区外壳、导航空态、无绑定查询。"
 
 [[component]]
 id = "startup.loading"
@@ -51,20 +51,20 @@ style.metrics = ["spinner_px", "gap_xl"]
 impl_notes = [
   "AdwStatusPage：标题「正在连接后端」，说明行 = 当前握手阶段文案，子控件是 spinner（居中、上方留 gap_xl）。",
   "页面只占窗口的页面槽位：Loading 期间侧栏、标签条、信息面板、状态栏都还不存在（窗口根是 headerbar + 主工具条 + 页面槽位）。",
-  "窗口标题（副标题改「正在连接…」）归 shell 的标题组件，本区不登记；后端握手失败后的错误页同样归 shell。",
+  "窗口标题和启动状态 tooltip 归 shell 的标题组件，本区不登记；后端握手失败后的错误页同样归 shell。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "应用启动 / 重新握手（worker 尚未回报 Connected）"
-result = "页面槽位换成居中 StatusPage：标题「正在连接后端」、说明行写当前阶段文案、spinner 同时开始旋转；主工具条在此之前已存在但六个按钮全禁用"
-source = "src/ui.rs:1552、src/ui.rs:275、src/ui.rs:274"
+result = "页面槽位换成居中 StatusPage：标题「正在连接后端」、说明行写当前阶段文案、spinner 同时开始旋转；主工具条已挂载，依赖后端的入口在握手前禁用"
+source = "src/ui.rs::show_loading"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "537f9eb0440e"
+spec_hash = "251cfd95e1c8"
 commit = "7436cd5"
-evidence = "§1.1 应用启动（先 Loading）；show_loading 组装 StatusPage + spinner"
+evidence = "test_01_startup.py::test_startup_readiness 与 test_18_unbound_query.py::test_reconnect_from_objects_only_startup：启动和重新握手由同一入口恢复，业务入口在未就绪时禁用。"
 
 [[component]]
 id = "startup.loading.spinner"
@@ -125,7 +125,7 @@ status = "active"
 style.slot = "startup"
 style.metrics = ["sidebar_width", "inspector_width", "status_height", "tab_strip_height"]
 impl_notes = [
-  "握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题回 `Sqarvo` /「未连接」（标题归 shell 区）。",
+  "握手成功即整体替换 Loading，不再停在旧版诊断页；窗口标题为 `Sqarvo` 且副标题为空（标题归 shell 区）。",
   "侧栏是与连接态同一个对象树（同一份连接注册表）：启动态所有连接都处于「未连接」，点一下即按保存的凭据连接（行级语义见 object_tree 区）。",
   "握手完成创建一个 Workspace、TabSet 和 Shell；首次数据库连接更新同一实例。保留布局、标签顺序、活动页和草稿的未绑定状态。",
   "握手完成后可从标签行、工具条、菜单和快捷键新建草稿。",
@@ -145,7 +145,7 @@ source = "src/ui.rs::show_startup_workspace"
 [[component.interaction]]
 trigger = "load"
 precondition = "主工具条是窗口级控件（不随外壳重建）"
-result = "握手完成前六个按钮全部禁用（日志「[toolbar] 后端未握手：0/6 个按钮可用」）；外壳建立时六个入口均可用，缺少目标时按各命令规则处理"
+result = "握手后可连接或新建未绑定查询；分类需要可用数据库目标。三个布局按钮随工作区可用"
 source = "src/ui.rs::show_startup_workspace、src/shell.rs::Toolbar::set_backend_ready"
 
 [[component.interaction]]
@@ -155,12 +155,12 @@ result = "侧栏不列行，显示状态页：标题「还没有保存的连接�
 source = "src/tree.rs:1520、src/tree.rs:3179"
 
 [[component.interaction]]
-trigger = "click"
-precondition = "点主工具条任一 种类入口（Tables / Views / Functions / Queries）；后端已握手、未连接"
-result = "没有可用浏览目标时提示选择连接或数据库，保留当前工作区"
-source = "src/ui.rs::show_objects_for_kind"
+trigger = "load"
+precondition = "后端已握手但没有可用浏览目标"
+result = "可适用的分类入口保持禁用，tooltip 说明需要选择数据库或 Schema"
+source = "src/shell.rs::Toolbar::update_buttons"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "00cf99ead43e"
-evidence = "tests/ui/linux/test_01_startup.py::test_startup_readiness：空注册表显示导航标题与保存连接说明（run.Sa2tjWUj）；test_18_unbound_query.py 覆盖启动态固定 Objects 和草稿、首次连接及容量保护（run.GrmzAToC）。"
+spec_hash = "2dd9c34bd949"
+evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：未连接时固定 Objects 及布局入口；test_18_unbound_query.py：未绑定草稿和首个数据库连接。"

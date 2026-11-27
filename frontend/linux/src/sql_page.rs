@@ -2942,6 +2942,28 @@ impl ConnectionPicker {
     /// 组装（连接选择器一直渲染：查询标签总有绑定的一条连接）。
     pub fn new(callbacks: ConnectionPickerCallbacks) -> Rc<Self> {
         let dropdown = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
+        // Keep the native popup rows and let the collapsed name ellipsize.
+        dropdown.set_list_factory(dropdown.factory().as_ref());
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
+                let label = gtk::Label::new(None);
+                label.set_xalign(0.0);
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                item.set_child(Some(&label));
+            }
+        });
+        factory.connect_bind(|_, item| {
+            if let Some(item) = item.downcast_ref::<gtk::ListItem>()
+                && let (Some(name), Some(label)) = (
+                    item.item().and_downcast::<gtk::StringObject>(),
+                    item.child().and_downcast::<gtk::Label>(),
+                )
+            {
+                label.set_label(&name.string());
+            }
+        });
+        dropdown.set_factory(Some(&factory));
         dropdown.update_property(&[gtk::accessible::Property::Label(l10n::t(
             "tabs.picker_connection_a11y",
         ))]);

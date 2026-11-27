@@ -48,7 +48,8 @@ use crate::inspector::{ConnectionLive, Inspector};
 use crate::l10n;
 use crate::layout::{self, Gap, gap, metrics};
 use crate::proto::services::v1::ObjectRef;
-use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar};
+use crate::shell::{Shell, ShellHandlers, StatusBar, Toolbar, ToolbarTarget};
+use crate::tabs::KindShortcut;
 use crate::theme;
 use crate::tree::{KindGroup, TreeCallbacks, TreeHealth, TreePanel, TreeSelection};
 use crate::workspace_context::{TargetState, object_scope};
@@ -92,6 +93,7 @@ struct UiState {
     /// 主工具条（区域 02，窗口级）：握手前创建，可用性由
     /// [`crate::shell::Toolbar::set_backend_ready`] 统一控制。
     toolbar: RefCell<Option<Rc<crate::shell::Toolbar>>>,
+    toolbar_refresh_scheduled: Cell<bool>,
     /// 连接注册表（`connections.json` 的全部连接 + 每连接一条浏览会话，#114）。
     registry: RefCell<Option<Rc<ConnectionRegistry>>>,
     /// 成功的 `Connect` 次数（浏览会话建立事件计数；QA 断言「只连一次」用）。
@@ -224,8 +226,21 @@ pub fn activate(app: &adw::Application) {
     // ---- 区域 01：窗口外壳（AdwHeaderBar + 标题 + 主菜单） --------------------
     let header = adw::HeaderBar::new();
     header.add_css_class("sqarvo-main-header");
-    let window_title = adw::WindowTitle::new("Sqarvo", l10n::t("shell.title_connecting"));
+    header.set_centering_policy(adw::CenteringPolicy::Strict);
+    let window_title = adw::WindowTitle::new("Sqarvo", "");
     header.set_title_widget(Some(&window_title));
+    if crate::qa::enabled() {
+        header.connect_query_tooltip(|title, _, _, _, _| {
+            if title.tooltip_text().is_some() {
+                eprintln!("[qa.header] title tooltip requested");
+            }
+            false
+        });
+    }
+
+    header.update_property(&[gtk::accessible::Property::Label(l10n::t(
+        "shell.header_name",
+    ))]);
 
     // 连接入口只有一个：主工具条左组「连接」（workspace-model §2；headerbar 只留
     // 标题与主菜单）。连接对话框也能从「文件 → 新建连接」/ Ctrl+N 打开。
@@ -241,9 +256,7 @@ pub fn activate(app: &adw::Application) {
     let slot = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
     slot.set_vexpand(true);
 
-    // 窗口根 = headerbar + 主工具条 + 页面槽位。工具条在**握手之前**就存在：
-    // 后端未就绪时六个按钮全部禁用（`Toolbar::set_backend_ready`），不会出现
-    // 「菜单禁用、按钮可点」或点了没反应的入口。
+    // The toolbar is mounted before handshake so its command states can follow readiness.
     let root = gtk::Box::new(gtk::Orientation::Vertical, gap(Gap::None));
     root.append(&header);
     window.set_content(Some(&root));
@@ -296,6 +309,7 @@ pub fn activate(app: &adw::Application) {
         menu_items: main_menu,
         mcp_access: crate::mcp_access::McpAccess::new(&window),
         toolbar: RefCell::new(None),
+        toolbar_refresh_scheduled: Cell::new(false),
         registry: RefCell::new(registry),
         connect_count: Cell::new(0),
         restart_language: Cell::new(None),
@@ -313,11 +327,7 @@ pub fn activate(app: &adw::Application) {
         },
         {
             let state = Rc::clone(&state);
-            Rc::new(move || request_new_query_tab(&state))
-        },
-        {
-            let state = Rc::clone(&state);
-            Rc::new(move |shortcut| request_kind_entry(&state, shortcut))
+            Rc::new(move |shortcut, target| request_kind_entry(&state, shortcut, target))
         },
     );
     root.append(toolbar.widget());
@@ -628,7 +638,6 @@ pub fn activate(app: &adw::Application) {
                         events_state.mcp_access.disconnect();
                         events_state.backend_ready.set(false);
                         events_state.toolbar().set_backend_ready(false);
-                        events_state.title.set_title("Sqarvo");
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
@@ -664,10 +673,6 @@ pub fn activate(app: &adw::Application) {
                         if let Some(actions) = events_state.actions.borrow().as_ref() {
                             actions.set_backend_ready(false);
                         }
-                        events_state
-                            .title
-                            .set_subtitle(l10n::t("shell.title_disconnected"));
-                        events_state.title.set_title("Sqarvo");
                         events_state.connection_name.replace(None);
                         if let Some(registry) = events_state.registry.borrow().clone() {
                             registry.reset_sessions(&format!("后端已断开：{reason}"));
@@ -1280,30 +1285,276 @@ fn confirm_close_with_dirty(
     dialog.present(Some(&state.window));
 }
 
-/// 工具条 / 菜单「新建查询标签」：工作区存在时新建；启动态只写日志（按钮本身也禁用）。
-fn request_new_query_tab(state: &Rc<UiState>) {
-    let workspace = state.workspace.borrow().as_ref().cloned();
-    match workspace {
-        Some(workspace) => {
-            if let Err(message) = workspace.tabs.new_query_tab() {
-                eprintln!("[tabs] 新建查询标签被拒绝：{message}");
-            }
-        }
-        None => eprintln!("[startup] 尚未连接数据库：先连接再新建查询标签"),
+fn system_window_title(title: &str) -> String {
+    const SUFFIX: &str = " — Sqarvo";
+    if title == "Sqarvo" || title.ends_with(SUFFIX) {
+        title.to_owned()
+    } else {
+        format!("{title}{SUFFIX}")
     }
 }
 
-/// 工具条四个种类入口：路由到当前工作区（连接态）或启动态外壳，只有一处判定。
-fn request_kind_entry(state: &Rc<UiState>, shortcut: crate::tabs::KindShortcut) {
-    let workspace = state.workspace.borrow().as_ref().cloned();
-    if let Some(workspace) = workspace {
-        workspace.show_kind(shortcut);
+/// Refresh the toolbar from the same logical targets used by the command path.
+fn schedule_toolbar_refresh(state: &Rc<UiState>) {
+    if state.toolbar_refresh_scheduled.replace(true) {
         return;
     }
-    eprintln!(
-        "[toolbar] 种类入口「{}」：后端未就绪且没有工作区，忽略",
-        shortcut.label()
+    let state = Rc::downgrade(state);
+    glib::idle_add_local_once(move || {
+        let Some(state) = state.upgrade() else { return };
+        state.toolbar_refresh_scheduled.set(false);
+        if let Some(workspace) = state.workspace.borrow().as_ref() {
+            let toolbar = state.toolbar();
+            let target = toolbar_target(&state, workspace);
+            let (summary, details) = target_copy(&state, workspace, &target.action);
+            let tooltip = toolbar.update_target(
+                target.clone(),
+                Toolbar::KINDS.map(|kind| supports_category(workspace, &target.action, kind)),
+                summary.as_deref(),
+                details.as_deref(),
+            );
+            workspace.tabs.set_new_query_tooltip(&tooltip);
+            toolbar.set_active(workspace.tabs.workspace_shortcut());
+        }
+    });
+}
+
+fn toolbar_target(state: &UiState, workspace: &Workspace) -> ToolbarTarget {
+    let action = workspace.tabs.action_context();
+    let browse_session = match &action {
+        TargetState::Available(target) => workspace.tree.browse_session_for(&target.profile_id),
+        _ => None,
+    };
+    // A surviving tab can be the authority when its browsing connection is offline.
+    let workspace_session = if matches!(action, TargetState::Available(_))
+        && browse_session.is_none()
+        && workspace.tree.navigation_target() == TargetState::None
+    {
+        workspace.tabs.current().and_then(|tab| tab.session())
+    } else {
+        None
+    };
+    let profile_revision = match &action {
+        TargetState::Available(target) => state
+            .registry
+            .borrow()
+            .as_ref()
+            .and_then(|registry| registry.saved(&target.profile_id))
+            .map(|profile| profile.revision),
+        _ => None,
+    };
+    ToolbarTarget {
+        action,
+        browse_session,
+        profile_revision,
+        workspace_session,
+    }
+}
+
+fn supports_category(workspace: &Workspace, action: &TargetState, kind: KindShortcut) -> bool {
+    let group = match kind {
+        KindShortcut::Tables => KindGroup::Tables,
+        KindShortcut::Views => KindGroup::Views,
+        _ => return false,
+    };
+    match action {
+        TargetState::Available(target) | TargetState::Unavailable(target) => {
+            workspace.tree.supports_group(target, group)
+        }
+        TargetState::None => true,
+    }
+}
+
+fn target_copy(
+    state: &UiState,
+    workspace: &Workspace,
+    action: &TargetState,
+) -> (Option<String>, Option<String>) {
+    let (target, unavailable) = match action {
+        TargetState::Available(target) => (target, false),
+        TargetState::Unavailable(target) => (target, true),
+        TargetState::None => return (None, None),
+    };
+    let row = state
+        .registry
+        .borrow()
+        .as_ref()
+        .and_then(|registry| registry.snapshot(&target.profile_id));
+    let connection = row
+        .as_ref()
+        .map(|row| row.label().to_owned())
+        .or_else(|| {
+            workspace
+                .tree
+                .navigation_connection_label(&target.profile_id)
+        })
+        .unwrap_or_else(|| l10n::t("object_tree.connection_unnamed").to_owned());
+    let scope = target.scope.as_ref();
+    let database = scope.and_then(|scope| {
+        if !scope.catalog.is_empty() {
+            Some(scope.catalog.as_str())
+        } else if scope.kind == ObjectKind::Catalog as i32 && !scope.name.is_empty() {
+            Some(scope.name.as_str())
+        } else {
+            None
+        }
+    });
+    let schema =
+        scope.and_then(|scope| (!scope.schema.is_empty()).then_some(scope.schema.as_str()));
+    let identity = [Some(connection.as_str()), database, schema]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let summary = l10n::tf(
+        if unavailable {
+            "shell.target_unavailable"
+        } else {
+            "shell.target"
+        },
+        &[("target", identity)],
     );
+    let mut details = vec![summary.clone()];
+    if scope.is_none() {
+        details.push(l10n::t("shell.target_connection_only").to_owned());
+    }
+    if let Some(resource) = target.resource.as_ref().map(|resource| &resource.object)
+        && Some(resource.name.as_str()) != database
+        && Some(resource.name.as_str()) != schema
+        && !resource.name.is_empty()
+    {
+        details.push(resource.name.clone());
+    }
+    if let Some(row) = row
+        .as_ref()
+        .filter(|row| !row.target.is_empty() && row.target != connection)
+    {
+        details.push(row.target.clone());
+    }
+    if unavailable {
+        details.push(l10n::t("object_tree.target_unavailable").to_owned());
+    }
+    let navigation = workspace.tree.navigation_target();
+    let workspace_target = workspace.tabs.workspace_context();
+    let same_scope = matches!(workspace_target, TargetState::Available(active)
+        if active.profile_id == target.profile_id && active.scope == target.scope);
+    let show = unavailable
+        || (navigation != TargetState::None
+            && (!same_scope || !workspace.tree.navigation_visible()));
+    (show.then_some(summary), Some(details.join("\n")))
+}
+
+#[derive(Clone, Copy)]
+enum ToolbarCommand {
+    Query,
+    Browse(KindShortcut),
+}
+
+fn request_new_query_tab(state: &Rc<UiState>) {
+    request_toolbar_command(state, ToolbarCommand::Query, None);
+}
+
+fn request_kind_entry(state: &Rc<UiState>, shortcut: KindShortcut, captured: ToolbarTarget) {
+    request_toolbar_command(state, ToolbarCommand::Browse(shortcut), Some(captured));
+}
+
+fn request_toolbar_command(
+    state: &Rc<UiState>,
+    command: ToolbarCommand,
+    captured: Option<ToolbarTarget>,
+) {
+    let Some(workspace) = state.workspace.borrow().as_ref().cloned() else {
+        return;
+    };
+    let target = toolbar_target(state, &workspace);
+    if !state.backend_ready.get() {
+        return;
+    }
+    let requested = captured.as_ref().unwrap_or(&target);
+    if !requested.can_dispatch_with(&target) {
+        show_unavailable_toolbar_target(state, &workspace, &requested.action);
+        return;
+    }
+    let (summary, details) = target_copy(state, &workspace, &target.action);
+    if let (Some(summary), Some(details)) = (summary, details)
+        && state.toolbar().target_needs_confirmation(&summary)
+    {
+        let heading = match command {
+            ToolbarCommand::Query => l10n::t("shell.toolbar_new_query"),
+            ToolbarCommand::Browse(kind) => kind.display_label(),
+        };
+        let dialog = adw::AlertDialog::new(Some(heading), Some(&details));
+        dialog.add_response("cancel", l10n::t("dialogs.btn_cancel"));
+        dialog.add_response("continue", l10n::t("shell.target_continue"));
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let window = state.window.clone();
+        let state = Rc::downgrade(state);
+        let workspace = Rc::downgrade(&workspace);
+        dialog.connect_response(None, move |_, response| {
+            if response != "continue" {
+                return;
+            }
+            let (Some(state), Some(workspace)) = (state.upgrade(), workspace.upgrade()) else {
+                return;
+            };
+            let current = state.workspace.borrow().clone();
+            if state.backend_ready.get()
+                && current
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &workspace))
+                && target.can_dispatch_with(&toolbar_target(&state, &workspace))
+            {
+                execute_toolbar_command(&workspace, command, &target);
+            } else {
+                show_unavailable_toolbar_target(&state, &workspace, &target.action);
+            }
+        });
+        dialog.present(Some(&window));
+    } else {
+        execute_toolbar_command(&workspace, command, &target);
+    }
+}
+
+fn show_unavailable_toolbar_target(
+    state: &Rc<UiState>,
+    workspace: &Workspace,
+    target: &TargetState,
+) {
+    let reason = l10n::t("object_tree.target_unavailable");
+    workspace.tree.show_hint(reason);
+    eprintln!("[toolbar] {reason}");
+    if !workspace.tree.widget().is_mapped() {
+        let (_, details) = target_copy(state, workspace, target);
+        show_message(state, reason, details.as_deref().unwrap_or_default());
+    }
+}
+
+fn execute_toolbar_command(workspace: &Workspace, command: ToolbarCommand, target: &ToolbarTarget) {
+    match command {
+        ToolbarCommand::Query => {
+            if let Err(message) = workspace
+                .tabs
+                .new_query_tab_for_target(target.action.clone())
+            {
+                eprintln!("[tabs] 新建查询标签被拒绝：{message}");
+            }
+        }
+        ToolbarCommand::Browse(kind) => {
+            if let TargetState::Available(action) = &target.action
+                && supports_category(workspace, &target.action, kind)
+                && let (Some(mut scope), Some(session), Some(kinds)) =
+                    (action.scope.clone(), &target.browse_session, kind.kinds())
+            {
+                scope.session_id.clone_from(session);
+                workspace.tabs.browse_objects(scope, &kinds, true);
+            } else {
+                workspace
+                    .tree
+                    .show_hint(l10n::t("object_tree.target_database_required"));
+            }
+        }
+    }
 }
 
 /// 打开（或呈现已打开的）连接对话框（新建连接）。
@@ -1553,8 +1804,6 @@ fn restart_software(state: &Rc<UiState>) {
         actions.set_backend_ready(false);
         actions.set_workspace_ready(state.workspace.borrow().is_some());
     }
-    state.title.set_title("Sqarvo");
-    state.title.set_subtitle(l10n::t("shell.title_restarting"));
     if state.workspace.borrow().is_none() {
         show_loading(
             &state.slot,
@@ -1837,9 +2086,16 @@ fn set_page(slot: &gtk::Box, page: &impl IsA<gtk::Widget>) {
     slot.append(page);
 }
 
+fn set_startup_title(title: &adw::WindowTitle, status: &str) {
+    title.set_title("Sqarvo");
+    title.set_subtitle("");
+    title.set_tooltip_text(Some(status));
+    title.update_property(&[gtk::accessible::Property::Description(status)]);
+}
+
 /// Loading：握手进行中。
 fn show_loading(slot: &gtk::Box, title: &adw::WindowTitle, stage: &str) {
-    title.set_subtitle(l10n::t("shell.title_connecting"));
+    set_startup_title(title, l10n::t("shell.title_connecting"));
     let page = adw::StatusPage::builder()
         .title(l10n::t("startup.loading_title"))
         .description(stage)
@@ -1872,7 +2128,6 @@ fn show_startup_workspace(state: &Rc<UiState>, snapshot: &ConnectedSnapshot) {
     if let Some(actions) = state.actions.borrow().as_ref() {
         actions.set_workspace_ready(true);
     }
-    state.toolbar().set_new_query_enabled(true);
     workspace.tabs.set_initial_objects_hint(true);
     workspace.tabs.set_backend_pid(snapshot.backend_pid);
     workspace.tabs.set_backend_ready(true);
@@ -2067,14 +2322,6 @@ fn apply_tab_status(
     match &status {
         crate::tabs::TabStatus::Table(snapshot) => {
             shell.status().apply_snapshot(snapshot);
-            // 状态栏**不再重复报库名**（v0.2.3.3）：标签名 `对象 @ 库` 与表格工具条
-            // 已经写明当前标签属于哪个库，跨库浏览时看标签即可。
-            shell.toolbar().set_active(
-                snapshot
-                    .table
-                    .as_ref()
-                    .and_then(|table| crate::tabs::KindShortcut::of_kind(table.kind)),
-            );
             if let Some(actions) = actions {
                 actions.apply_row_ops(&snapshot.row_ops);
                 actions.apply_query_actions(false, false, true);
@@ -2094,62 +2341,23 @@ fn apply_tab_status(
                     .unwrap_or_else(|| l10n::t("status_bar.sql_not_executed")),
             );
             let _ = timing_ms;
-            shell.toolbar().set_active(None);
             if let Some(actions) = actions {
                 actions.apply_row_ops(row_ops);
                 actions.apply_query_actions(*can_execute, row_ops.cancel, *bound);
             }
         }
-        crate::tabs::TabStatus::Objects { shortcut } => {
+        crate::tabs::TabStatus::Objects => {
             shell
                 .status()
                 .show_no_table(l10n::t("status_bar.no_table_objects"));
             shell
                 .status()
                 .set_sql_summary(l10n::t("status_bar.sql_not_executed"));
-            // 高亮 = `Objects` 页现在列的种类（点工具条切过去时它立刻跟着变）。
-            shell.toolbar().set_active(*shortcut);
             if let Some(actions) = actions {
                 actions.apply_row_ops(&crate::tabs::TabSet::empty_row_ops());
                 actions.apply_query_actions(false, false, false);
             }
         }
-    }
-}
-
-/// Browse the exact Action Context on the fixed Objects page.
-fn show_objects_for_kind(
-    tree: &Rc<TreePanel>,
-    tabs: &Rc<crate::tabs::TabSet>,
-    shortcut: crate::tabs::KindShortcut,
-) {
-    let scope = match tabs.action_context() {
-        TargetState::Available(target) => {
-            let Some(mut scope) = target.scope else {
-                tree.show_hint(l10n::t("object_tree.target_database_required"));
-                return;
-            };
-            let Some(session) = tree.browse_session_for(&target.profile_id) else {
-                tree.show_hint(l10n::t("object_tree.target_unavailable"));
-                return;
-            };
-            scope.session_id = session;
-            scope
-        }
-        TargetState::Unavailable(_) => {
-            tree.show_hint(l10n::t("object_tree.target_unavailable"));
-            return;
-        }
-        TargetState::None => {
-            tree.show_hint(l10n::t("object_tree.target_database_required"));
-            return;
-        }
-    };
-    if let Some(kinds) = shortcut.kinds() {
-        tabs.browse_objects(scope, &kinds, true);
-    } else {
-        tabs.show_objects_unavailable_for(shortcut);
-        tabs.show_objects_page();
     }
 }
 
@@ -2199,11 +2407,6 @@ impl Workspace {
     /// 补展开所有已连接的连接层（#144：树挂载后调一次，防止 notify 丢失/行未创建）。
     fn expand_connected_layers(&self) {
         self.tree.expand_connected();
-    }
-
-    /// 主工具条的四个种类入口（连接态）：与树里选中分组同一条路径。
-    fn show_kind(&self, shortcut: crate::tabs::KindShortcut) {
-        show_objects_for_kind(&self.tree, &self.tabs, shortcut);
     }
 
     fn new(state: &Rc<UiState>, panel_layout: layout::PanelLayout) -> Rc<Self> {
@@ -2454,6 +2657,14 @@ impl Workspace {
                 })
             },
             select: Rc::clone(&render_selection),
+            navigation_changed: {
+                let state = Rc::downgrade(state);
+                Rc::new(move || {
+                    if let Some(state) = state.upgrade() {
+                        schedule_toolbar_refresh(&state);
+                    }
+                })
+            },
             browse: {
                 let tabs_slot = Rc::clone(&tabs_slot);
                 Rc::new(move |selection| {
@@ -2714,15 +2925,20 @@ impl Workspace {
                 Rc::new(move |title: &str, subtitle: &str, tooltip: &str| {
                     state.title.set_title(title);
                     state.title.set_subtitle(subtitle);
+                    if state.title.tooltip_text().is_some() {
+                        state.title.set_tooltip_text(None);
+                    }
+                    state
+                        .header
+                        .set_tooltip_text((!tooltip.is_empty()).then_some(tooltip));
                     state
                         .title
-                        .set_tooltip_text((!tooltip.is_empty()).then_some(tooltip));
-                    let system_title = if title == "Sqarvo" {
-                        title.to_owned()
-                    } else {
-                        format!("{title} — Sqarvo")
-                    };
-                    state.window.set_title(Some(&system_title));
+                        .update_property(&[gtk::accessible::Property::Description(tooltip)]);
+                    state
+                        .header
+                        .update_property(&[gtk::accessible::Property::Description(tooltip)]);
+                    schedule_toolbar_refresh(&state);
+                    state.window.set_title(Some(&system_window_title(title)));
                 })
             },
         });
@@ -4405,7 +4621,7 @@ fn short_id(id: &str) -> String {
 
 /// Error：可操作的错误文案 + 重试。
 fn show_error(slot: &gtk::Box, title: &adw::WindowTitle, message: &str, on_retry: &Rc<dyn Fn()>) {
-    title.set_subtitle(l10n::t("shell.title_connect_failed"));
+    set_startup_title(title, l10n::t("shell.title_connect_failed"));
     let page = adw::StatusPage::builder()
         .title(l10n::t("shell.error_backend_title"))
         .description(message)
@@ -4428,7 +4644,7 @@ fn show_disconnected(
     reason: &str,
     on_retry: &Rc<dyn Fn()>,
 ) {
-    title.set_subtitle(l10n::t("shell.title_disconnected"));
+    set_startup_title(title, l10n::t("shell.title_disconnected"));
     let page = adw::StatusPage::builder()
         .title(l10n::t("shell.error_disconnected_title"))
         .description(reason)
@@ -6256,6 +6472,16 @@ fn show_about(state: &Rc<UiState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_title_appends_the_brand_once() {
+        assert_eq!(system_window_title("Sqarvo"), "Sqarvo");
+        assert_eq!(system_window_title("查询 1"), "查询 1 — Sqarvo");
+        assert_eq!(
+            system_window_title("orders @ test — Sqarvo"),
+            "orders @ test — Sqarvo"
+        );
+    }
 
     fn backend_info() -> BackendInfo {
         BackendInfo {

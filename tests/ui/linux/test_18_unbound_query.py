@@ -280,7 +280,9 @@ def test_first_connection_preserves_drafts_and_explicit_binding(ui_instance):
 
 
 def test_reconnect_from_objects_only_startup(ui_instance):
-    """shell.error, shell.error.retry, startup.workspace, objects_page.tab."""
+    """shell.error, shell.error.retry, startup.workspace, objects_page.tab,
+    shell.toolbar.connect, shell.toolbar.new_query, shell.toolbar.layout, shell.title.
+    """
     inst = ui_instance("s3retry").start()
     frame = inst.frame()
     A.find_one(frame, role_in=("grouping",), name="Objects", timeout=15)
@@ -291,6 +293,11 @@ def test_reconnect_from_objects_only_startup(ui_instance):
     with _backend_pidfd(pid, inst.proc.pid) as backend:
         signal.pidfd_send_signal(backend, signal.SIGTERM)
     retry = A.find_one(frame, role_in=("button",), name="重新连接", timeout=20)
+    toolbar = A.find_one(frame, role_in=("grouping",), name="主工具条")
+    for name in ("连接", "新建查询"):
+        expect("sensitive" not in A.states(A.find_one(toolbar, role_in=("button",), name=name)),
+               f"后端失效时 {name} 不可操作")
+    expect(A.nm(frame) == "Sqarvo", "后端失效且没有活动绑定时保留应用标题")
     A.click(retry)
     A.wait_until(lambda: inst.log_text().count("state=Connected") == 2, 25, "重新握手")
     A.find_one(frame, role_in=("grouping",), name="Objects", timeout=10)
@@ -327,6 +334,9 @@ def test_forced_service_exit_releases_capacity_and_allows_explicit_retry(ui_inst
         other = ops.open_sql_page(frame)
         A.wait_enabled(A.find_one(other, role_in=("button",), name="执行"), 10)
     A.window_action(frame, "win.tab-2")
+    A.click(A.find_one(frame, role_in=("toggle button",), name="导航"))
+    A.wait_gone(lambda: A.query(frame, role_in=("grouping",), name="导航"), 8,
+                "服务失效前隐藏导航")
     pid = json.loads(Path(inst.env["SQARVO_ENDPOINT_FILE"]).read_text())["pid"]
     with _backend_pidfd(pid, inst.proc.pid) as backend:
         signal.pidfd_send_signal(backend, signal.SIGSTOP)
@@ -338,7 +348,11 @@ def test_forced_service_exit_releases_capacity_and_allows_explicit_retry(ui_inst
             except ProcessLookupError:
                 pass
     recover = A.find_one(page, role_in=("button",), name="重启 Sqarvo", timeout=10)
-    expect("sensitive" not in A.states(run), "旧会话失效后禁用执行")
+    A.find_one(page, role_in=("label",), name_contains="已断开", timeout=10)
+    expect("sensitive" not in A.states(run), "导航隐藏时失连原因仍可见，旧会话禁用执行")
+    A.wait_until(lambda: A.nm(frame) == "查询 1 @ RecoverySQLite — Sqarvo",
+                 10, "后端失效后存续查询保留实际绑定标题")
+    A.find_one(frame, role_in=("label",), name="SQLite · main")
     A.click(recover)
     dialog = A.wait_dialog(inst.app, "Sqarvo 需要重启")
     A.click(A.find_one(dialog, role_in=("button",), name="重启 Sqarvo"))

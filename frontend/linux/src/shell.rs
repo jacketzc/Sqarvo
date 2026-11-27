@@ -5,12 +5,14 @@ use std::rc::{Rc, Weak};
 use std::time::Instant;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::glib::variant::ToVariant;
+use gtk::{gio, glib};
 
 use crate::browse_view::relative_age;
 use crate::data_page::{DataState, PagerAction, RowOp, RowOpsState, StatusSnapshot};
 use crate::l10n;
 use crate::layout::{self, Allocation, Gap, Panel, PanelLayout, gap};
+use crate::tabs::KindShortcut;
 
 // 区域 02 的按钮 tooltip：后端就绪与否两套文案（禁用时必须说明原因）都在
 // `l10n/shell.toml`（#199：文案进 catalog，`zh` 与迁移前逐字节相等）。
@@ -270,11 +272,15 @@ impl Shell {
             } else {
                 "shell.layout_inspector"
             };
-            button.set_tooltip_text(Some(l10n::t(if blocked {
+            let description = l10n::t(if state.focus {
+                "shell.layout_exit_focus"
+            } else if blocked {
                 "shell.layout_space"
             } else {
                 name
-            })));
+            });
+            button.set_tooltip_text(Some(description));
+            button.update_property(&[gtk::accessible::Property::Description(description)]);
         }
         if left > 0 && self.sidebar_pane.position() != left {
             self.sidebar_pane.set_position(left);
@@ -447,120 +453,143 @@ impl Shell {
 
 /// 区域 02：主工具条。
 ///
-/// 左组是真实动作（连接 / 新建查询）；分割线右侧是**种类入口**（表 / 视图 / 函数 / 查询），
-/// 与「新建查询」同一套按钮样式（flat、同高同内距）。点一下切到 `Objects` 页并列出该种类
-/// （v0.2.3.3：等同在对象树里选中对应的库 / 分组）。函数 / 查询没有可拉取的列表，点开后
-/// 页面如实说明原因，不摆假数据。
+/// The existing Action Context and the browse generation relevant to a menu.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolbarTarget {
+    pub action: crate::workspace_context::TargetState,
+    pub browse_session: Option<String>,
+    pub profile_revision: Option<u64>,
+    pub workspace_session: Option<String>,
+}
+
+impl ToolbarTarget {
+    pub fn can_dispatch_with(&self, current: &Self) -> bool {
+        self == current
+            && !matches!(
+                current.action,
+                crate::workspace_context::TargetState::Unavailable(_)
+            )
+    }
+}
+
+type BrowseKind = Rc<dyn Fn(KindShortcut, ToolbarTarget)>;
+
 pub struct Toolbar {
     layout_shell: Rc<RefCell<Weak<Shell>>>,
     layout_buttons: [gtk::ToggleButton; 3],
     root: gtk::Box,
+    viewport: gtk::ScrolledWindow,
+    row: gtk::Box,
     left: gtk::Box,
     kinds: gtk::Box,
+    separator: gtk::Separator,
     connect: gtk::Button,
     new_query: gtk::Button,
-    table: gtk::Button,
-    view: gtk::Button,
-    function: gtk::Button,
-    query: gtk::Button,
-    /// 当前高亮的种类（只在变化时打日志，便于无人值守取证）。
-    active: Cell<Option<crate::tabs::KindShortcut>>,
-    /// 后端是否已握手：false 时六个按钮全部禁用（唯一开关，见 [`Self::set_backend_ready`]）。
+    action_labels: [gtk::Label; 2],
+    categories: [gtk::Button; 2],
+    more: gtk::MenuButton,
+    more_menu: gtk::PopoverMenu,
+    more_actions: [gio::SimpleAction; 2],
+    target_label: gtk::Label,
+    target: RefCell<ToolbarTarget>,
+    menu_target: RefCell<Option<ToolbarTarget>>,
+    supported: Cell<[bool; 2]>,
+    overflow: Cell<[bool; 2]>,
+    active: Cell<Option<KindShortcut>>,
     backend_ready: Cell<bool>,
-    /// 「新建查询」是否已连接数据库：与后端就绪是两个独立条件，两者都满足才可点。
-    new_query_allowed: Cell<bool>,
+    workspace_ready: Cell<bool>,
+    width: Cell<i32>,
+    tier: Cell<layout::Tier>,
+    on_kind: BrowseKind,
 }
 
 impl Toolbar {
-    /// 创建主工具条。按钮**初始全部禁用**：窗口构建时后端还没握手，等
-    /// [`Self::set_backend_ready`] 打开；调用方应在创建后立刻显式置一次状态（会打日志）。
-    pub fn new(
-        on_connect: Rc<dyn Fn()>,
-        on_new_query: Rc<dyn Fn()>,
-        on_kind: Rc<dyn Fn(crate::tabs::KindShortcut)>,
-    ) -> Rc<Self> {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Md));
+    pub const KINDS: [KindShortcut; 2] = [KindShortcut::Tables, KindShortcut::Views];
+
+    pub fn new(on_connect: Rc<dyn Fn()>, on_kind: BrowseKind) -> Rc<Self> {
+        let horizontal = gtk::Orientation::Horizontal;
+        let root = gtk::Box::builder()
+            .orientation(horizontal)
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
         root.add_css_class("sqarvo-toolbar");
-        root.set_valign(gtk::Align::Center);
+        root.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "shell.toolbar_name",
+        ))]);
 
-        let connect = gtk::Button::with_label(l10n::t("shell.toolbar_connect"));
-        connect.add_css_class("suggested-action");
-        connect.set_valign(gtk::Align::Center);
-        connect.set_tooltip_text(Some(l10n::t("shell.tooltip_connect")));
-        {
-            let handler = Rc::clone(&on_connect);
-            connect.connect_clicked(move |_| handler());
-        }
+        // Keep the window minimum independent of the currently expanded labels.
+        // The row fits its viewport by moving categories into the native More menu.
+        let viewport = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .kinetic_scrolling(false)
+            .has_frame(false)
+            .hexpand(true)
+            .build();
+        root.append(&viewport);
+        let row = gtk::Box::new(horizontal, gap(Gap::Xl));
+        row.set_valign(gtk::Align::Center);
+        viewport.set_child(Some(&row));
 
-        let new_query = gtk::Button::with_label(l10n::t("shell.toolbar_new_query"));
-        new_query.add_css_class("flat");
-        new_query.set_valign(gtk::Align::Center);
-        new_query.set_tooltip_text(Some(l10n::t("shell.tooltip_new_query")));
-        {
-            let handler = Rc::clone(&on_new_query);
-            new_query.connect_clicked(move |_| handler());
-        }
-
-        let left = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Sm));
-        left.set_valign(gtk::Align::Center);
-        left.append(&connect);
-        left.append(&new_query);
+        let left = gtk::Box::new(horizontal, gap(Gap::Xs));
+        let [(connect, connect_label), (new_query, query_label)] = [
+            ("shell.toolbar_connect", "network-server-symbolic"),
+            ("shell.toolbar_new_query", "tab-new-symbolic"),
+        ]
+        .map(|(key, icon)| {
+            let name = l10n::t(key);
+            let content = gtk::Box::new(horizontal, gap(Gap::Sm));
+            let label = gtk::Label::new(Some(name));
+            content.append(&gtk::Image::from_icon_name(icon));
+            content.append(&label);
+            let button = gtk::Button::new();
+            button.set_child(Some(&content));
+            button.update_property(&[gtk::accessible::Property::Label(name)]);
+            left.append(&button);
+            (button, label)
+        });
+        connect.connect_clicked(move |_| on_connect());
+        new_query.set_action_name(Some("win.new-tab"));
+        row.append(&left);
 
         let separator = gtk::Separator::new(gtk::Orientation::Vertical);
-        separator.set_size_request(-1, 28);
         separator.set_valign(gtk::Align::Center);
-        separator.set_margin_start(gap(Gap::Sm));
-        separator.set_margin_end(gap(Gap::Sm));
+        separator.set_size_request(-1, layout::metrics().min_target);
+        row.append(&separator);
+        let kinds = gtk::Box::new(horizontal, gap(Gap::Xs));
+        let categories = Self::KINDS.map(|kind| {
+            let button = gtk::Button::with_label(kind.display_label());
+            button.add_css_class("flat");
+            button.add_css_class("sqarvo-kind");
+            kinds.append(&button);
+            button
+        });
+        let more = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text(l10n::t("shell.toolbar_more"))
+            .build();
+        more.add_css_class("flat");
+        more.update_property(&[gtk::accessible::Property::Label(l10n::t(
+            "shell.toolbar_more",
+        ))]);
+        let more_menu = gtk::PopoverMenu::from_model(gio::MenuModel::NONE);
+        more.set_popover(Some(&more_menu));
+        kinds.append(&more);
+        let menu_actions = gio::SimpleActionGroup::new();
+        let more_actions = ["tables", "views"].map(|name| {
+            let action = gio::SimpleAction::new_stateful(name, None, &false.to_variant());
+            menu_actions.add_action(&action);
+            action
+        });
+        more_menu.insert_action_group("categories", Some(&menu_actions));
+        row.append(&kinds);
 
-        // 种类入口：与「新建查询」同一套按钮（flat / 同高同内距），只是动作不同。
-        let kind =
-            |label: &str, shortcut: crate::tabs::KindShortcut, tooltip: &str| -> gtk::Button {
-                let button = gtk::Button::with_label(label);
-                button.add_css_class("flat");
-                // 纯拉丁文字：与中文「新建查询」混排时字面会偏上 2px，
-                // 由 `theme` 里的 `.sqarvo-kind label` 补回来（按钮盒子仍同高同 y）。
-                button.add_css_class("sqarvo-kind");
-                button.set_valign(gtk::Align::Center);
-                button.set_tooltip_text(Some(tooltip));
-                let handler = Rc::clone(&on_kind);
-                button.connect_clicked(move |_| handler(shortcut));
-                button
-            };
-        let table = kind(
-            "Tables",
-            crate::tabs::KindShortcut::Tables,
-            l10n::t("shell.tooltip_kind_tables"),
-        );
-        let view = kind(
-            "Views",
-            crate::tabs::KindShortcut::Views,
-            l10n::t("shell.tooltip_kind_views"),
-        );
-        let function = kind(
-            "Functions",
-            crate::tabs::KindShortcut::Functions,
-            l10n::t("shell.tooltip_kind_functions"),
-        );
-        let query = kind(
-            "Queries",
-            crate::tabs::KindShortcut::Queries,
-            l10n::t("shell.tooltip_kind_queries"),
-        );
-
-        let kinds = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::Xxs));
-        kinds.set_valign(gtk::Align::Center);
-        kinds.append(&table);
-        kinds.append(&view);
-        kinds.append(&function);
-        kinds.append(&query);
-
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, gap(Gap::None));
-        spacer.set_hexpand(true);
-
-        root.append(&left);
-        root.append(&separator);
-        root.append(&kinds);
-        root.append(&spacer);
+        let target_label = gtk::Label::builder()
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .xalign(1.0)
+            .hexpand(true)
+            .build();
+        row.append(&target_label);
 
         let layout_shell: Rc<RefCell<Weak<Shell>>> = Rc::default();
         let layout_buttons = [
@@ -581,6 +610,7 @@ impl Toolbar {
             button.set_icon_name(icon);
             button.set_sensitive(false);
             button.add_css_class("flat");
+            button.add_css_class("sqarvo-layout-control");
             button.set_tooltip_text(Some(l10n::t(key)));
             button.update_property(&[gtk::accessible::Property::Label(l10n::t(key))]);
             let current = Rc::clone(&layout_shell);
@@ -592,176 +622,398 @@ impl Toolbar {
                     }
                 }
             });
-            root.append(&button);
+            row.append(&button);
             button
         });
 
-        // 初始禁用：窗口在握手之前就显示工具条，不能让用户点到「没有后端」的动作。
-        for button in [&connect, &new_query, &table, &view, &function, &query] {
-            button.set_sensitive(false);
-        }
-        connect.set_tooltip_text(Some(l10n::t("shell.tooltip_connect_not_ready")));
-
-        Rc::new(Self {
+        let toolbar = Rc::new(Self {
             layout_shell,
             layout_buttons,
             root,
+            viewport,
+            row,
             left,
             kinds,
+            separator,
             connect,
             new_query,
-            table,
-            view,
-            function,
-            query,
+            action_labels: [connect_label, query_label],
+            categories,
+            more,
+            more_menu,
+            more_actions,
+            target_label,
+            target: RefCell::default(),
+            menu_target: RefCell::default(),
+            supported: Cell::new([true; 2]),
+            overflow: Cell::new([false; 2]),
             active: Cell::new(None),
             backend_ready: Cell::new(false),
-            new_query_allowed: Cell::new(false),
-        })
+            workspace_ready: Cell::new(false),
+            width: Cell::new(-1),
+            tier: Cell::new(layout::current_tier()),
+            on_kind,
+        });
+        for (i, kind) in Self::KINDS.into_iter().enumerate() {
+            let weak = Rc::downgrade(&toolbar);
+            toolbar.categories[i].connect_clicked(move |_| {
+                if let Some(toolbar) = weak.upgrade() {
+                    (toolbar.on_kind)(kind, toolbar.target.borrow().clone());
+                }
+            });
+            let weak = Rc::downgrade(&toolbar);
+            toolbar.more_actions[i].connect_activate(move |_, _| {
+                if let Some(toolbar) = weak.upgrade() {
+                    let captured = toolbar.menu_target.borrow().clone();
+                    if let Some(target) = captured {
+                        (toolbar.on_kind)(kind, target);
+                    }
+                }
+            });
+        }
+        let weak = Rc::downgrade(&toolbar);
+        toolbar.more_menu.connect_map(move |_| {
+            if let Some(toolbar) = weak.upgrade() {
+                toolbar
+                    .menu_target
+                    .replace(Some(toolbar.target.borrow().clone()));
+                toolbar.label_more_items();
+            }
+        });
+        let weak = Rc::downgrade(&toolbar);
+        toolbar.more_menu.connect_closed(move |_| {
+            // Model buttons emit closed before activating their GAction.
+            let weak = weak.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(toolbar) = weak.upgrade()
+                    && !toolbar.more_menu.is_mapped()
+                {
+                    toolbar.menu_target.replace(None);
+                }
+            });
+        });
+        toolbar.more.set_visible(false);
+        toolbar.apply_density();
+        toolbar.set_backend_ready(false);
+        let weak = Rc::downgrade(&toolbar);
+        toolbar.viewport.add_tick_callback(move |widget, _| {
+            let Some(toolbar) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let width = widget.width();
+            let tier = layout::current_tier();
+            let density_changed = toolbar.tier.replace(tier) != tier;
+            if density_changed {
+                toolbar.apply_density();
+            }
+            if width > 0 && (toolbar.width.replace(width) != width || density_changed) {
+                toolbar.reflow(width);
+            }
+            glib::ControlFlow::Continue
+        });
+        toolbar
     }
 
-    /// 六个可操作按钮（连接 / 新建查询 / 四个种类入口）：可用性只按这一份清单统计。
-    fn buttons(&self) -> [&gtk::Button; 6] {
-        [
-            &self.connect,
-            &self.new_query,
-            &self.table,
-            &self.view,
-            &self.function,
-            &self.query,
-        ]
+    fn apply_density(&self) {
+        let metrics = layout::metrics();
+        self.row.set_spacing(gap(Gap::Xl));
+        self.left.set_spacing(gap(Gap::Xs));
+        self.kinds.set_spacing(gap(Gap::Xs));
+        self.separator.set_size_request(-1, metrics.min_target);
+        for button in [&self.connect, &self.new_query] {
+            if let Some(content) = button.child().and_downcast::<gtk::Box>() {
+                content.set_spacing(gap(Gap::Sm));
+            }
+        }
+        for button in [&self.connect, &self.new_query]
+            .into_iter()
+            .chain(&self.categories)
+        {
+            button.set_size_request(-1, metrics.toolbar_button_height);
+        }
     }
 
-    /// 打一行可断言的可用性日志（数字取自按钮的真实 `sensitive`）。
-    fn log_availability(&self, ready: bool) {
-        let enabled = self
-            .buttons()
-            .iter()
-            .filter(|button| button.is_sensitive())
-            .count();
-        let state = if ready {
-            "后端已就绪"
-        } else {
-            "后端未握手"
-        };
-        eprintln!(
-            "[toolbar] {state}：{enabled}/{} 个按钮可用",
-            self.buttons().len()
-        );
-    }
-
-    /// 后端就绪开关（产品口径：未握手时工具条上的按钮**全部**禁用）。
-    ///
-    /// 这是工具条可操作性的唯一入口：窗口构建后、拿到 worker 之前先置 `false`；
-    /// 握手完成置 `true`；后端失效 / 退出回退 `false`。菜单侧同名状态由
-    /// `WindowActions::set_backend_ready` 同步（两边不各写一套判定）。
     pub fn set_backend_ready(&self, ready: bool) {
         self.backend_ready.set(ready);
-        self.connect.set_sensitive(ready);
-        // 禁用时摘掉 `suggested-action`：Adwaita 的 disabled suggested 按钮仍是橙色底，
-        // 视觉上像可点；摘掉后与其他禁用按钮一样是灰的（截图取证也一致）。
-        if ready {
-            self.connect.add_css_class("suggested-action");
-        } else {
-            self.connect.remove_css_class("suggested-action");
+        if !ready {
+            self.close_more();
         }
+        self.connect.set_sensitive(ready);
+        self.connect
+            .set_css_classes(if ready { &["suggested-action"] } else { &[] });
         self.connect.set_tooltip_text(Some(l10n::t(if ready {
             "shell.tooltip_connect"
         } else {
             "shell.tooltip_connect_not_ready"
         })));
-        for (button, tooltip) in [
-            (&self.table, "shell.tooltip_kind_tables"),
-            (&self.view, "shell.tooltip_kind_views"),
-            (&self.function, "shell.tooltip_kind_functions"),
-            (&self.query, "shell.tooltip_kind_queries"),
-        ] {
-            button.set_sensitive(ready);
-            button.set_tooltip_text(Some(l10n::t(if ready {
-                tooltip
-            } else {
-                "shell.tooltip_kind_not_ready"
-            })));
-        }
-        self.apply_new_query();
-        self.log_availability(ready);
+        self.update_buttons(None);
     }
 
-    /// 按「后端就绪 + 已连接数据库」两个条件刷新「新建查询」。
-    fn apply_new_query(&self) {
-        let backend_ready = self.backend_ready.get();
-        let enabled = backend_ready && self.new_query_allowed.get();
-        self.new_query.set_sensitive(enabled);
-        self.new_query.set_tooltip_text(Some(l10n::t(if enabled {
+    pub fn update_target(
+        &self,
+        target: ToolbarTarget,
+        supported: [bool; 2],
+        display: Option<&str>,
+        details: Option<&str>,
+    ) -> String {
+        let changed = *self.target.borrow() != target;
+        let text_changed = self.target_label.label() != display.unwrap_or_default();
+        if changed {
+            self.close_more();
+            self.target.replace(target);
+            self.rebuild_more(self.overflow.get());
+        }
+        self.workspace_ready.set(true);
+        self.target_label.set_label(display.unwrap_or_default());
+        self.target_label.set_can_target(display.is_some());
+        let shown_details = display.and(details);
+        self.target_label.set_tooltip_text(shown_details);
+        self.target_label
+            .update_property(&[gtk::accessible::Property::Description(
+                shown_details.unwrap_or_default(),
+            )]);
+        let support_changed = self.supported.replace(supported) != supported;
+        self.update_buttons(details);
+        if support_changed || changed || text_changed {
+            self.width.set(-1);
+        }
+        self.query_tooltip(details)
+    }
+
+    fn query_tooltip(&self, details: Option<&str>) -> String {
+        let key = if self.backend_ready.get() {
             "shell.tooltip_new_query"
-        } else if !backend_ready {
-            "shell.tooltip_new_query_not_ready"
         } else {
-            "shell.tooltip_new_query_not_connected"
-        })));
-    }
-
-    /// 「新建查询」的可用性：未连接数据库时禁用并说明原因（不摆点了没反应的按钮）。
-    ///
-    /// 与 [`Self::set_backend_ready`] 正交：后端未就绪时即使已连接也不会打开。
-    /// 后端已就绪时补一行日志——工作区建立后「6/6」的实测数字来自这里。
-    pub fn set_new_query_enabled(&self, enabled: bool) {
-        self.new_query_allowed.set(enabled);
-        self.apply_new_query();
-        if self.backend_ready.get() {
-            self.log_availability(true);
+            "shell.tooltip_new_query_not_ready"
+        };
+        match details {
+            Some(details) if self.backend_ready.get() => format!("{}\n{details}", l10n::t(key)),
+            _ => l10n::t(key).to_owned(),
         }
     }
 
-    /// 工具条根控件（由窗口挂在 headerbar 之下）。
+    fn update_buttons(&self, details: Option<&str>) {
+        use crate::workspace_context::TargetState;
+        let ready = self.backend_ready.get() && self.workspace_ready.get();
+        let tooltip = self.query_tooltip(details);
+        self.new_query.set_sensitive(ready);
+        self.new_query.set_tooltip_text(Some(&tooltip));
+        self.new_query
+            .update_property(&[gtk::accessible::Property::Description(&tooltip)]);
+        let reason = match &self.target.borrow().action {
+            _ if !ready => Some(l10n::t("shell.tooltip_kind_not_ready")),
+            TargetState::Unavailable(_) => Some(l10n::t("object_tree.target_unavailable")),
+            TargetState::Available(target)
+                if target.scope.is_some() && self.target.borrow().browse_session.is_some() =>
+            {
+                None
+            }
+            _ => Some(l10n::t("object_tree.target_database_required")),
+        };
+        for (i, key) in ["shell.tooltip_kind_tables", "shell.tooltip_kind_views"]
+            .into_iter()
+            .enumerate()
+        {
+            self.categories[i].set_sensitive(reason.is_none());
+            let message = reason.unwrap_or_else(|| l10n::t(key));
+            let tooltip = details.map_or_else(
+                || message.to_owned(),
+                |target| format!("{message}\n{target}"),
+            );
+            self.categories[i].set_tooltip_text(Some(&tooltip));
+            self.more_actions[i].set_enabled(reason.is_none());
+        }
+    }
+
+    fn close_more(&self) {
+        self.menu_target.replace(None);
+        if self.more_menu.is_mapped() {
+            self.more.popdown();
+        }
+    }
+
+    pub fn target_needs_confirmation(&self, summary: &str) -> bool {
+        self.target_label.label() != summary
+            || self.target_label.width() <= 0
+            || self.target_label.layout().is_ellipsized()
+    }
+
+    fn reflow(&self, width: i32) {
+        let width_of = |widget: &gtk::Widget| {
+            let visible = widget.is_visible();
+            if !visible {
+                widget.set_visible(true);
+            }
+            let width = widget.measure(gtk::Orientation::Horizontal, -1).1;
+            if !visible {
+                widget.set_visible(false);
+            }
+            width
+        };
+        let actions_have_text = self.action_labels[0].is_visible();
+        let action_width = width_of(self.left.upcast_ref());
+        let compact_width = if actions_have_text {
+            for label in &self.action_labels {
+                label.set_visible(false);
+            }
+            width_of(self.left.upcast_ref())
+        } else {
+            action_width
+        };
+        if !actions_have_text {
+            for label in &self.action_labels {
+                label.set_visible(true);
+            }
+        }
+        let full_width = width_of(self.left.upcast_ref());
+        let right = self
+            .layout_buttons
+            .iter()
+            .map(|b| width_of(b.upcast_ref()))
+            .sum::<i32>();
+        let target = self
+            .target_label
+            .create_pango_layout(Some(&self.target_label.label()))
+            .pixel_size()
+            .0;
+        // Left actions, the expanding target, and three layout controls remain in the row.
+        let fixed = right + 4 * self.row.spacing();
+        let available = width - fixed;
+        let supported = self.supported.get();
+        let count = supported.iter().filter(|&&show| show).count();
+        let widths = self
+            .categories
+            .each_ref()
+            .map(|button| width_of(button.upcast_ref()));
+        let more_width = width_of(self.more.upcast_ref());
+        let separator_width = if count == 0 {
+            0
+        } else {
+            width_of(self.separator.upcast_ref()) + 2 * self.row.spacing()
+        };
+        let mut inline = supported;
+        let mut show_text = true;
+        loop {
+            let overflow = (0..supported.len()).any(|i| supported[i] && !inline[i]);
+            let inline_width = (0..inline.len())
+                .filter(|&i| inline[i])
+                .map(|i| widths[i])
+                .sum::<i32>();
+            let button_count = inline.iter().filter(|&&show| show).count() + usize::from(overflow);
+            let kinds_width = inline_width
+                + if overflow { more_width } else { 0 }
+                + button_count.saturating_sub(1) as i32 * self.kinds.spacing();
+            let left = if show_text { full_width } else { compact_width };
+            if left + separator_width + kinds_width + target <= available {
+                break;
+            }
+            if let Some(i) = inline.iter().rposition(|&show| show) {
+                inline[i] = false;
+            } else if show_text {
+                show_text = false;
+            } else {
+                break;
+            }
+        }
+        for label in &self.action_labels {
+            label.set_visible(show_text);
+        }
+        self.separator.set_visible(count > 0);
+        self.kinds.set_visible(count > 0);
+        for (i, button) in self.categories.iter().enumerate() {
+            button.set_visible(inline[i]);
+        }
+        let overflow = std::array::from_fn(|i| supported[i] && !inline[i]);
+        if self.overflow.replace(overflow) != overflow {
+            self.close_more();
+            self.rebuild_more(overflow);
+        }
+        self.more.set_visible(overflow.contains(&true));
+        self.apply_active();
+    }
+
+    fn rebuild_more(&self, overflow: [bool; 2]) {
+        let model = gio::Menu::new();
+        for (i, kind) in Self::KINDS
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| overflow[*i])
+        {
+            model.append(
+                Some(kind.display_label()),
+                Some(&format!("categories.{}", self.more_actions[i].name())),
+            );
+        }
+        self.more_menu.set_menu_model(Some(&model));
+    }
+
+    fn label_more_items(&self) {
+        // GTK's model button can expose an empty AT-SPI name for its presentational label.
+        // Supply that same text directly while keeping GtkPopoverMenu's native menu semantics.
+        let mut widgets = vec![self.more_menu.clone().upcast::<gtk::Widget>()];
+        while let Some(widget) = widgets.pop() {
+            if widget.find_property("text").is_some()
+                && let Some(text) = widget.property::<Option<String>>("text")
+            {
+                widget.reset_relation(gtk::AccessibleRelation::LabelledBy);
+                widget.update_property(&[gtk::accessible::Property::Label(&text)]);
+                continue;
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                widgets.push(widget);
+            }
+        }
+    }
+
     pub fn widget(&self) -> &gtk::Box {
         &self.root
     }
 
-    /// 左组（连接 / 新建查询）：布局自检按组比较需求宽度与分配宽度。
     pub fn left_group(&self) -> &gtk::Box {
         &self.left
     }
 
-    /// 种类入口组（表 / 视图 / 函数 / 查询）：同上。
     pub fn kinds_group(&self) -> &gtk::Box {
         &self.kinds
     }
 
-    /// 高亮「当前种类」：`Objects` 页列的种类，或当前表标签的种类。
-    pub fn set_active(&self, shortcut: Option<crate::tabs::KindShortcut>) {
-        use crate::tabs::KindShortcut;
-        if self.active.get() != shortcut {
-            self.active.set(shortcut);
-            match shortcut {
-                Some(choice) => eprintln!("[toolbar] 高亮种类：{}", choice.label()),
-                None => eprintln!("[toolbar] 高亮种类：无"),
-            }
-        }
-        for (button, choice) in [
-            (&self.table, KindShortcut::Tables),
-            (&self.view, KindShortcut::Views),
-            (&self.function, KindShortcut::Functions),
-            (&self.query, KindShortcut::Queries),
-        ] {
-            if Some(choice) == shortcut {
-                button.add_css_class("sqarvo-kind-active");
-            } else {
-                button.remove_css_class("sqarvo-kind-active");
-            }
+    pub fn set_active(&self, shortcut: Option<KindShortcut>) {
+        if self.active.replace(shortcut) != shortcut {
+            self.apply_active();
         }
     }
 
-    /// QA：点一下某个种类入口（`emit_clicked`，与用户点击同一条信号）。
-    pub fn qa_click(&self, shortcut: crate::tabs::KindShortcut) {
-        use crate::tabs::KindShortcut;
-        let button = match shortcut {
-            KindShortcut::Tables => &self.table,
-            KindShortcut::Views => &self.view,
-            KindShortcut::Functions => &self.function,
-            KindShortcut::Queries => &self.query,
-        };
-        button.emit_clicked();
+    fn apply_active(&self) {
+        let mut more_active = false;
+        for (i, kind) in Self::KINDS.into_iter().enumerate() {
+            let selected = self.supported.get()[i] && self.active.get() == Some(kind);
+            self.categories[i].set_css_classes(if selected {
+                &["flat", "sqarvo-kind", "sqarvo-kind-active"]
+            } else {
+                &["flat", "sqarvo-kind"]
+            });
+            self.categories[i].update_state(&[gtk::accessible::State::Selected(Some(selected))]);
+            self.more_actions[i].set_state(&selected.to_variant());
+            more_active |= selected && self.overflow.get()[i];
+        }
+        self.more.set_css_classes(if more_active {
+            &["flat", "sqarvo-kind-active"]
+        } else {
+            &["flat"]
+        });
+        self.more
+            .update_state(&[gtk::accessible::State::Selected(Some(more_active))]);
+    }
+
+    pub fn qa_click(&self, shortcut: KindShortcut) {
+        if let Some(i) = Self::KINDS.iter().position(|&kind| kind == shortcut)
+            && self.supported.get()[i]
+            && self.categories[i].is_sensitive()
+        {
+            self.categories[i].emit_clicked();
+        }
     }
 }
 
@@ -1442,6 +1694,102 @@ fn clock_time(instant: Instant) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toolbar_target_rejects_lost_and_replaced_sessions() {
+        use crate::workspace_context::{ActionTarget, TargetState};
+
+        let scope = ActionTarget::new("original", None);
+        let captured = ToolbarTarget {
+            action: TargetState::Available(scope.clone()),
+            browse_session: Some("original browse session".into()),
+            profile_revision: Some(4),
+            workspace_session: None,
+        };
+        assert!(captured.can_dispatch_with(&captured));
+        for changed in [
+            ToolbarTarget {
+                action: TargetState::Unavailable(scope),
+                ..ToolbarTarget::default()
+            },
+            ToolbarTarget {
+                browse_session: Some("reconnected browse session".into()),
+                ..captured.clone()
+            },
+            ToolbarTarget {
+                profile_revision: Some(5),
+                ..captured.clone()
+            },
+            ToolbarTarget {
+                action: TargetState::Available(ActionTarget::new("different-profile", None)),
+                ..captured.clone()
+            },
+            ToolbarTarget::default(),
+        ] {
+            assert!(!captured.can_dispatch_with(&changed));
+        }
+
+        let fallback = ToolbarTarget {
+            browse_session: None,
+            workspace_session: Some("surviving workspace session".into()),
+            ..captured
+        };
+        assert!(!fallback.can_dispatch_with(&ToolbarTarget {
+            workspace_session: Some("replacement workspace session".into()),
+            ..fallback.clone()
+        }));
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn more_clears_selection_when_target_lacks_active_category() {
+        gtk::test_synced(|| {
+            adw::init().unwrap();
+            let toolbar = Toolbar::new(Rc::new(|| {}), Rc::new(|_, _| {}));
+            let long_target = "long connection name ".repeat(50);
+            toolbar.update_target(
+                ToolbarTarget::default(),
+                [true, true],
+                Some(&long_target),
+                None,
+            );
+            toolbar.set_active(Some(KindShortcut::Views));
+            toolbar.reflow(layout::metrics().min_window_width);
+            assert!(toolbar.more.is_visible());
+            assert!(
+                toolbar.more_actions[1]
+                    .state()
+                    .and_then(|value| value.get::<bool>())
+                    .unwrap()
+            );
+
+            toolbar.update_target(
+                ToolbarTarget::default(),
+                [true, false],
+                Some(&long_target),
+                None,
+            );
+            toolbar.reflow(layout::metrics().min_window_width);
+            assert!(toolbar.more.is_visible());
+            assert_eq!(toolbar.more_menu.menu_model().unwrap().n_items(), 1);
+            assert!(!toolbar.categories[1].is_visible());
+            for action in &toolbar.more_actions {
+                assert_eq!(
+                    action.state().and_then(|value| value.get::<bool>()),
+                    Some(false)
+                );
+            }
+
+            toolbar.update_target(
+                ToolbarTarget::default(),
+                [false, false],
+                Some(&long_target),
+                None,
+            );
+            toolbar.reflow(layout::metrics().min_window_width);
+            assert!(!toolbar.more.is_visible());
+        });
+    }
 
     #[test]
     fn bottom_row_keeps_only_sql_and_last_refresh_when_a_table_is_open() {

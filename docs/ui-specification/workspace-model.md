@@ -39,17 +39,12 @@
 | 区域 | 高度 | 内容 | GTK 载体 |
 |---|---|---|---|
 | 01 窗口外壳 | `header_height` | 全宽标题与菜单 | `AdwHeaderBar` |
-| 02 主工具条 | `toolbar_height` | 左组：连接 / 新建查询；分隔线；**种类入口**（`Tables` / `Views` / `Functions` / `Queries`，纯文字无图标，与「新建查询」同一套 flat 样式、离分隔线同样 14px）；高亮 = 当前列的种类。右侧为三个布局按钮；工作区外壳建立后可用 | `GtkBox` + flat 按钮（窗口级，挂 headerbar 之下） |
+| 02 主工具条 | `toolbar_height` | 全宽单行，左侧动作和分类，中间弹性目标区，右侧布局控制。控件行为见注册表 `shell.toolbar` | `GtkBox` + 原生按钮及弹出菜单 |
 | 03 对象树 | 自适应 | 连接标题、固定搜索、反馈、独立滚动对象树 | 外层 `GtkPaned` 起始侧 |
 | 04 工作区 | 自适应 | 标签、业务内容、行操作和分页 | 内层 `GtkPaned` 起始侧 |
 | 05 状态栏 | `status_height` | 全宽 SQL 摘要、最后刷新、启动态连接摘要及 MCP 状态 | 窗口底部 `GtkBox` |
 | 06 信息面板 | 自适应 | Inspector 内容 | 内层 `GtkPaned` 末端侧 |
 
-
-注：主工具条的种类入口是纯拉丁文字（`Tables` / `Views` / `Functions` / `Queries`），和中文
-「新建查询」同一行混排时，字面会比中文高 2px（Pango 的中文 em 盒更靠下）。按实测用
-`.sqarvo-kind label { margin-top: 2px }` 把字下移，**按钮盒子与命中区不变**（仍同高同 y），
-这条补偿有单测锁着。
 
 ### 2.1 布局算术
 

@@ -189,6 +189,7 @@ pub struct TreeCallbacks {
     pub select: Rc<dyn Fn(TreeSelection)>,
     /// Explicit request to browse a catalog or category in Objects.
     pub browse: Rc<dyn Fn(TreeSelection)>,
+    pub navigation_changed: Rc<dyn Fn()>,
     pub reveal_navigation: Rc<dyn Fn() -> bool>,
     /// 健康状态变化（侧栏提示用）。
     pub health: Rc<dyn Fn(TreeHealth)>,
@@ -250,6 +251,7 @@ enum SelectionOrigin {
 
 #[derive(Debug)]
 struct NavigationSelection {
+    connection_label: String,
     target: ActionTarget,
     selection: TreeSelection,
     session: Option<String>,
@@ -1351,6 +1353,12 @@ impl TreePanel {
                 panel.update_selection_hint();
             }
         });
+        let weak = Rc::downgrade(&panel);
+        panel.root.connect_unmap(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                (panel.callbacks.navigation_changed)();
+            }
+        });
         panel.install_remote_factory(&search_factory);
         install_css();
         panel
@@ -1828,6 +1836,44 @@ impl TreePanel {
             })
     }
 
+    pub fn navigation_connection_label(&self, profile_id: &str) -> Option<String> {
+        self.navigation
+            .borrow()
+            .as_ref()
+            .filter(|selected| selected.target.profile_id == profile_id)
+            .map(|selected| selected.connection_label.clone())
+    }
+
+    /// Reuse the tree's scoped group cache. Only an explicit unsupported response removes
+    /// a group from a loaded container; empty or failed lists still have their group row.
+    pub fn supports_group(&self, target: &ActionTarget, group: KindGroup) -> bool {
+        if group.kinds().is_none() {
+            return false;
+        }
+        let Some(scope) = target.scope.as_ref() else {
+            return true;
+        };
+        self.levels
+            .borrow()
+            .values()
+            .find(|level| {
+                matches!(&level.source, LevelSource::Groups { key, parent }
+                if key == &target.profile_id
+                    && ResourceIdentity::new(key, parent).object == *scope)
+            })
+            .is_none_or(|container| {
+                (0..container.store.n_items()).any(|i| {
+                    container
+                        .store
+                        .item(i)
+                        .and_downcast::<NodeObject>()
+                        .is_some_and(
+                            |item| matches!(item.row(), Row::Group(row) if row.group == group),
+                        )
+                })
+            })
+    }
+
     /// Visibility is a property of the projected GTK model, independent of the target.
     pub fn navigation_visible(&self) -> bool {
         self.root.is_mapped() && self.selection_projected()
@@ -1892,6 +1938,7 @@ impl TreePanel {
         self.selection_hint.set_label(message.unwrap_or_default());
         self.selection_hint.set_tooltip_text(message);
         self.selection_hint.set_visible(message.is_some());
+        (self.callbacks.navigation_changed)();
     }
 
     /// The first successful connection is an explicit user target for the new workspace.
@@ -1905,6 +1952,7 @@ impl TreePanel {
         self.cancel_reveal();
         let target = ActionTarget::new(&snapshot.key, None);
         self.navigation.replace(Some(NavigationSelection {
+            connection_label: snapshot.label.clone(),
             target,
             session: snapshot
                 .state
@@ -1914,6 +1962,7 @@ impl TreePanel {
             source: None,
             unavailable: false,
         }));
+        self.update_selection_hint();
     }
 
     /// Clear the logical target and visible selection while keeping the Objects scope.
@@ -1962,6 +2011,7 @@ impl TreePanel {
             owner.session_id != reference.session_id || !self.captured_path_available(&owner, &path)
         });
         self.navigation.replace(Some(NavigationSelection {
+            connection_label: owner.label.clone(),
             target,
             selection: selection.clone(),
             session,
@@ -3674,6 +3724,7 @@ impl TreePanel {
                     && let LevelSource::Group { key, parent, group } = &level.source
                 {
                     self.hide_unsupported_group(key, parent, *group);
+                    self.update_selection_hint();
                     self.refresh_local_filter();
                     return;
                 }
@@ -5481,6 +5532,7 @@ mod tests {
 
     fn test_panel() -> Rc<TreePanel> {
         TreePanel::new(TreeCallbacks {
+            navigation_changed: Rc::new(|| {}),
             open: Rc::new(|_| {}),
             select: Rc::new(|_| {}),
             browse: Rc::new(|_| {}),
@@ -5706,6 +5758,7 @@ mod tests {
             let panel = test_panel();
             let key = "p";
             let parent = view("db", ObjectKind::Catalog, "db", "").reference;
+            let target = ActionTarget::new(key, Some(&parent));
             let groups = gio::ListStore::new::<NodeObject>();
             let group = group(key, KindGroup::Tables, "db");
             let group_id = panel.new_level(
@@ -5745,6 +5798,7 @@ mod tests {
             );
             assert!(matches!(note(0), Some(Row::Note(row)) if row.kind == NoteKind::Empty));
             assert_eq!(groups.n_items(), 1);
+            assert!(panel.supports_group(&target, KindGroup::Tables));
             let existing = NodeObject::in_level(
                 Row::Object(view("old", ObjectKind::Table, "db", "")),
                 level_id,
@@ -5766,6 +5820,7 @@ mod tests {
                 );
                 assert!(matches!(note(1), Some(Row::Note(row)) if row.kind == NoteKind::Error));
                 assert_eq!(groups.n_items(), 1);
+                assert!(panel.supports_group(&target, KindGroup::Tables));
             }
             panel.finish_page(
                 level_id,
@@ -5775,6 +5830,11 @@ mod tests {
                 }),
             );
             assert_eq!(groups.n_items(), 0);
+            assert!(!panel.supports_group(&target, KindGroup::Tables));
+            assert!(panel.supports_group(
+                &ActionTarget::new("other", target.scope.as_ref()),
+                KindGroup::Tables
+            ));
         });
     }
 

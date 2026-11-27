@@ -69,8 +69,9 @@ pub fn object_scope(reference: &ObjectRef) -> Option<ObjectRef> {
     Some(scope)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum TargetState {
+    #[default]
     None,
     Available(ActionTarget),
     Unavailable(ActionTarget),

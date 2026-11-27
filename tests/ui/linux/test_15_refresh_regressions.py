@@ -537,32 +537,16 @@ def test_objects_scope_survives_connection_selection(ui_instance):
 
 
 @pytest.mark.parametrize("kind", ["Functions", "Queries"])
-def test_objects_unsupported_kind_survives_reentry_and_f5(ui_instance, kind):
-    """shell.toolbar.functions, shell.toolbar.queries: 重入和 F5 后保留未实现说明。"""
+def test_objects_unimplemented_kind_hidden_after_refresh(ui_instance, kind):
+    """shell.toolbar.functions, shell.toolbar.queries: 未实现入口在刷新后仍隐藏。"""
     inst = _start(ui_instance, f"obj_unsupported_{kind.lower()}")
-    with step("unsupported_category"):
-        _wait_list_loaded(inst)
-        A.click(A.query(inst.frame(), role_in=("button",), name=kind)[0])
-        A.wait_until(
-            lambda: any("尚未实现" in text for text in _status_texts(_objects_page(inst.frame()))),
-            15, f"{kind} 显示不支持说明")
-        before = _submit_count(inst, "objects.nodes")
-
     frame = inst.frame()
-    with step("reentry_keeps_unsupported"):
-        ops.open_sql_page(frame)
-        _tab_action(frame, "win.tab-1")
-        A.wait_until(lambda: any("尚未实现" in text for text in _status_texts(_objects_page(frame))),
-                     15, "重新进入后保留不支持状态")
-        expect(_objects_grid(frame) is None, "重新进入仍无对象列表")
-        _expect_submit(inst, "objects.nodes", before)
-
-    with step("f5_keeps_unsupported"):
-        _tab_action(frame, "win.refresh")
-        A.wait_until(lambda: any("尚未实现" in text for text in _status_texts(_objects_page(frame))),
-                     15, "F5 后保留不支持状态")
-        expect(_objects_grid(frame) is None, "F5 后仍无对象列表")
-        _expect_submit(inst, "objects.nodes", before)
+    _wait_list_loaded(inst)
+    for action in (None, "win.refresh"):
+        if action:
+            _tab_action(frame, action)
+        expect(not A.query(frame, role_in=("button", "menu item"), name=kind),
+               f"隐藏未实现的 {kind}")
 
 
 def test_loaded_rows_survive_tab_switch(ui_instance):

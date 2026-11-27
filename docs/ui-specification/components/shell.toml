@@ -17,7 +17,7 @@
 [area]
 id = "shell"
 display_name = "窗口壳与主工具条"
-summary = "窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接 / 新建查询 / 四个种类入口）、深色模式三档、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。"
+summary = "窗口本身（最小尺寸、几何恢复、关闭守卫）、标题与副标题、主菜单、主工具条（连接、新建查询、分类、目标和布局控制）、深色模式三档、界面密度三档，以及握手期的 Loading、握手失败错误页与后端失效后的重启入口。"
 legacy_ref = "ui-behavior-contract.md §1.1–§1.6（原章节已退役为指针，行为见本文件）"
 
 [[component]]
@@ -99,19 +99,19 @@ kind = "container"
 status = "active"
 hand_drawn = true
 why_not_native = "WinUI 3 的系统标题栏不能承载自绘内容：标题行用 ExtendsContentIntoTitleBar + SetTitleBar(拖拽区) 把自绘行注册为拖拽区（图标 / 标题 / 副标题 / 汉堡按钮），窗口控制按钮仍用系统按钮；没有等价的原生「可拖拽自绘标题行」控件（§1.1）。"
+native_control = "gtk:AdwHeaderBar"
 style.slot = "header"
 style.metrics = ["header_height", "font_ui", "gap_md"]
 style.tokens = ["sqarvo_separator"]
 impl_notes = [
-  "Linux 用 AdwHeaderBar：左侧留给系统窗口控件，中间是标题 + 副标题，右侧只有一个主菜单按钮。",
-  "没有独立菜单行、没有窗口内自绘控制按钮（三端都用系统控件）。",
+  "Linux 使用 AdwHeaderBar 居中承载 AdwWindowTitle，主菜单位于结束侧。原生装饰负责拖动、双击、窗口菜单和窗口控制按钮。",
 ]
 
 
 [component.sync.linux]
 state = "done"
-spec_hash = "54eaf23d9a80"
-evidence = "§1.1 外壳；ui.rs activate 的 AdwHeaderBar + WindowTitle + 主菜单按钮"
+spec_hash = "ed4249b5c31e"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：真实拖动、双击最大化、标题栏右键菜单、最小化、还原和关闭。"
 
 [[component]]
 id = "shell.title"
@@ -119,53 +119,26 @@ parent = "shell"
 display_name = "标题与副标题"
 kind = "control"
 status = "active"
-style.metrics = ["font_ui"]
+style.metrics = ["font_title", "font_status", "font_weight_title", "font_weight_ui", "gap_xxs"]
 a11y.name = "窗口标题"
+native_control = "gtk:AdwWindowTitle"
 impl_notes = [
-  "由 AdwWindowTitle 承载：字号随窗口继承 font_ui，字重由 Adwaita 的内部样式决定，`.sqarvo-title` 类只用在页内标题上。",
-  "标题、副标题和 tooltip 读取活动工作区的实际绑定。查询重绑的目标只用于建立会话。",
+  "标题读取活动工作区的原始名称和实际连接显示名，副标题取友好数据库类型和实际数据库名，缺少的字段省略。",
+  "Objects 分类使用实际分类名称，数据库级使用 Objects。无有效范围或无活动工作区时只显示 Sqarvo；未绑定 SQL 只显示查询名。",
+  "全名、实际 Schema、安全端点、已有版本和状态按可用性补入原生 tooltip 与可访问描述。断开的存续工作区保留实际身份；在途及失败重绑不改标题。",
+  "启动、重试与失连的状态继续在业务区域显示。没有业务工作区时，标题为 Sqarvo，启动状态放入 tooltip。",
 ]
 
 [[component.interaction]]
 trigger = "load"
-precondition = "握手成功且还没有数据库连接"
-result = "标题「Sqarvo」、副标题「未连接」"
-source = "src/ui.rs:1561"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "连接数据库成功"
-result = "Objects 还没有成功浏览的范围时，标题是「Sqarvo」，副标题为空"
-source = "src/ui.rs:1720、src/ui.rs:1767、src/ui.rs:1770"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "切换标签"
-result = "主标题用工作区原始名称与连接显示名组成「<工作区名> @ <连接名>」。副标题显示驱动显示名和实际数据库或 Schema，缺失项省略。系统窗口标题加「— Sqarvo」。tooltip 补充可安全显示的目标详情。选中树资源和在途重绑都不改归属"
-source = "src/tabs.rs:2292、src/tabs.rs:2310、src/tabs.rs:135"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "后端断开"
-result = "存续的普通标签保留实际归属及已加载结果，业务区域显示失连。无工作区时展示外壳的断开状态"
-source = "src/ui.rs:587、src/tabs.rs:2632"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "后端握手失败"
-result = "标题回到「Sqarvo」、副标题「连接失败」"
-source = "src/ui.rs:567、src/ui.rs:3774"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "用户选择「重启 Sqarvo」"
-result = "副标题「正在重启…」，标题「Sqarvo」"
-source = "src/ui.rs:1420"
+precondition = "活动工作区或该工作区实际绑定变化"
+result = "更新居中主副标题。系统标题保留单个 Sqarvo 品牌后缀，空工作区使用单独的 Sqarvo。长名截断，完整名称经原生 tooltip 和无障碍读取。"
+source = "src/tabs.rs TabSet::window_title_and_subtitle；src/ui.rs TabContext::on_title"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "51c25923bc17"
-evidence = "test_16_workspace_context.py::test_navigation_target_and_clear_selection：树选 B 时系统标题保留 A；同名表标签及 Objects 分别显示实际档案。隔离 GTK qa_query_target_tracks_the_original_tab_session：在途、失败与迟到响应不改实际标题。"
+spec_hash = "e08dcdd96072"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：SQLite 实际库、长名称无障碍描述、原生 Tooltip 查询及零 RPC；tests/ui/linux/results/run.TJeqNMo1/report.json：双连接归属；隔离 GTK qa_query_target_tracks_the_original_tab_session：失败重绑保留原绑定。 tests/ui/linux/results/run.kEQx6EUw/report.json：原标题、安全描述与无导航失连；system_title_appends_the_brand_once 校验品牌后缀。"
 
 [[component]]
 id = "shell.menu"
@@ -237,13 +210,15 @@ kind = "item"
 status = "active"
 style.metrics = ["font_ui"]
 a11y.name = "新建查询标签"
-impl_notes = ["与工具条「新建查询」、标签条 `＋`、`Ctrl+T` 同一条 `TabSet::new_query_tab`。"]
+impl_notes = [
+  "与工具条新建查询、标签栏加号和 Ctrl+T 共用 win.new-tab。目标摘要截断时通过同一确认流程。",
+]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "后端已握手且工作区存在（`set_workspace_ready` 统一开关）"
-result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；明确不可用的目标在侧栏提示。成功时聚焦编辑器；握手前禁用入口"
-source = "src/ui.rs:4754、src/ui.rs:4715、src/tabs.rs:1859"
+result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；目标不可用或确认期间变更时提示原因并拒绝执行。成功时聚焦编辑器；握手前禁用入口"
+source = "src/ui.rs::request_toolbar_command、src/tabs.rs::TabSet::new_query_tab_for_target"
 
 [[component.interaction]]
 trigger = "key"
@@ -254,8 +229,8 @@ source = "src/ui.rs:327"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "7a88cef1d99e"
-evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
+spec_hash = "bf7bdd57d955"
+evidence = "test_18_unbound_query.py：win.new-tab 共用入口及未绑定可用；tests/ui/linux/results/run.cmSUm8oW/report.json：真实 Ctrl+T 与加号共用目标确认。 tests/ui/linux/results/run.kEQx6EUw/report.json：win.new-tab 统一确认及失效保护。"
 
 [[component]]
 id = "shell.menu.clear_selection"
@@ -369,37 +344,29 @@ display_name = "主工具条"
 kind = "container"
 status = "active"
 hand_drawn = true
-why_not_native = "WinUI 3 的 CommandBar + AppBarButton 在真机秒级崩溃（0xc000027b，#170，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装：六个按钮都是朴素原生 Button，但它们组成的整条工具条是拼装件，不是 CommandBar，也没有原生等价的「左动作组 + 竖分隔 + 四个纯拉丁种类入口」复合控件（旧实现，见归档）。"
+why_not_native = "GTK 提供独立按钮与原生弹出菜单。此工具条组合了这些控件，以同一行呈现动作、响应式分类、目标和右侧布局控制。"
 style.slot = "toolbar"
-style.metrics = ["toolbar_height", "toolbar_padding_h", "gap_sm", "min_target", "font_ui"]
+style.metrics = ["toolbar_height", "toolbar_padding_h", "toolbar_button_height", "gap_xxs", "gap_xs", "gap_sm", "gap_lg", "gap_xl", "min_target", "font_ui", "icon_box"]
 style.tokens = ["sqarvo_separator"]
 a11y.name = "主工具条"
 impl_notes = [
-  "窗口级控件（在标题栏之下创建），不随工作区重建：窗口构建后、拿到 worker 之前先置未就绪；握手完成置就绪；后端失效 / 退出 / 重启回退未就绪。",
-  "左组 = 连接 / 新建查询；竖分隔线；种类入口组（Tables / Views / Functions / Queries，纯拉丁文字、与「新建查询」同一套 flat 样式）；其余空间弹性留白。",
-  "六个按钮的可用性只按这一份清单统计，日志 `[toolbar] 后端未握手：0/6 个按钮可用` / `[toolbar] 后端已就绪：6/6 个按钮可用`。",
-  "四个种类入口共用一条目标库解析：取树里**当前选中项所在的库**（选中的表 / 视图 / 分组也算），只有什么都没选中时才退回活动连接的默认库；多连接按「会话 ID + 库名」精确匹配，避免同名 `main` 跳到别的连接（`selected_catalog` / `catalog_row` 的 require_session 一遍）。",
-  "种类入口是纯拉丁文字，与中文混排时字面会偏上，由 `.sqarvo-kind label` 的 margin-top 补回来（按钮盒子与命中区不变）。",
+  "窗口级单行工具条，位于标题栏下。左侧为连接、新建查询和分隔后的对象分类；弹性空间内显示实际目标，右侧为导航、专注、信息面板三个布局控制。",
+  "GTK 原生按钮与标签的自然宽度决定分类收纳和动作图标化；始终保留实际可用范围内的关键入口。",
+  "分类能力取 Action Context 和已实现能力。高亮读取活动工作区类型或 Objects 实际分类；普通 SQL 无分类高亮。",
 ]
 
 [[component.interaction]]
 trigger = "load"
-precondition = "后端就绪状态变化"
-result = "六个按钮同时切换可用性与 tooltip，并打一行可用性日志；菜单侧走同一个状态（`WindowActions::set_backend_ready`），不出现「菜单禁用、按钮可点」"
-source = "src/shell.rs:862、src/ui.rs:4666、src/shell.rs:840"
-
-[[component.interaction]]
-trigger = "load"
-precondition = "当前标签切换 / 每次标签状态刷新"
-result = "高亮跟着当前标签：表数据标签 → 该表的种类；`Objects` 页 → 页面**正在列**的种类（树里换分组导致页换作用域时，高亮在同一次刷新里跟上）；查询标签 → 无高亮。同一时刻最多一个按钮带 `sqarvo-kind-active`"
-source = "src/ui.rs:1840、src/shell.rs:958"
+precondition = "窗口空间或动作上下文变化"
+result = "以实际文字与原生控件测量重排工具条。分类按固定顺序恢复；布局控制延用工作区外壳的实际布局状态。"
+source = "src/shell.rs Toolbar::reflow；src/ui.rs schedule_toolbar_refresh"
 
 platform_notes.windows = "工具条**不是** CommandBar：#170 把它换成 CommandBar + AppBarButton + ToggleButton 后在真机秒级崩溃（0xc000027b，5/5 与 3/3 两轮），整块已回退为 Grid + Button + Border + TextBlock 拼装（旧实现，见归档）。现状 = 左动作组 + 竖分隔 + 四个种类入口（朴素 Button），本片四个入口仍未接线（§7.1）；文档与代码差异已记入契约 §9.1。"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "7d805591faea"
-evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：启动握手、控制可用性和统一新建查询。"
+spec_hash = "e9c6f071cc53"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：Compact 840×600 可达、原生 More、目标摘要与 零额外业务 RPC。 tests/ui/linux/results/run.kEQx6EUw/report.json：中英文三档可达，反复缩放无新增业务 RPC。"
 
 [[component]]
 id = "shell.toolbar.connect"
@@ -407,12 +374,12 @@ parent = "shell.toolbar"
 display_name = "「连接」"
 kind = "control"
 status = "active"
+style.icon = ["tree.connection"]
 style.metrics = ["min_target", "font_ui"]
 a11y.name = "连接"
 impl_notes = [
-  "主工具条上唯一的强调色按钮（`suggested-action`）；禁用时**摘掉**该类 —— Adwaita 的 disabled suggested 仍是橙底，视觉上像可点。",
-  "tooltip：就绪时「打开连接对话框（Ctrl+N）」；未就绪时「后端尚未就绪：正在连接本地后端，握手完成后才能新建连接」。",
-  "连接入口只有这一个（标题栏不放连接按钮）；连接对话框也能从「文件 → 新建连接」/ `Ctrl+N` 打开。",
+  "左侧强调动作，使用图标和文字。空间不足时保留图标、可访问名称和 tooltip。",
+  "后端握手前禁用并说明原因；就绪后打开既有连接对话框。入口含义与数据库在线状态无关。",
 ]
 
 [[component.interaction]]
@@ -423,8 +390,8 @@ source = "src/shell.rs:721、src/ui.rs:1096、src/ui.rs:1103"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a5a90c8823ed"
-evidence = "§1.2「连接」；CONNECT_TOOLTIP / CONNECT_TOOLTIP_NOT_READY 与 suggested-action 的摘挂"
+spec_hash = "0a24bc033858"
+evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：原生连接对话框打开和取消；test_18_unbound_query.py::test_reconnect_from_objects_only_startup：后端丢失时入口禁用。"
 
 [[component]]
 id = "shell.toolbar.new_query"
@@ -432,24 +399,25 @@ parent = "shell.toolbar"
 display_name = "「新建查询」"
 kind = "control"
 status = "active"
+style.icon = ["action.new_query"]
 style.metrics = ["min_target", "font_ui"]
 a11y.name = "新建查询"
 impl_notes = [
-  "握手成功后可用，尚无连接也可新建未绑定查询。",
-  "启用时 tooltip 为「新建查询标签（Ctrl+T）」；后端未就绪时说明握手完成后可新建。",
-  "与标签条 `＋`、`Ctrl+T`、菜单「文件 → 新建查询标签」同一条 `TabSet::new_query_tab`。",
+  "中性动作，使用图标和文字。空间不足时保留图标与可访问名称。",
+  "后端握手后可用，无目标时可创建未绑定查询。tooltip 包含实际动作目标，与标签栏加号相同。",
+  "工具条、加号、菜单与 Ctrl+T 共用 win.new-tab。仅连接不借用其他标签的数据库，失效目标不给回退。目标摘要被截断时先显示可读的目标确认。",
 ]
 
 [[component.interaction]]
 trigger = "click"
 precondition = "后端已握手且工作区存在"
-result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；明确不可用的目标在侧栏提示。成功时聚焦编辑器；握手前禁用入口"
-source = "src/shell.rs:895、src/ui.rs:1065、src/tabs.rs:1859"
+result = "按导航逻辑选择新建独立查询；只有无逻辑选择时使用活动工作区的实际绑定。只选连接时不借用工作区的库。两者均无目标时新建未绑定 SQL 草稿；目标不可用或确认期间变更时提示原因并拒绝执行。成功时聚焦编辑器；握手前禁用入口"
+source = "src/ui.rs::request_toolbar_command、src/tabs.rs::TabSet::new_query_tab_for_target"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "44dad68d32d8"
-evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
+spec_hash = "9c8faad44e62"
+evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：双连接、仅选连接、失效与清除选择；tests/ui/linux/results/run.cmSUm8oW/report.json：截断目标时加号与 Ctrl+T 共用确认。 tests/ui/linux/results/run.kEQx6EUw/report.json：加号和工具条目标文本一致，确认时目标变化拒绝创建；toolbar_target_rejects_lost_and_replaced_sessions 覆盖失效、重连和档案修订。"
 
 [[component]]
 id = "shell.toolbar.tables"
@@ -457,15 +425,13 @@ parent = "shell.toolbar"
 display_name = "种类入口「Tables」"
 kind = "control"
 status = "active"
-style.icon = ["tree.group.tables"]
-style.metrics = ["min_target", "font_ui", "gap_xs"]
+style.metrics = ["min_target", "font_ui", "gap_xxs", "gap_lg", "radius_sm"]
 style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
 style.states = { selected = "sqarvo_brand_mid" }
 a11y.name = "Tables"
 impl_notes = [
-  "纯拉丁文字、无图标；与「新建查询」同一套 flat 按钮（同高同内距）。",
-  "高亮实现为加 `sqarvo-kind-active` 类（中档实底 + 对应前景），同一时刻最多一个按钮带这个类。",
-  "tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的表；未就绪提示等待握手。",
+  "纯文字分类入口。只有 Action Context 支持且软件已有实现时出现；空列表、权限错误或读取失败保留分类。",
+  "缺少可用数据库范围时禁用，tooltip 说明原因。活动工作区的 Tables 类别使用圆角高亮；当入口收纳时由 More 标记该分类。",
 ]
 
 [[component.interaction]]
@@ -475,15 +441,15 @@ result = "切到固定 Objects 页，按解析出的目标数据库或 Schema �
 source = "src/ui.rs:1078、src/ui.rs:1909、src/shell.rs:958"
 
 [[component.interaction]]
-trigger = "click"
+trigger = "load"
 precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
+result = "分类保留并禁用。tooltip 提供原因，当前工作区保持原样。"
 source = "src/ui.rs::show_objects_for_kind"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "948b17828384"
-evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
+spec_hash = "1832229c883d"
+evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：目标 B 浏览固定 Objects 且保持查询 A；隔离 GTK page_failure_keeps_loaded_rows_and_only_unsupported_hides_a_group：只有明确能力不支持才隐藏。"
 
 [[component]]
 id = "shell.toolbar.views"
@@ -491,14 +457,13 @@ parent = "shell.toolbar"
 display_name = "种类入口「Views」"
 kind = "control"
 status = "active"
-style.icon = ["tree.group.views"]
-style.metrics = ["min_target", "font_ui", "gap_xs"]
+style.metrics = ["min_target", "font_ui", "gap_xxs", "gap_lg", "radius_sm"]
 style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
 style.states = { selected = "sqarvo_brand_mid" }
 a11y.name = "Views"
 impl_notes = [
-  "与 `Tables` 同一套按钮与同一条联动路径，只有分组与 kinds 不同。",
-  "tooltip：就绪时在 Objects 页列出目标数据库或 Schema 的视图；未就绪提示等待握手。",
+  "纯文字分类入口。只有 Action Context 支持且软件已有实现时出现；空列表、权限错误或读取失败保留分类。",
+  "缺少可用数据库范围时禁用，tooltip 说明原因。活动工作区的 Views 类别使用圆角高亮；当入口收纳时由 More 标记该分类。",
 ]
 
 [[component.interaction]]
@@ -508,81 +473,83 @@ result = "切到固定 Objects 页，按解析出的目标数据库或 Schema �
 source = "src/ui.rs:1078、src/ui.rs:1904、src/ui.rs:1920"
 
 [[component.interaction]]
-trigger = "click"
+trigger = "load"
 precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
+result = "分类保留并禁用。tooltip 提供原因，当前工作区保持原样。"
 source = "src/ui.rs::show_objects_for_kind"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "8bff5bb1e3e2"
-evidence = "tests/ui/linux/results/run.3jtK5EPM/report.json：S1 导航优先、失效目标拒绝、清除后使用活动工作区；tests/ui/linux/results/run.x16Mog9W/report.json 核对无目标草稿。"
+spec_hash = "a9b1efe024e6"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：More 中打开唯一的固定 Objects、空 Views、活动菜单项可读；tests/ui/linux/results/run.TJeqNMo1/report.json：目标 B 视图。"
 
 [[component]]
 id = "shell.toolbar.functions"
 parent = "shell.toolbar"
 display_name = "种类入口「Functions」"
 kind = "control"
-status = "active"
-style.icon = ["tree.group.functions"]
-style.metrics = ["min_target", "font_ui", "gap_xs"]
-style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
-style.states = { selected = "sqarvo_brand_mid" }
-a11y.name = "Functions"
-impl_notes = [
-  "沿用当前阶段的未实现说明页，保留树逻辑选择。",
-  "tooltip：就绪「函数列表：驱动尚未提供（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。",
-]
-
-[[component.interaction]]
-trigger = "click"
-precondition = "后端已握手，Action Context 有可用的数据库或 Schema"
-result = "切到固定 Objects 页并显示 Functions 尚未实现的说明。零列表 RPC，树逻辑选择保留"
-source = "src/ui.rs:1931、src/tabs.rs:518、src/ui.rs:1928"
-
-[[component.interaction]]
-trigger = "click"
-precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
-source = "src/ui.rs:1948"
+status = "removed"
+removed_in = "v0.2.5"
+removed_reason = "退役打开未实现说明页的 Functions 占位入口。已有实现且目标支持时可再引入实际管理命令。"
 
 [component.sync.linux]
-state = "done"
-spec_hash = "0b06f8bf6d32"
-evidence = "tests/ui/linux/results/run.d98WgmUQ/report.json：Functions 重入及 F5；tests/ui/linux/results/run.x16Mog9W/report.json 启动可达。"
+state = "removed"
+evidence = "test_01_startup.py 与 test_15_refresh_regressions.py::test_objects_unimplemented_kind_hidden_after_refresh：启动与刷新后均隐藏 Functions。"
 
 [[component]]
 id = "shell.toolbar.queries"
 parent = "shell.toolbar"
 display_name = "种类入口「Queries」"
 kind = "control"
+status = "removed"
+removed_in = "v0.2.5"
+removed_reason = "退役打开未实现说明页的 Queries 占位入口。已有实现且目标支持时可再引入实际管理命令。"
+
+[component.sync.linux]
+state = "removed"
+evidence = "test_01_startup.py 与 test_15_refresh_regressions.py::test_objects_unimplemented_kind_hidden_after_refresh：启动与刷新后均隐藏 Queries。"
+
+[[component]]
+id = "shell.toolbar.target"
+parent = "shell.toolbar"
+display_name = "操作目标"
+kind = "control"
 status = "active"
-style.icon = ["tree.group.queries"]
-style.metrics = ["min_target", "font_ui", "gap_xs"]
-style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
-style.states = { selected = "sqarvo_brand_mid" }
-a11y.name = "Queries"
+native_control = "gtk:GtkLabel"
+style.metrics = ["font_ui"]
+a11y.name = "目标"
 impl_notes = [
-  "与 `Functions` 同构：有入口、0 次 RPC、页面如实说明。",
-  "tooltip：就绪「已保存的查询：尚未实现（点开看说明）」；未就绪「后端尚未就绪：握手完成后可用」。",
+  "导航目标与活动工作区的连接、库或 Schema 不一致，导航选择不可见，或明确目标失效时显示实际目标。连接级选择省略数据库值，tooltip 注明仅选连接。",
+  "安全全名、附加标识和失效原因可由 tooltip 和可访问描述读取。省略同一可见操作目标的常驻提示。",
+  "摘要无法完整显示时，打开业务命令前显示完整目标。继续时复核工作区、捕获目标、档案版本和会话身份。原目标失效或变化时提示并结束本次操作。普通操作直接执行。",
 ]
-
-[[component.interaction]]
-trigger = "click"
-precondition = "后端已握手，Action Context 有可用的数据库或 Schema"
-result = "切到固定 Objects 页并显示 Queries 尚未实现的说明。零列表 RPC，树逻辑选择保留"
-source = "src/ui.rs:1931、src/tabs.rs:524、src/ui.rs:1928"
-
-[[component.interaction]]
-trigger = "click"
-precondition = "工作区没有可用数据库或 Schema，或目标已失效"
-result = "在侧栏提示选择连接、数据库或目标已不可用，保留当前工作区。"
-source = "src/ui.rs:1948"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "45fad8389d25"
-evidence = "tests/ui/linux/results/run.d98WgmUQ/report.json：Queries 重入及 F5；tests/ui/linux/results/run.x16Mog9W/report.json 启动可达。"
+spec_hash = "6d03c733393b"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：隐藏导航后提示、同范围且可见时隐藏、截断先确认；tests/ui/linux/results/run.TJeqNMo1/report.json：两连接、仅连接、失效和清除。 tests/ui/linux/results/run.kEQx6EUw/report.json：确认期间清除选择，继续时提示原目标失效，查询数和 Connect 数不变。"
+
+[[component]]
+id = "shell.toolbar.more"
+parent = "shell.toolbar"
+display_name = "更多分类"
+kind = "control"
+status = "active"
+native_control = "gtk:GtkMenuButton + GtkPopoverMenu"
+style.icon = ["tree.more"]
+style.metrics = ["min_target", "icon_box", "gap_xxs", "radius_sm"]
+style.tokens = ["sqarvo_brand_mid", "sqarvo_brand_on_mid"]
+a11y.name = "更多分类"
+impl_notes = [
+  "以分类的自然宽度和当前可分配空间决定收纳，项目按工具条顺序排列且只出现一次。没有项目时隐藏。",
+  "活动分类被收纳时同时标记 More 和对应的菜单项。空间恢复后分类回到原顺序。",
+  "打开时捕获 Action Context 及相应档案版本与会话身份。目标改变、失效或后端离线时关闭旧菜单，触发时再核对捕获目标。",
+]
+
+[component.sync.linux]
+state = "done"
+spec_hash = "c7dc46395cea"
+evidence = "tests/ui/linux/results/run.cmSUm8oW/report.json：溢出及恢复、项目唯一、活动项可读、旧菜单关闭、从菜单浏览固定 Objects；重排与展合零业务 RPC。 tests/ui/linux/results/run.kEQx6EUw/report.json：More 活动态、子项标记、旧目标菜单关闭及反复缩放；tests/ui/linux/results/run.WBo2vd51/runner.log：切到不支持当前分类的目标后清除高亮，空菜单隐藏。"
 
 [[component]]
 id = "shell.theme"
@@ -814,25 +781,25 @@ style.metrics = ["font_title", "font_status", "gap_page"]
 a11y.name = "无法连接后端"
 impl_notes = [
   "同一张 StatusPage 承载两种状态：握手失败「无法连接后端」与无工作区时的「已断开连接」；有工作区时断开**不**换页（保留已加载的行并标失连）。",
-  "工具条留在错误页上方并保持全部禁用，日志「[toolbar] 后端未握手：0/6 个按钮可用」—— 错误页不是「退化成没有工具栏」。",
+  "工具条保留在错误页上方，依赖后端的命令禁用。工作区外壳已建立时，布局命令继续使用其当前状态。",
 ]
 
 [[component.interaction]]
 trigger = "load"
 precondition = "后端握手失败"
-result = "主区域换成错误页：标题「无法连接后端」、副标题「连接失败」、描述为错误原文 + 「重试」按钮；标题栏回到「Sqarvo」；工具条保留在上方并保持全部禁用"
-source = "src/ui.rs:3774、src/ui.rs:567"
+result = "主区域显示「无法连接后端」、安全错误说明与「重试」按钮；标题栏显示 Sqarvo，连接失败状态进入 tooltip。工具条继续呈现其可用状态"
+source = "src/ui.rs::show_error"
 
 [[component.interaction]]
 trigger = "load"
 precondition = "后端断开且没有普通业务标签可提供页内恢复入口"
-result = "同一张 StatusPage 换成「已断开连接」+ 断开原因 + 「重新连接」；标题「Sqarvo」、副标题「已断开」"
-source = "src/ui.rs:3792、src/ui.rs:602"
+result = "状态页显示断开原因与「重新连接」。标题栏显示 Sqarvo，断开状态进入 tooltip"
+source = "src/ui.rs::show_disconnected"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "a7aceeb33b2f"
-evidence = "tests/ui/linux/results/run.x16Mog9W/report.json：服务失效后恢复同一 SQL 编辑器，Objects 单页使用重新连接并保留单例。"
+spec_hash = "6c8f430a4115"
+evidence = "test_18_unbound_query.py：Objects 单页失连回到恢复页，存续查询保留实际标题及 SQL。"
 
 [[component]]
 id = "shell.error.retry"
@@ -850,13 +817,13 @@ impl_notes = [
 [[component.interaction]]
 trigger = "click"
 precondition = "错误页 / 断开页可见"
-result = "回到 Loading「准备连接本地后端…」；若之前是就绪状态，工具条与菜单先回未就绪（并打一行可用性日志），然后重新握手"
+result = "回到 Loading「准备连接本地后端…」；若之前是就绪状态，工具条与菜单先回未就绪（保持后端命令禁用），然后重新握手"
 source = "src/ui.rs:369、src/ui.rs:3786"
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b9713a3eb891"
-evidence = "§1.1 错误页「重试」；retry 闭包的未就绪回退与 worker.connect"
+spec_hash = "fe8870850cb2"
+evidence = "test_18_unbound_query.py::test_reconnect_from_objects_only_startup：恢复入口成功重新握手并保留运行期专注状态。"
 
 [[component]]
 id = "shell.backend_failure"
@@ -956,18 +923,20 @@ display_name = "导航、专注模式、信息面板"
 kind = "control"
 status = "active"
 native_control = "gtk:GtkToggleButton"
+style.metrics = ["min_target", "toolbar_layout_icon", "gap_xxs", "gap_lg"]
+style.tokens = ["sqarvo_brand_soft"]
 style.icon = ["layout.navigation", "layout.focus", "layout.inspector"]
 a11y.name = "导航 / 专注模式 / 信息面板"
 impl_notes = [
-  "三个布局按钮位于主工具栏最右，按导航、专注模式、信息面板排序。启动态及连接态都可操作。",
-  "按下状态来自实际可见侧栏或当前专注状态。专注期间点击某侧栏按钮会退出专注并请求显示该栏。",
-  "纯布局命令，沿用 shell.layout 计算和状态。",
+  "主工具栏最右侧的三个图标按钮依次为导航、专注模式、信息面板；工作区外壳建立后可用，与数据库连接无关。",
+  "按下状态来自实际可见侧栏或专注状态。空间不足、专注覆盖与可主动显示状态各有工具提示。专注期间点击任一侧栏按钮退出专注并请求显示该栏。",
+  "按钮调用 shell.layout 的既有布局命令及临时优先求解。",
 ]
 
 [component.sync.linux]
 state = "done"
-spec_hash = "b74f3a883ff3"
-evidence = "test_10_layout.py 启动态和连接态的布局按钮、pressed 状态、临时优先、专注及退出。 tests/ui/linux/results/run.9ME2GefI/report.json 收尾用例确认隐藏导航后键盘焦点移至「导航」。 tests/ui/linux/results/run.FlRhTuGR/report.json"
+spec_hash = "27d7ee7cb357"
+evidence = "tests/ui/linux/results/run.TJeqNMo1/report.json：三档密度、无数据库连接仍可用、临时优先、专注和布局零 RPC；tests/ui/linux/results/run.cmSUm8oW/report.json：Compact 的三枚布局按钮。 tests/ui/linux/results/run.kEQx6EUw/report.json：两种语言、三档密度均可访问五个关键入口。"
 
 [[component]]
 id = "shell.menu.reset_layout"

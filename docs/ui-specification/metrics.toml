@@ -42,6 +42,8 @@ scale = 1.0
 header_height = 44
 transaction_popover_top_margin = 64
 toolbar_height = 44   # 44 × 1.0 = 44
+toolbar_button_height = 32
+toolbar_layout_icon = 18
 status_height = 24
 min_window_width = 840
 min_window_height = 600
@@ -144,6 +146,8 @@ scale = 1.25
 header_height = 55
 transaction_popover_top_margin = 80
 toolbar_height = 55   # 44 × 1.25 = 55
+toolbar_button_height = 40
+toolbar_layout_icon = 23
 status_height = 30
 min_window_width = 1050
 min_window_height = 750
@@ -245,6 +249,8 @@ scale = 1.5
 header_height = 66
 transaction_popover_top_margin = 96
 toolbar_height = 66   # 44 × 1.5 = 66
+toolbar_button_height = 48
+toolbar_layout_icon = 27
 status_height = 36
 min_window_width = 1260
 min_window_height = 900
